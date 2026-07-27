@@ -21,18 +21,30 @@ Self-hosted refactor split into three components:
 
 ```bash
 cargo test -p loopback-server
-cargo check -p loopback-server -p relay-server
+cargo check -p loopback-server -p relay-server -p key-intercept-installer
 ```
 
-## Installer (plugin + loopback)
+## Installer (Rust, plugin + loopback)
 
 Use:
 
+The installer downloads pre-built artifacts from the latest successful GitHub Actions run, installs them locally, and configures startup.
+
 ```bash
-./installer/install.sh <OWNER_DISCORD_ID> [RELAY_SERVER_URL]
+cargo run -p key-intercept-installer -- \
+  --owner-discord-id <OWNER_DISCORD_ID> \
+  [--relay-server-url <RELAY_SERVER_URL>]
 ```
 
-This installs:
+By default it expects two artifact names in that latest successful run:
+- `loopback-server-linux-x86_64`
+- `key-intercept-plugin`
+
+You can override artifact names with:
+- `--loopback-artifact <name>`
+- `--plugin-artifact <name>`
+
+It installs:
 - loopback binary to `~/.local/bin/key-intercept-loopback`
 - plugin file to `~/.config/Vencord/plugins/keyInterceptSelfHosted.tsx`
 - user systemd service `key-intercept-loopback.service`
