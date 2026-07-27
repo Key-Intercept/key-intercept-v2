@@ -3,8 +3,9 @@
 Self-hosted refactor split into three components:
 
 1. **Vencord plugin** (`/plugin/keyInterceptSelfHosted.tsx`)
-   - Reads/writes local config from the loopback service.
-   - Exposes profile-embedded UI for config editing.
+   - Restores the original key-intercept message transform pipeline (rules, gag, pet, bimbo, horny, uwu, censored, drone).
+   - Reads/writes schema-shaped local config from the loopback service.
+   - Exposes profile-embedded UI for config editing + allowed-editor ACL management.
    - Sends remote update commands through the relay server.
 
 2. **Loopback server (Rust)** (`/loopback-server`)
