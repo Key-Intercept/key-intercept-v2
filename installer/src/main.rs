@@ -347,3 +347,60 @@ fn run_systemctl<const N: usize>(args: [&str; N]) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+    use zip::{ZipWriter, write::FileOptions};
+
+    #[test]
+    fn find_artifact_skips_expired_entries() {
+        let artifacts = vec![
+            Artifact {
+                id: 1,
+                name: "key-intercept-plugin".to_string(),
+                expired: true,
+            },
+            Artifact {
+                id: 2,
+                name: "key-intercept-plugin".to_string(),
+                expired: false,
+            },
+        ];
+
+        let found = find_artifact(&artifacts, "key-intercept-plugin").unwrap();
+        assert_eq!(found.id, 2);
+    }
+
+    #[test]
+    fn find_artifact_returns_error_when_missing() {
+        let artifacts = vec![Artifact {
+            id: 1,
+            name: "loopback-server-linux-x86_64".to_string(),
+            expired: true,
+        }];
+
+        let err = find_artifact(&artifacts, "loopback-server-linux-x86_64").unwrap_err();
+        assert!(err.to_string().contains("not found or expired"));
+    }
+
+    #[test]
+    fn unzip_to_dir_extracts_files() {
+        let mut bytes = Cursor::new(Vec::new());
+        {
+            let mut zip = ZipWriter::new(&mut bytes);
+            zip.start_file::<_, ()>("nested/sample.txt", FileOptions::default())
+                .unwrap();
+            std::io::Write::write_all(&mut zip, b"hello").unwrap();
+            zip.finish().unwrap();
+        }
+
+        let dir = tempdir().unwrap();
+        unzip_to_dir(bytes.get_ref(), dir.path()).unwrap();
+
+        let extracted = dir.path().join("nested/sample.txt");
+        let content = std::fs::read_to_string(extracted).unwrap();
+        assert_eq!(content, "hello");
+    }
+}

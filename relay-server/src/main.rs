@@ -203,3 +203,63 @@ async fn put_remote_config(
             .into_response(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::response::IntoResponse;
+    use serde_json::json;
+
+    fn test_state() -> AppState {
+        AppState {
+            peers: Arc::new(RwLock::new(HashMap::new())),
+            client: reqwest::Client::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn register_peer_adds_user() {
+        let state = test_state();
+        let response = register_peer(
+            State(state.clone()),
+            Json(RegisterRequest {
+                owner_id: "owner".to_string(),
+                base_url: "http://127.0.0.1:35491".to_string(),
+                shared_token: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let users = state.peers.read().await;
+        assert!(users.contains_key("owner"));
+    }
+
+    #[tokio::test]
+    async fn get_remote_config_returns_not_found_for_unknown_user() {
+        let state = test_state();
+        let response = get_remote_config(State(state), Path("missing".to_string()))
+            .await
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn put_remote_config_returns_not_found_for_unknown_user() {
+        let state = test_state();
+        let response = put_remote_config(
+            State(state),
+            Path("missing".to_string()),
+            Json(RemoteUpdatePayload {
+                editor_id: "editor".to_string(),
+                config: json!({ "config": {} }),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+}

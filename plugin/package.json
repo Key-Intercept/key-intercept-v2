@@ -5,7 +5,7 @@
   "main": "keyInterceptSelfHosted.tsx",
   "type": "module",
   "scripts": {
-    "test": "echo \"No plugin tests configured\""
+    "test": "node ./test/smoke.test.mjs"
   },
   "license": "MIT"
 }

@@ -1,0 +1,102 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag (e.g. v1.0.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-loopback-and-plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build loopback server
+        run: cargo build --release -p loopback-server
+
+      - name: Collect loopback and plugin artifacts
+        run: |
+          mkdir -p dist
+          cp target/release/loopback-server dist/loopback-server
+          cp plugin/keyInterceptSelfHosted.tsx dist/keyInterceptSelfHosted.tsx
+
+      - name: Upload loopback artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: loopback-server-linux-x86_64
+          path: dist/loopback-server
+
+      - name: Upload plugin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: key-intercept-plugin
+          path: dist/keyInterceptSelfHosted.tsx
+
+  build-installer:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build installer
+        run: cargo build --release -p key-intercept-installer
+
+      - name: Package installer (unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist
+          cp target/release/key-intercept-installer dist/key-intercept-installer-${{ runner.os }}-x86_64
+          tar -C dist -czf dist/key-intercept-installer-${{ runner.os }}-x86_64.tar.gz key-intercept-installer-${{ runner.os }}-x86_64
+
+      - name: Package installer (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/key-intercept-installer.exe dist/key-intercept-installer-Windows-x86_64.exe
+          Compress-Archive -Path dist/key-intercept-installer-Windows-x86_64.exe -DestinationPath dist/key-intercept-installer-Windows-x86_64.zip
+
+      - name: Upload installer package
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-package-${{ matrix.os }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+  publish-release:
+    runs-on: ubuntu-latest
+    needs: [build-loopback-and-plugin, build-installer]
+    steps:
+      - name: Download installer packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: installer-package-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          generate_release_notes: true
+          files: release-assets/*

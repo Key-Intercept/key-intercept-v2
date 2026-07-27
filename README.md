@@ -21,8 +21,9 @@ Self-hosted refactor split into three components:
 ## Build and test
 
 ```bash
-cargo test -p loopback-server
+cargo test -p loopback-server -p relay-server -p key-intercept-installer
 cargo check -p loopback-server -p relay-server -p key-intercept-installer
+npm --prefix plugin test
 ```
 
 ## Installer (Rust, plugin + loopback)
@@ -51,3 +52,8 @@ It installs:
 - user systemd service `key-intercept-loopback.service`
 
 The relay server is intended for manual VPS deployment and is not included in installer automation.
+
+## GitHub Actions workflows
+
+- `CI`: runs plugin and Rust tests on pull requests and pushes.
+- `Build and Release`: builds loopback/plugin artifacts plus installer packages for Linux/macOS/Windows and publishes a GitHub release asset set when a `v*` tag is pushed (or via manual dispatch with `release_tag`).
