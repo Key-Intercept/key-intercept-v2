@@ -1,0 +1,3 @@
+[workspace]
+members = ["loopback-server", "relay-server"]
+resolver = "2"
