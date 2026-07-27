@@ -272,11 +272,41 @@ function shouldApply(endIso: string): boolean {
     return Date.now() <= new Date(endIso).getTime();
 }
 
+function shouldApplyRules(config: Config): boolean {
+    return shouldApply(config.rules_end);
+}
+
+function shouldApplyGag(config: Config): boolean {
+    return shouldApply(config.gag_end);
+}
+
 function shouldApplyPet(config: Config): boolean {
     return shouldApply(config.pet_end) && config.pet_amount !== 0;
 }
 
+function shouldApplyBimbo(config: Config): boolean {
+    return shouldApply(config.bimbo_end);
+}
+
+function shouldApplyHorny(config: Config): boolean {
+    return shouldApply(config.horny_end);
+}
+
+function shouldApplyDrone(config: Config): boolean {
+    return shouldApply(config.drone_end);
+}
+
+function shouldApplyUWU(config: Config): boolean {
+    return shouldApply(config.uwu_end);
+}
+
+function shouldApplyCensored(config: Config): boolean {
+    return shouldApply(config.censored_end);
+}
+
 function applyRules(msg: string): string {
+    if (!shouldApplyRules(interceptConfig.config)) return msg;
+
     let output = msg.normalize("NFKC");
     const groups = interceptConfig.rules_groups;
     const sortedRules = [...interceptConfig.rules].sort((a, b) => a.order - b.order);
@@ -308,7 +338,7 @@ function applyRules(msg: string): string {
 }
 
 function applyUWU(msg: string): string {
-    if (!shouldApply(interceptConfig.config.uwu_end)) return msg;
+    if (!shouldApplyUWU(interceptConfig.config)) return msg;
 
     let output = "";
     for (let word of msg.split(" ")) {
@@ -329,7 +359,7 @@ function applyUWU(msg: string): string {
 }
 
 function applyHorny(msg: string): string {
-    if (!shouldApply(interceptConfig.config.horny_end)) return msg;
+    if (!shouldApplyHorny(interceptConfig.config)) return msg;
 
     const hornyWords = ["hmmph", "nngh", "ahhh", "ooh", "oohh", "mmm", "hehe", "hehehe", "guhh", "pleasee"];
     let output = "";
@@ -369,7 +399,7 @@ function applyPet(msg: string): string {
 }
 
 function applyBimbo(msg: string): string {
-    if (!shouldApply(interceptConfig.config.bimbo_end)) return msg;
+    if (!shouldApplyBimbo(interceptConfig.config)) return msg;
 
     let output = "";
     const pronouns = ["i", "you", "he", "she", "it", "we", "they", "is"];
@@ -401,7 +431,7 @@ function applyBimbo(msg: string): string {
 }
 
 function applyCensored(msg: string): string {
-    if (!shouldApply(interceptConfig.config.censored_end)) return msg;
+    if (!shouldApplyCensored(interceptConfig.config)) return msg;
 
     for (const word of interceptConfig.censored_words) {
         let replacement = "";
@@ -415,7 +445,7 @@ function applyCensored(msg: string): string {
 }
 
 function applyGag(msg: string): string {
-    if (!shouldApply(interceptConfig.config.gag_end)) return msg;
+    if (!shouldApplyGag(interceptConfig.config)) return msg;
 
     let output = "";
     const remainChars = ["a", "e", "i", "o", "u", "g", "h", "A", "E", "I", "O", "U", "G", "H", "?", "!", ".", ",", ":", ";", "#", "*", "-", "(", ")", "~"];
@@ -456,7 +486,7 @@ function editPreviousMessage(channelId: string, messageId: string, newContent: s
 }
 
 function applyDrone(msg: string, channelId: string): { message: string; editPreviousMessage?: { channelId: string; messageId: string; newContent: string } } {
-    if (!shouldApply(interceptConfig.config.drone_end)) return { message: msg };
+    if (!shouldApplyDrone(interceptConfig.config)) return { message: msg };
 
     const drone = interceptConfig.drone_config;
     if (drone.drone_health < 10) {
