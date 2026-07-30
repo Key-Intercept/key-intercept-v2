@@ -133,7 +133,11 @@ function mergeLocalConfig(raw: unknown): LocalConfig {
 }
 
 async function readLocalConfig(): Promise<LocalConfig> {
-    const response = await fetch(`${LOOPBACK}/config`);
+    const response = await fetch(`${LOOPBACK}/config`, {
+        headers: {
+            "x-discord-user-id": currentUser().id
+        }
+    });
     if (!response.ok) throw new Error(`Failed reading local config: ${response.status}`);
     const payload = mergeLocalConfig(await response.json());
     interceptConfig = payload;
@@ -361,7 +365,7 @@ function applyUWU(msg: string): string {
 function applyHorny(msg: string): string {
     if (!shouldApplyHorny(interceptConfig.config)) return msg;
 
-    const hornyWords = ["hmmph", "nngh", "ahhh", "ooh", "oohh", "mmm", "hehe", "hehehe", "guhh", "pleasee"];
+    const hornyWords = ["hmmph", "nngh", "ahhh", "ooh", "oohh", "mmm", "hehe", "hehehe", "heheh", "eheh", "ehehe", "eheheh", "guhh", "pleasee", "need to cumm", "oh goshh", "ohhh", "ahhh", "cummm", "gggg"];
     let output = "";
 
     for (const word of msg.split(" ")) {
@@ -387,6 +391,11 @@ function applyPet(msg: string): string {
             continue;
         }
 
+        if (word.startsWith(":") && word.endsWith(":")) {
+            output += `${word} `;
+            continue;
+        }
+
         if (Math.random() < interceptConfig.config.pet_amount) {
             output += petWords[Math.floor(Math.random() * petWords.length)];
         } else {
@@ -404,7 +413,9 @@ function applyBimbo(msg: string): string {
     let output = "";
     const pronouns = ["i", "you", "he", "she", "it", "we", "they", "is"];
     const maxWordLength = interceptConfig.config.bimbo_word_length;
+    const likeChance = 0.1;
     const gargleWords = ["like", "hehe", "uhh", "totally", "so dumbb", "ummm", "hhhhh"];
+    const punctuation = [".", ",", "!", "<", ">", "[", "]", "{", "}", "/", "?", ";", ":", "'", "@", "#", "~", "-", "_", "\"", ")", "(", "*", "&", "&", "^", "%", "$", "£", "+", "=", "`", "¬", "|", "\\"];
 
     for (const word of msg.split(" ")) {
         let changed = false;
@@ -415,15 +426,20 @@ function applyBimbo(msg: string): string {
                 changed = true;
             }
 
-            if (word.length > maxWordLength) {
+            let punctuationCount = 0;
+            for (const char of word) {
+                if (punctuation.includes(char)) punctuationCount++;
+            }
+
+            if (word.length - punctuationCount > maxWordLength) {
                 output += `${word.substring(0, Math.max(maxWordLength - 2, 1))}uhhhh long words harddd hehe`;
                 return output;
             }
         }
 
         if (!changed) output += `${word} `;
-        if (Math.random() < 0.1 && !isLink(word)) {
-            output += `${gargleWords[Math.floor(Math.random() * gargleWords.length)]} `;
+        if (Math.random() < likeChance && !isLink(word)) {
+            output += `${gargleWords[Math.floor(Math.random() * (gargleWords.length - 1))]} `;
         }
     }
 
@@ -448,6 +464,7 @@ function applyGag(msg: string): string {
     if (!shouldApplyGag(interceptConfig.config)) return msg;
 
     let output = "";
+    let inEmote = false;
     const remainChars = ["a", "e", "i", "o", "u", "g", "h", "A", "E", "I", "O", "U", "G", "H", "?", "!", ".", ",", ":", ";", "#", "*", "-", "(", ")", "~"];
 
     for (const word of msg.split(" ")) {
@@ -458,10 +475,29 @@ function applyGag(msg: string): string {
 
         let outWord = "";
         for (const char of word) {
+            if (char === ":" && !inEmote) {
+                inEmote = true;
+                outWord += char;
+                continue;
+            } else if (char === ":" && inEmote) {
+                inEmote = false;
+                outWord += char;
+                continue;
+            }
+
+            if (inEmote) {
+                outWord += char;
+                continue;
+            }
+
             if (remainChars.includes(char)) {
                 outWord += char;
             } else {
-                outWord += char.toLowerCase() === char ? ["g", "h"][Math.floor(Math.random() * 2)] : ["G", "H"][Math.floor(Math.random() * 2)];
+                if (!(char.charCodeAt(0) >= 97 && char.charCodeAt(0) <= 122)) {
+                    outWord += ["G", "H"][Math.floor(Math.random() * 2)];
+                } else {
+                    outWord += ["g", "h"][Math.floor(Math.random() * 2)];
+                }
             }
         }
         output += `${outWord} `;
@@ -493,12 +529,53 @@ function applyDrone(msg: string, channelId: string): { message: string; editPrev
         return { message: `\`${drone.drone_term} haaaaas receieved bzzzzt, ppplease provide repaiirs using beep '/repair', tthank youu. Returned Error: 0x7547372482\`` };
     }
 
-    let output = msg
-        .replace(new RegExp("\\bMe\\b", "gi"), drone.drone_term)
-        .replace(new RegExp("\\bMy\\b", "gi"), "Its'")
-        .replace(new RegExp("\\bI am\\b", "gi"), "It is")
-        .replace(new RegExp("\\bI(')?m\\b", "gi"), "It is")
-        .replace(new RegExp("\\bI\\b", "gi"), drone.drone_term);
+    let containsLink = false;
+    for (const word of msg.split(" ")) {
+        if (isLink(word)) {
+            containsLink = true;
+        }
+    }
+
+    let output = "";
+    if (!containsLink) {
+        msg = msg
+            .replace(new RegExp("\\bMe\\b", "gi"), drone.drone_term)
+            .replace(new RegExp("\\bMy\\b", "gi"), "Its'")
+            .replace(new RegExp("\\bI am\\b", "gi"), "It is")
+            .replace(new RegExp("\\bI(')?m\\b", "gi"), "It is")
+            .replace(new RegExp("\\bI\\b", "gi"), drone.drone_term);
+    }
+
+    for (const word of msg.split(" ")) {
+        if (!isLink(word)) {
+            if (Math.random() > (drone.drone_health / 100)) {
+                output += Math.random() > 0.5 ? "`beep` " : "`bzzzt` ";
+            }
+        }
+        output += `${word} `;
+    }
+
+    const tempOutput = output;
+    output = "";
+    let lastTriggered = 0;
+    for (const word of tempOutput.split(" ")) {
+        let outWord = "";
+        if (!isLink(word)) {
+            for (const char of word) {
+                outWord += char;
+                lastTriggered += 1;
+                if (Math.random() + (lastTriggered / 100) - 1 > (drone.drone_health / 100) && char !== "`") {
+                    lastTriggered = 0;
+                    for (let i = 0; i < Math.floor(Math.random() * 10); i++) {
+                        outWord += char;
+                    }
+                }
+            }
+        } else {
+            outWord = word;
+        }
+        output += `${outWord} `;
+    }
 
     const previousMessage = getPreviousMessage(channelId);
     const previousSenderId = previousMessage?.author?.id ?? null;
@@ -733,7 +810,12 @@ const plugin = definePlugin({
 
         msg.content = applyReplacements(msg.content, channelId);
     },
-    UserProfileBadge: ConfigPanel
+    userProfileBadge: {
+        id: "key-intercept-controls",
+        key: "key-intercept-controls",
+        description: "key-intercept controls",
+        component: ConfigPanel
+    }
 });
 
 export default plugin;

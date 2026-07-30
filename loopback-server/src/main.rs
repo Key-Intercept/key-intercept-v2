@@ -1,4 +1,5 @@
 mod store;
+mod schema;
 
 use anyhow::Result;
 use axum::{
@@ -8,8 +9,8 @@ use axum::{
     response::IntoResponse,
     routing::{delete, get},
 };
+use schema::{LocalConfig, is_discord_id};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, time::Duration};
 use store::ConfigStore;
 use tokio::time::sleep;
@@ -26,11 +27,13 @@ struct ErrorResponse {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ConfigPayload {
-    config: Value,
+    config: LocalConfig,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EditorPayload {
     editor_id: String,
 }
@@ -46,6 +49,7 @@ struct AllowedEditorsResponse {
 }
 
 #[derive(Serialize)]
+#[serde(deny_unknown_fields)]
 struct RegisterPayload {
     owner_id: String,
     base_url: String,
@@ -154,10 +158,17 @@ async fn get_config(
 ) -> impl IntoResponse {
     let stored = state.store.get().await;
 
-    if let Some(requester) = requester_id(&headers, &query)
-        && requester != stored.owner_discord_id
-        && !stored.allowed_editors.contains(&requester)
-    {
+    let Some(requester) = requester_id(&headers, &query) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "missing requester id".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    if requester != stored.owner_discord_id && !stored.allowed_editors.contains(&requester) {
         return (
             StatusCode::FORBIDDEN,
             Json(ErrorResponse {
@@ -165,7 +176,7 @@ async fn get_config(
             }),
         )
             .into_response();
-    }
+    };
 
     Json(stored.config).into_response()
 }
@@ -184,6 +195,14 @@ async fn put_config(
         )
             .into_response();
     };
+
+    if let Err(err) = payload.config.validate() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse { error: err }),
+        )
+            .into_response();
+    }
 
     match state
         .store
@@ -229,6 +248,16 @@ async fn add_allowed_editor(
         )
             .into_response();
     };
+
+    if !is_discord_id(&payload.editor_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "editor_id must be numeric".to_string(),
+            }),
+        )
+            .into_response();
+    }
 
     match state
         .store
