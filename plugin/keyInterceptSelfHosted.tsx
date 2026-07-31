@@ -758,7 +758,7 @@ const plugin = definePlugin({
         relayUrl: {
             type: OptionType.STRING,
             description: "Public relay URL",
-            default: "http://127.0.0.1:45491"
+            default: "http://82.165.196.147:45491"
         }
     },
     async start() {

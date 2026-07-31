@@ -38,6 +38,8 @@ cargo run -p key-intercept-installer -- \
   [--relay-server-url <RELAY_SERVER_URL>]
 ```
 
+Default relay URL: `http://82.165.196.147:45491`
+
 By default it expects two artifact names in that latest successful run:
 - `loopback-server-linux-x86_64`
 - `key-intercept-plugin`
