@@ -36,6 +36,7 @@ When local sources are not detected, it downloads pre-built artifacts from the l
 ```bash
 cargo run -p key-intercept-installer -- \
   --owner-discord-id <OWNER_DISCORD_ID> \
+  [--plugin-install-mode vencord-custom] \
   [--relay-server-url <RELAY_SERVER_URL>]
 ```
 
@@ -53,6 +54,8 @@ It installs:
 - loopback binary to `~/.local/bin/key-intercept-loopback`
 - plugin file to `~/Vencord/src/userplugins/key-intercept/keyInterceptSelfHosted.tsx` (clones/updates `~/Vencord` automatically)
 - user systemd service `key-intercept-loopback.service`
+
+`--plugin-install-mode vencord-custom` is accepted for backward compatibility; custom Vencord installation is always used.
 
 The relay server is intended for manual VPS deployment and is not included in installer automation.
 

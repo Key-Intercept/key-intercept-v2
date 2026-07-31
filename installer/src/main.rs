@@ -44,6 +44,9 @@ struct Args {
 
     #[arg(long, default_value = "key-intercept")]
     vencord_plugin_folder: String,
+
+    #[arg(long)]
+    plugin_install_mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -77,6 +80,12 @@ struct LocalSources {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    if let Some(mode) = args.plugin_install_mode.as_deref() {
+        if mode != "vencord-custom" {
+            bail!("--plugin-install-mode only supports 'vencord-custom'");
+        }
+    }
+
     if let Some(local_sources) = find_local_sources() {
         println!(
             "Detected local repository at {}. Building and installing local sources.",
@@ -396,7 +405,19 @@ fn sync_vencord_checkout(vencord_dir: &Path) -> Result<()> {
     if vencord_dir.join("pnpm-lock.yaml").is_file() {
         run_command_in_dir_warn("git", &["restore", "pnpm-lock.yaml"], vencord_dir);
     }
-    run_command_in_dir_warn("git", &["pull"], vencord_dir);
+
+    match git_working_tree_clean(vencord_dir) {
+        Ok(true) => run_command_in_dir_warn("git", &["pull", "--ff-only"], vencord_dir),
+        Ok(false) => println!(
+            "Warning: Skipping `git pull` in {} because it has local changes.",
+            vencord_dir.display()
+        ),
+        Err(err) => println!(
+            "Warning: Could not determine git status in {}: {err}. Skipping `git pull`.",
+            vencord_dir.display()
+        ),
+    }
+
     Ok(())
 }
 
@@ -532,6 +553,20 @@ fn run_command_in_dir_warn(command: &str, args: &[&str], dir: &Path) {
     if let Err(err) = run_command_in_dir(command, args, dir) {
         println!("Warning: {err}");
     }
+}
+
+fn git_working_tree_clean(dir: &Path) -> Result<bool> {
+    let output = Command::new("git")
+        .current_dir(dir)
+        .args(["status", "--porcelain"])
+        .output()
+        .with_context(|| format!("failed to execute git status in {}", dir.display()))?;
+
+    if !output.status.success() {
+        bail!("git status failed with status {}", output.status);
+    }
+
+    Ok(output.stdout.is_empty())
 }
 
 #[cfg(test)]
