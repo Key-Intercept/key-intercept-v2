@@ -312,11 +312,15 @@ fn install_plugin_into_vencord(
     sync_vencord_checkout(&vencord_dir)?;
     ensure_pnpm_available()?;
     install_vencord_userplugin(source, &vencord_dir, plugin_folder, plugin_file_name)?;
-    run_command_in_dir("pnpm", &["install"], &vencord_dir)?;
+    run_command_in_dir("pnpm", &pnpm_install_args(), &vencord_dir)?;
     run_command_in_dir("pnpm", &["build"], &vencord_dir)?;
     if let Err(err) = run_command_in_dir("pnpm", &["inject"], &vencord_dir) {
         println!("Warning: `pnpm inject` failed: {err}");
         println!("The plugin may still work after running `pnpm inject` manually.");
+    }
+
+    fn pnpm_install_args() -> [&'static str; 2] {
+        ["install", "--prod=false"]
     }
 
     Ok(())
@@ -695,6 +699,11 @@ mod tests {
             .join("userplugins")
             .join("key-intercept");
         assert!(!plugin_dir.join("index.tsx").exists());
+    }
+
+    #[test]
+    fn pnpm_install_includes_dev_dependencies() {
+        assert_eq!(pnpm_install_args(), ["install", "--prod=false"]);
     }
 
 }
