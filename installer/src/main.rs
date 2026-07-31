@@ -3,7 +3,9 @@ use clap::Parser;
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};
 use serde::Deserialize;
 use std::{
-    env, fs,
+    env,
+    env::consts::EXE_SUFFIX,
+    fs,
     io::Cursor,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
@@ -63,34 +65,50 @@ struct Artifact {
     expired: bool,
 }
 
+#[derive(Debug, Clone)]
+struct LocalSources {
+    repo_root: PathBuf,
+    plugin_file: PathBuf,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let client = build_client()?;
+    if let Some(local_sources) = find_local_sources() {
+        println!(
+            "Detected local repository at {}. Building and installing local sources.",
+            local_sources.repo_root.display()
+        );
+        let loopback_binary = build_local_loopback_binary(&local_sources.repo_root)?;
+        install_loopback_binary_from_path(&loopback_binary)?;
+        install_plugin_file_from_path(&local_sources.plugin_file)?;
+    } else {
+        let client = build_client()?;
+        let run_id = latest_successful_run(&client, &args.repo_owner, &args.repo_name).await?;
+        let artifacts = list_artifacts(&client, &args.repo_owner, &args.repo_name, run_id).await?;
 
-    let run_id = latest_successful_run(&client, &args.repo_owner, &args.repo_name).await?;
-    let artifacts = list_artifacts(&client, &args.repo_owner, &args.repo_name, run_id).await?;
+        let loopback_artifact = find_artifact(&artifacts, &args.loopback_artifact)?;
+        let plugin_artifact = find_artifact(&artifacts, &args.plugin_artifact)?;
 
-    let loopback_artifact = find_artifact(&artifacts, &args.loopback_artifact)?;
-    let plugin_artifact = find_artifact(&artifacts, &args.plugin_artifact)?;
+        let loopback_dir = download_artifact(
+            &client,
+            &args.repo_owner,
+            &args.repo_name,
+            loopback_artifact.id,
+        )
+        .await?;
+        let plugin_dir = download_artifact(
+            &client,
+            &args.repo_owner,
+            &args.repo_name,
+            plugin_artifact.id,
+        )
+        .await?;
 
-    let loopback_dir = download_artifact(
-        &client,
-        &args.repo_owner,
-        &args.repo_name,
-        loopback_artifact.id,
-    )
-    .await?;
-    let plugin_dir = download_artifact(
-        &client,
-        &args.repo_owner,
-        &args.repo_name,
-        plugin_artifact.id,
-    )
-    .await?;
+        install_loopback_binary(&loopback_dir, &args.loopback_binary_name)?;
+        install_plugin_file(&plugin_dir, &args.plugin_file_name)?;
+    }
 
-    install_loopback_binary(&loopback_dir, &args.loopback_binary_name)?;
-    install_plugin_file(&plugin_dir, &args.plugin_file_name)?;
     write_systemd_service(&args.owner_discord_id, args.relay_server_url.as_deref())?;
     enable_service()?;
 
@@ -237,6 +255,10 @@ fn unzip_to_dir(bytes: &[u8], out_dir: &Path) -> Result<()> {
 
 fn install_loopback_binary(extracted: &TempDir, binary_name: &str) -> Result<()> {
     let source = find_file_recursive(extracted.path(), binary_name)?;
+    install_loopback_binary_from_path(&source)
+}
+
+fn install_loopback_binary_from_path(source: &Path) -> Result<()> {
     let target_dir = home_dir()?.join(".local/bin");
     fs::create_dir_all(&target_dir)
         .with_context(|| format!("failed to create {}", target_dir.display()))?;
@@ -262,6 +284,10 @@ fn install_loopback_binary(extracted: &TempDir, binary_name: &str) -> Result<()>
 
 fn install_plugin_file(extracted: &TempDir, plugin_file_name: &str) -> Result<()> {
     let source = find_file_recursive(extracted.path(), plugin_file_name)?;
+    install_plugin_file_from_path(&source)
+}
+
+fn install_plugin_file_from_path(source: &Path) -> Result<()> {
     let target_dir = vencord_plugin_dir();
     fs::create_dir_all(&target_dir)
         .with_context(|| format!("failed to create {}", target_dir.display()))?;
@@ -275,6 +301,49 @@ fn install_plugin_file(extracted: &TempDir, plugin_file_name: &str) -> Result<()
         )
     })?;
     Ok(())
+}
+
+fn find_local_sources() -> Option<LocalSources> {
+    let cwd = env::current_dir().ok()?;
+    for dir in cwd.ancestors() {
+        let loopback_manifest = dir.join("loopback-server/Cargo.toml");
+        let plugin_file = dir.join("plugin/keyInterceptSelfHosted.tsx");
+        if loopback_manifest.is_file() && plugin_file.is_file() {
+            return Some(LocalSources {
+                repo_root: dir.to_path_buf(),
+                plugin_file,
+            });
+        }
+    }
+    None
+}
+
+fn build_local_loopback_binary(repo_root: &Path) -> Result<PathBuf> {
+    let manifest = repo_root.join("Cargo.toml");
+    let status = Command::new("cargo")
+        .arg("build")
+        .arg("--release")
+        .arg("-p")
+        .arg("loopback-server")
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .status()
+        .context("failed to execute cargo build for local loopback-server")?;
+
+    if !status.success() {
+        bail!("local loopback build failed with status {status}");
+    }
+
+    let binary = repo_root
+        .join("target")
+        .join("release")
+        .join(format!("loopback-server{EXE_SUFFIX}"));
+
+    if !binary.is_file() {
+        bail!("local loopback binary not found at {}", binary.display());
+    }
+
+    Ok(binary)
 }
 
 fn home_dir() -> Result<PathBuf> {

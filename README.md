@@ -30,7 +30,8 @@ npm --prefix plugin test
 
 Use:
 
-The installer downloads pre-built artifacts from the latest successful GitHub Actions run, installs them locally, and configures startup.
+When run from this repository (or any subdirectory inside it), the installer builds `loopback-server` from local source and installs the local plugin file.  
+When local sources are not detected, it downloads pre-built artifacts from the latest successful GitHub Actions run, installs them locally, and configures startup.
 
 ```bash
 cargo run -p key-intercept-installer -- \
