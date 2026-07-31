@@ -1,4 +1,4 @@
-import definePlugin, { OptionType } from "@api/Settings";
+import definePlugin, { OptionType } from "@utils/types";
 import { React } from "@webpack/common";
 
 declare const Vencord: any;
