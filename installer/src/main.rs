@@ -461,6 +461,36 @@ fn install_vencord_userplugin(
         )
     })?;
 
+    write_plugin_entrypoint_if_needed(&destination_dir, plugin_file_name)?;
+
+    Ok(())
+}
+
+fn write_plugin_entrypoint_if_needed(destination_dir: &Path, plugin_file_name: &str) -> Result<()> {
+    let plugin_path = Path::new(plugin_file_name);
+    let plugin_stem = plugin_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .ok_or_else(|| anyhow!("invalid plugin file name: {plugin_file_name}"))?;
+    let plugin_ext = plugin_path.extension().and_then(|ext| ext.to_str());
+
+    if plugin_stem == "index" {
+        return Ok(());
+    }
+
+    let entry_ext = match plugin_ext {
+        Some("tsx") => "tsx",
+        Some("jsx") => "tsx",
+        _ => "ts",
+    };
+    let entry_file = destination_dir.join(format!("index.{entry_ext}"));
+    let entry_content = format!(
+        "export * from \"./{plugin_stem}\";\nexport {{ default }} from \"./{plugin_stem}\";\n"
+    );
+
+    fs::write(&entry_file, entry_content)
+        .with_context(|| format!("failed to write {}", entry_file.display()))?;
+
     Ok(())
 }
 
@@ -572,7 +602,7 @@ fn git_working_tree_clean(dir: &Path) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
+    use tempfile::{NamedTempFile, tempdir};
     use zip::{ZipWriter, write::FileOptions};
 
     #[test]
@@ -623,6 +653,48 @@ mod tests {
         let extracted = dir.path().join("nested/sample.txt");
         let content = std::fs::read_to_string(extracted).unwrap();
         assert_eq!(content, "hello");
+    }
+
+    #[test]
+    fn install_vencord_userplugin_writes_index_entrypoint_for_custom_filename() {
+        let vencord_dir = tempdir().unwrap();
+        std::fs::create_dir_all(vencord_dir.path().join("src").join("userplugins")).unwrap();
+        let source = NamedTempFile::new().unwrap();
+        std::fs::write(source.path(), "export default {};").unwrap();
+
+        install_vencord_userplugin(
+            source.path(),
+            vencord_dir.path(),
+            "key-intercept",
+            "keyInterceptSelfHosted.tsx",
+        )
+        .unwrap();
+
+        let plugin_dir = vencord_dir
+            .path()
+            .join("src")
+            .join("userplugins")
+            .join("key-intercept");
+        let entry = std::fs::read_to_string(plugin_dir.join("index.tsx")).unwrap();
+        assert!(entry.contains("export { default } from \"./keyInterceptSelfHosted\";"));
+    }
+
+    #[test]
+    fn install_vencord_userplugin_skips_entrypoint_when_filename_is_index() {
+        let vencord_dir = tempdir().unwrap();
+        std::fs::create_dir_all(vencord_dir.path().join("src").join("userplugins")).unwrap();
+        let source = NamedTempFile::new().unwrap();
+        std::fs::write(source.path(), "export default {};").unwrap();
+
+        install_vencord_userplugin(source.path(), vencord_dir.path(), "key-intercept", "index.ts")
+            .unwrap();
+
+        let plugin_dir = vencord_dir
+            .path()
+            .join("src")
+            .join("userplugins")
+            .join("key-intercept");
+        assert!(!plugin_dir.join("index.tsx").exists());
     }
 
 }
