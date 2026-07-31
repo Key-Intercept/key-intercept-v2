@@ -30,7 +30,7 @@ npm --prefix plugin test
 
 Use:
 
-When run from this repository (or any subdirectory inside it), the installer builds `loopback-server` from local source and installs the local plugin file.  
+When run from this repository (or any subdirectory inside it), the installer builds `loopback-server` from local source and uses the local plugin file.  
 When local sources are not detected, it downloads pre-built artifacts from the latest successful GitHub Actions run, installs them locally, and configures startup.
 
 ```bash
@@ -51,16 +51,8 @@ You can override artifact names with:
 
 It installs:
 - loopback binary to `~/.local/bin/key-intercept-loopback`
-- plugin file to `~/.config/Vencord/plugins/keyInterceptSelfHosted.tsx`
+- plugin file to `~/Vencord/src/userplugins/key-intercept/keyInterceptSelfHosted.tsx` (clones/updates `~/Vencord` automatically)
 - user systemd service `key-intercept-loopback.service`
-
-For Vencord custom userplugin workflow (clone/update Vencord, copy plugin into `src/userplugins`, patch CSP for Supabase, run `pnpm install`, workspace dependency add, build, inject), use:
-
-```bash
-cargo run -p key-intercept-installer -- \
-  --owner-discord-id <OWNER_DISCORD_ID> \
-  --plugin-install-mode vencord-custom
-```
 
 The relay server is intended for manual VPS deployment and is not included in installer automation.
 
