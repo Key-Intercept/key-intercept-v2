@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, anyhow, bail};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};
 use serde::Deserialize;
 use std::{
@@ -41,6 +41,24 @@ struct Args {
 
     #[arg(long, default_value = "keyInterceptSelfHosted.tsx")]
     plugin_file_name: String,
+
+    #[arg(long, value_enum, default_value_t = PluginInstallMode::Standalone)]
+    plugin_install_mode: PluginInstallMode,
+
+    #[arg(long, default_value = "key-intercept")]
+    vencord_plugin_folder: String,
+
+    #[arg(long, default_value = "@supabase/supabase-js,buttplug", value_delimiter = ',')]
+    vencord_workspace_deps: Vec<String>,
+
+    #[arg(long, default_value_t = false)]
+    skip_vencord_inject: bool,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum PluginInstallMode {
+    Standalone,
+    VencordCustom,
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,7 +99,14 @@ async fn main() -> Result<()> {
         );
         let loopback_binary = build_local_loopback_binary(&local_sources.repo_root)?;
         install_loopback_binary_from_path(&loopback_binary)?;
-        install_plugin_file_from_path(&local_sources.plugin_file)?;
+        install_plugin(
+            &local_sources.plugin_file,
+            &args.plugin_file_name,
+            args.plugin_install_mode,
+            &args.vencord_plugin_folder,
+            &args.vencord_workspace_deps,
+            args.skip_vencord_inject,
+        )?;
     } else {
         let client = build_client()?;
         let run_id = latest_successful_run(&client, &args.repo_owner, &args.repo_name).await?;
@@ -106,7 +131,15 @@ async fn main() -> Result<()> {
         .await?;
 
         install_loopback_binary(&loopback_dir, &args.loopback_binary_name)?;
-        install_plugin_file(&plugin_dir, &args.plugin_file_name)?;
+        let plugin_source = find_file_recursive(plugin_dir.path(), &args.plugin_file_name)?;
+        install_plugin(
+            &plugin_source,
+            &args.plugin_file_name,
+            args.plugin_install_mode,
+            &args.vencord_plugin_folder,
+            &args.vencord_workspace_deps,
+            args.skip_vencord_inject,
+        )?;
     }
 
     write_systemd_service(&args.owner_discord_id, args.relay_server_url.as_deref())?;
@@ -282,9 +315,24 @@ fn install_loopback_binary_from_path(source: &Path) -> Result<()> {
     Ok(())
 }
 
-fn install_plugin_file(extracted: &TempDir, plugin_file_name: &str) -> Result<()> {
-    let source = find_file_recursive(extracted.path(), plugin_file_name)?;
-    install_plugin_file_from_path(&source)
+fn install_plugin(
+    source: &Path,
+    plugin_file_name: &str,
+    install_mode: PluginInstallMode,
+    vencord_plugin_folder: &str,
+    vencord_workspace_deps: &[String],
+    skip_vencord_inject: bool,
+) -> Result<()> {
+    match install_mode {
+        PluginInstallMode::Standalone => install_plugin_file_from_path(source),
+        PluginInstallMode::VencordCustom => install_plugin_into_vencord(
+            source,
+            plugin_file_name,
+            vencord_plugin_folder,
+            vencord_workspace_deps,
+            skip_vencord_inject,
+        ),
+    }
 }
 
 fn install_plugin_file_from_path(source: &Path) -> Result<()> {
@@ -300,6 +348,33 @@ fn install_plugin_file_from_path(source: &Path) -> Result<()> {
             target.display()
         )
     })?;
+    Ok(())
+}
+
+fn install_plugin_into_vencord(
+    source: &Path,
+    plugin_file_name: &str,
+    plugin_folder: &str,
+    workspace_deps: &[String],
+    skip_inject: bool,
+) -> Result<()> {
+    let vencord_dir = ensure_vencord_checkout()?;
+    sync_vencord_checkout(&vencord_dir)?;
+    ensure_pnpm_available()?;
+    install_vencord_userplugin(source, &vencord_dir, plugin_folder, plugin_file_name)?;
+    patch_vencord_csp_for_supabase(&vencord_dir)?;
+    run_command_in_dir("pnpm", &["install"], &vencord_dir)?;
+    for dep in workspace_deps {
+        run_command_in_dir("pnpm", &["add", dep, "-w"], &vencord_dir)?;
+    }
+    run_command_in_dir("pnpm", &["build"], &vencord_dir)?;
+    if skip_inject {
+        println!("Skipping `pnpm inject` because --skip-vencord-inject was provided.");
+    } else if let Err(err) = run_command_in_dir("pnpm", &["inject"], &vencord_dir) {
+        println!("Warning: `pnpm inject` failed: {err}");
+        println!("The plugin may still work after running `pnpm inject` manually.");
+    }
+
     Ok(())
 }
 
@@ -360,6 +435,110 @@ fn vencord_plugin_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(".config/Vencord/plugins"))
 }
 
+fn vencord_repo_dir() -> Result<PathBuf> {
+    Ok(home_dir()?.join("Vencord"))
+}
+
+fn ensure_vencord_checkout() -> Result<PathBuf> {
+    let repo_dir = vencord_repo_dir()?;
+    if repo_dir.is_dir() {
+        return Ok(repo_dir);
+    }
+
+    run_command(
+        "git",
+        &[
+            "clone",
+            "https://github.com/Vendicated/Vencord.git",
+            repo_dir.to_string_lossy().as_ref(),
+        ],
+    )
+    .context("failed to clone Vencord repository")?;
+
+    Ok(repo_dir)
+}
+
+fn sync_vencord_checkout(vencord_dir: &Path) -> Result<()> {
+    run_command_in_dir("git", &["restore", "package.json"], vencord_dir)?;
+    run_command_in_dir("git", &["restore", "pnpm-lock.yaml"], vencord_dir)?;
+    run_command_in_dir("git", &["pull"], vencord_dir)?;
+    Ok(())
+}
+
+fn ensure_pnpm_available() -> Result<()> {
+    if command_exists("pnpm") {
+        return Ok(());
+    }
+
+    if !command_exists("npm") {
+        bail!("pnpm not found and npm is unavailable; install pnpm manually and rerun installer");
+    }
+
+    run_command("npm", &["install", "-g", "pnpm"])
+        .context("failed to install pnpm using npm install -g pnpm")
+}
+
+fn command_exists(command: &str) -> bool {
+    Command::new(command).arg("--version").status().is_ok()
+}
+
+fn install_vencord_userplugin(
+    source_file: &Path,
+    vencord_dir: &Path,
+    plugin_folder: &str,
+    plugin_file_name: &str,
+) -> Result<()> {
+    let destination_dir = vencord_dir.join("src").join("userplugins").join(plugin_folder);
+    if destination_dir.exists() {
+        fs::remove_dir_all(&destination_dir)
+            .with_context(|| format!("failed to clear {}", destination_dir.display()))?;
+    }
+    fs::create_dir_all(&destination_dir)
+        .with_context(|| format!("failed to create {}", destination_dir.display()))?;
+
+    let target_file = destination_dir.join(plugin_file_name);
+    fs::copy(source_file, &target_file).with_context(|| {
+        format!(
+            "failed to copy plugin file from {} to {}",
+            source_file.display(),
+            target_file.display()
+        )
+    })?;
+
+    Ok(())
+}
+
+fn patch_vencord_csp_for_supabase(vencord_dir: &Path) -> Result<()> {
+    let csp_file = vencord_dir.join("src/main/csp/index.ts");
+    let source = fs::read_to_string(&csp_file)
+        .with_context(|| format!("failed to read {}", csp_file.display()))?;
+    let (updated, changed) = ensure_supabase_csp_rules(&source)?;
+    if changed {
+        fs::write(&csp_file, updated)
+            .with_context(|| format!("failed to write {}", csp_file.display()))?;
+    }
+    Ok(())
+}
+
+fn ensure_supabase_csp_rules(source: &str) -> Result<(String, bool)> {
+    const HTTPS_RULE: &str = r#""https://*.supabase.co": ConnectSrc,"#;
+    const WSS_RULE: &str = r#""wss://*.supabase.co": ConnectSrc,"#;
+    if source.contains(HTTPS_RULE) && source.contains(WSS_RULE) {
+        return Ok((source.to_string(), false));
+    }
+
+    let insertion = format!("    {HTTPS_RULE}\n    {WSS_RULE}\n");
+    if let Some(idx) = source.rfind("};") {
+        let mut updated = String::with_capacity(source.len() + insertion.len());
+        updated.push_str(&source[..idx]);
+        updated.push_str(&insertion);
+        updated.push_str(&source[idx..]);
+        return Ok((updated, true));
+    }
+
+    bail!("could not find CSP object closing marker in csp/index.ts")
+}
+
 fn find_file_recursive(root: &Path, name: &str) -> Result<PathBuf> {
     for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
         if entry.file_type().is_file() && entry.file_name().to_string_lossy() == name {
@@ -417,6 +596,34 @@ fn run_systemctl<const N: usize>(args: [&str; N]) -> Result<()> {
     Ok(())
 }
 
+fn run_command(command: &str, args: &[&str]) -> Result<()> {
+    let status = Command::new(command)
+        .args(args)
+        .status()
+        .with_context(|| format!("failed to execute command `{command}`"))?;
+
+    if !status.success() {
+        bail!("command `{command}` failed with status {status}");
+    }
+    Ok(())
+}
+
+fn run_command_in_dir(command: &str, args: &[&str], dir: &Path) -> Result<()> {
+    let status = Command::new(command)
+        .current_dir(dir)
+        .args(args)
+        .status()
+        .with_context(|| format!("failed to execute command `{command}` in {}", dir.display()))?;
+
+    if !status.success() {
+        bail!(
+            "command `{command}` in {} failed with status {status}",
+            dir.display()
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -471,5 +678,18 @@ mod tests {
         let extracted = dir.path().join("nested/sample.txt");
         let content = std::fs::read_to_string(extracted).unwrap();
         assert_eq!(content, "hello");
+    }
+
+    #[test]
+    fn ensure_supabase_csp_rules_inserts_lines_once() {
+        let original = "export default {\n    \"https://example.com\": ConnectSrc,\n};\n";
+        let (updated, changed) = ensure_supabase_csp_rules(original).unwrap();
+        assert!(changed);
+        assert!(updated.contains("\"https://*.supabase.co\": ConnectSrc,"));
+        assert!(updated.contains("\"wss://*.supabase.co\": ConnectSrc,"));
+
+        let (second, changed_again) = ensure_supabase_csp_rules(&updated).unwrap();
+        assert!(!changed_again);
+        assert_eq!(second, updated);
     }
 }

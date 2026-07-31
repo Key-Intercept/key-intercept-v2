@@ -54,6 +54,14 @@ It installs:
 - plugin file to `~/.config/Vencord/plugins/keyInterceptSelfHosted.tsx`
 - user systemd service `key-intercept-loopback.service`
 
+For Vencord custom userplugin workflow (clone/update Vencord, copy plugin into `src/userplugins`, patch CSP for Supabase, run `pnpm install`, workspace dependency add, build, inject), use:
+
+```bash
+cargo run -p key-intercept-installer -- \
+  --owner-discord-id <OWNER_DISCORD_ID> \
+  --plugin-install-mode vencord-custom
+```
+
 The relay server is intended for manual VPS deployment and is not included in installer automation.
 
 ## GitHub Actions workflows
