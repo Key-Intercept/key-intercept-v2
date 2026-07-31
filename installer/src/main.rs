@@ -319,11 +319,11 @@ fn install_plugin_into_vencord(
         println!("The plugin may still work after running `pnpm inject` manually.");
     }
 
-    fn pnpm_install_args() -> [&'static str; 2] {
-        ["install", "--prod=false"]
-    }
-
     Ok(())
+}
+
+fn pnpm_install_args() -> [&'static str; 2] {
+    ["install", "--prod=false"]
 }
 
 fn find_local_sources() -> Option<LocalSources> {
