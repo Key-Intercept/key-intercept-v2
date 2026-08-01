@@ -585,6 +585,7 @@ mod tests {
     fn test_state() -> AppState {
         AppState {
             peers: Arc::new(RwLock::new(HashMap::new())),
+            pending_access_requests: Arc::new(RwLock::new(HashMap::new())),
             client: reqwest::Client::new(),
         }
     }
