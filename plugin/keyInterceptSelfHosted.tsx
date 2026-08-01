@@ -208,6 +208,77 @@ async function pushRemoteConfig(relayUrl: string, editorId: string, targetUserId
     if (!response.ok) throw new Error(`Relay update failed: ${response.status}`);
 }
 
+async function readRemoteConfig(relayUrl: string, requesterId: string, targetUserId: string): Promise<LocalConfig> {
+    const response = await fetch(
+        `${relayUrl.replace(/\/$/, "")}/users/${targetUserId}/config?requester_id=${encodeURIComponent(requesterId)}`
+    );
+    if (!response.ok) throw new Error(`Relay config read failed: ${response.status}`);
+    return mergeLocalConfig(await response.json());
+}
+
+async function requestRemoteAccess(relayUrl: string, requesterId: string, targetUserId: string) {
+    const response = await fetch(`${relayUrl.replace(/\/$/, "")}/users/${targetUserId}/access-requests`, {
+        method: "POST",
+        headers: {
+            "content-type": "application/json"
+        },
+        body: JSON.stringify({ requester_id: requesterId })
+    });
+    if (!response.ok) throw new Error(`Relay access request failed: ${response.status}`);
+}
+
+async function getAccessRequests(relayUrl: string, ownerId: string) {
+    const response = await fetch(
+        `${relayUrl.replace(/\/$/, "")}/users/${ownerId}/access-requests?requester_id=${encodeURIComponent(ownerId)}`
+    );
+    if (!response.ok) throw new Error(`Failed loading access requests: ${response.status}`);
+    return response.json() as Promise<{ requests: string[] }>;
+}
+
+async function approveAccessRequest(relayUrl: string, ownerId: string, requesterId: string) {
+    const response = await fetch(
+        `${relayUrl.replace(/\/$/, "")}/users/${ownerId}/access-requests/${encodeURIComponent(requesterId)}/approve`,
+        {
+            method: "POST",
+            headers: {
+                "content-type": "application/json"
+            },
+            body: JSON.stringify({ owner_id: ownerId })
+        }
+    );
+    if (!response.ok) throw new Error(`Failed approving access request: ${response.status}`);
+}
+
+async function denyAccessRequest(relayUrl: string, ownerId: string, requesterId: string) {
+    const response = await fetch(
+        `${relayUrl.replace(/\/$/, "")}/users/${ownerId}/access-requests/${encodeURIComponent(requesterId)}?requester_id=${encodeURIComponent(ownerId)}`,
+        { method: "DELETE" }
+    );
+    if (!response.ok) throw new Error(`Failed denying access request: ${response.status}`);
+}
+
+function toLines(values: string[]): string {
+    return values.join("\n");
+}
+
+function fromLines(value: string): string[] {
+    return value
+        .split("\n")
+        .map(v => v.trim())
+        .filter(Boolean);
+}
+
+function getProfileUserId(props: any): string | null {
+    const candidates = [
+        props?.user?.id,
+        props?.profileUserId,
+        props?.userId,
+        props?.profile?.userId,
+        props?.displayProfile?.userId
+    ];
+    return candidates.find((id: unknown): id is string => typeof id === "string" && id.length > 0) ?? null;
+}
+
 class NormalizedString {
     str: string;
     nfkdStr: string;
@@ -651,104 +722,284 @@ function applyReplacements(msg: string, channelId: string): string {
     return msg;
 }
 
-function ConfigPanel() {
-    const [targetUserId, setTargetUserId] = React.useState("");
+function ConfigPanel(props: any) {
+    const activeUserId = currentUser().id;
+    const profileUserId = getProfileUserId(props) ?? activeUserId;
+    const isOwnProfile = profileUserId === activeUserId;
+
     const [newEditorId, setNewEditorId] = React.useState("");
-    const [rawConfig, setRawConfig] = React.useState(JSON.stringify(interceptConfig, null, 2));
     const [allowedEditors, setAllowedEditors] = React.useState<string[]>([]);
+    const [pendingRequests, setPendingRequests] = React.useState<string[]>([]);
     const [status, setStatus] = React.useState("");
+    const [editableConfig, setEditableConfig] = React.useState<LocalConfig>(cloneDefaultConfig());
+    const [petWordsText, setPetWordsText] = React.useState("");
+    const [censoredWordsText, setCensoredWordsText] = React.useState("");
+    const [canViewRemote, setCanViewRemote] = React.useState(isOwnProfile);
+
+    const sectionStyle: React.CSSProperties = {
+        background: "#2b2d31",
+        border: "1px solid #3f4147",
+        borderRadius: "12px",
+        padding: "12px"
+    };
+    const inputStyle: React.CSSProperties = {
+        width: "100%",
+        borderRadius: "8px",
+        border: "1px solid #3f4147",
+        background: "#1e1f22",
+        color: "#f2f3f5",
+        padding: "8px"
+    };
+    const buttonStyle: React.CSSProperties = {
+        borderRadius: "8px",
+        border: "1px solid #5865f2",
+        background: "#5865f2",
+        color: "white",
+        padding: "8px 12px",
+        cursor: "pointer"
+    };
+
+    const updateFromConfig = React.useCallback((config: LocalConfig) => {
+        setEditableConfig(config);
+        setPetWordsText(toLines(config.pet_words));
+        setCensoredWordsText(toLines(config.censored_words));
+    }, []);
 
     const refresh = React.useCallback(async () => {
-        const [config, editors] = await Promise.all([readLocalConfig(), getAllowedEditors()]);
-        setRawConfig(JSON.stringify(config, null, 2));
-        setAllowedEditors(editors.allowed_editors.sort());
-    }, []);
+        if (isOwnProfile) {
+            const [config, editors, requests] = await Promise.all([
+                readLocalConfig(),
+                getAllowedEditors(),
+                getAccessRequests(settings.store.relayUrl, activeUserId).catch(() => ({ requests: [] }))
+            ]);
+            updateFromConfig(config);
+            setAllowedEditors(editors.allowed_editors.sort());
+            setPendingRequests(requests.requests.sort());
+            setCanViewRemote(true);
+            return;
+        }
+
+        try {
+            const remote = await readRemoteConfig(settings.store.relayUrl, activeUserId, profileUserId);
+            updateFromConfig(remote);
+            setCanViewRemote(true);
+        } catch (err) {
+            setCanViewRemote(false);
+            setStatus(String(err));
+        }
+    }, [activeUserId, isOwnProfile, profileUserId, updateFromConfig]);
 
     React.useEffect(() => {
         refresh().catch(err => setStatus(String(err)));
     }, [refresh]);
 
+    const saveConfig = React.useCallback(async () => {
+        const nextConfig = mergeLocalConfig({
+            ...editableConfig,
+            pet_words: fromLines(petWordsText),
+            censored_words: fromLines(censoredWordsText)
+        });
+        if (isOwnProfile) {
+            await saveLocalConfig(activeUserId, nextConfig);
+            setStatus("Saved local config");
+        } else {
+            await pushRemoteConfig(settings.store.relayUrl, activeUserId, profileUserId, nextConfig);
+            setStatus(`Saved ${profileUserId}'s config via relay`);
+        }
+        updateFromConfig(nextConfig);
+    }, [activeUserId, censoredWordsText, editableConfig, isOwnProfile, petWordsText, profileUserId, updateFromConfig]);
+
     return (
-        <div style={{ width: "100%", maxWidth: "720px", margin: "0 auto", color: "#eee", backgroundColor: "#1e1e1e", border: "2px solid #eee", borderRadius: "16px", padding: "16px" }}>
-            <h3 style={{ marginTop: 0, textAlign: "center" }}>key-intercept control</h3>
-            <p style={{ marginTop: 0 }}>Self-hosted config with original key-intercept transforms + relay/ACL controls.</p>
-            <div style={{ display: "grid", gap: "8px" }}>
-                <button onClick={async () => {
-                    try {
-                        await refresh();
-                        setStatus("Loaded config + editors");
-                    } catch (err) {
-                        setStatus(String(err));
-                    }
-                }}>Reload</button>
-                <textarea
-                    style={{ width: "100%", minHeight: "220px", backgroundColor: "#111", color: "#eee", border: "1px solid #555", borderRadius: "8px", padding: "8px" }}
-                    value={rawConfig}
-                    onChange={e => setRawConfig(e.currentTarget.value)}
-                />
-                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                    <button onClick={async () => {
-                        try {
-                            await saveLocalConfig(currentUser().id, mergeLocalConfig(JSON.parse(rawConfig)));
-                            setStatus("Saved local config");
-                        } catch (err) {
-                            setStatus(String(err));
-                        }
-                    }}>Save Local Config</button>
-                    <input
-                        placeholder="Target owner ID"
-                        value={targetUserId}
-                        onChange={e => setTargetUserId(e.currentTarget.value)}
-                        style={{ flex: 1, minWidth: "180px" }}
-                    />
-                    <button onClick={async () => {
-                        try {
-                            await pushRemoteConfig(settings.store.relayUrl, currentUser().id, targetUserId, mergeLocalConfig(JSON.parse(rawConfig)));
-                            setStatus(`Pushed remote update to ${targetUserId}`);
-                        } catch (err) {
-                            setStatus(String(err));
-                        }
-                    }}>Push Remote Update</button>
-                </div>
-                <div style={{ borderTop: "1px solid #444", paddingTop: "8px" }}>
-                    <strong>Allowed Editors</strong>
-                    <div style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
-                        <input
-                            placeholder="Discord ID"
-                            value={newEditorId}
-                            onChange={e => setNewEditorId(e.currentTarget.value)}
-                            style={{ flex: 1 }}
-                        />
-                        <button onClick={async () => {
+        <div style={{ width: "100%", maxWidth: "760px", margin: "0 auto", color: "#f2f3f5", background: "#313338", border: "1px solid #3f4147", borderRadius: "16px", padding: "16px", display: "grid", gap: "12px" }}>
+            <div style={{ ...sectionStyle, background: "#2b2d31" }}>
+                <h3 style={{ margin: 0 }}>key-intercept control center</h3>
+                <p style={{ margin: "6px 0 0 0", color: "#b5bac1" }}>
+                    {isOwnProfile ? "Your profile configuration" : `Viewing profile ${profileUserId}`}
+                </p>
+            </div>
+
+            {!isOwnProfile && !canViewRemote && (
+                <div style={sectionStyle}>
+                    <p style={{ marginTop: 0 }}>You do not currently have permission to view this profile config.</p>
+                    <button
+                        style={buttonStyle}
+                        onClick={async () => {
                             try {
-                                await addAllowedEditor(currentUser().id, newEditorId);
-                                setNewEditorId("");
-                                await refresh();
-                                setStatus("Added allowed editor");
+                                await requestRemoteAccess(settings.store.relayUrl, activeUserId, profileUserId);
+                                setStatus(`Requested config access from ${profileUserId}`);
                             } catch (err) {
                                 setStatus(String(err));
                             }
-                        }}>Add</button>
+                        }}
+                    >
+                        Request Access via Relay
+                    </button>
+                </div>
+            )}
+
+            {(isOwnProfile || canViewRemote) && (
+                <>
+                    <div style={sectionStyle}>
+                        <strong>Transform toggles</strong>
+                        <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
+                            {[
+                                ["rules_end", "Rules"],
+                                ["gag_end", "Gag"],
+                                ["pet_end", "Pet"],
+                                ["bimbo_end", "Bimbo"],
+                                ["horny_end", "Horny"],
+                                ["drone_end", "Drone"],
+                                ["uwu_end", "UWU"],
+                                ["censored_end", "Censored"]
+                            ].map(([key, label]) => (
+                                <label key={key} style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                                    <input
+                                        type="checkbox"
+                                        checked={(editableConfig.config as any)[key] === farFuture}
+                                        onChange={e => setEditableConfig(prev => ({
+                                            ...prev,
+                                            config: {
+                                                ...prev.config,
+                                                [key]: e.currentTarget.checked ? farFuture : "1970-01-01T00:00:00.000Z"
+                                            }
+                                        }))}
+                                    />
+                                    {label}
+                                </label>
+                            ))}
+                        </div>
                     </div>
-                    <ul style={{ marginBottom: 0 }}>
-                        {allowedEditors.map(editor => (
-                            <li key={editor} style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
-                                <span>{editor}</span>
-                                <button onClick={async () => {
+
+                    <div style={sectionStyle}>
+                        <strong>Core values</strong>
+                        <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
+                            <label>Pet amount (0-1)<input style={inputStyle} type="number" min={0} max={1} step={0.01} value={editableConfig.config.pet_amount} onChange={e => setEditableConfig(prev => ({ ...prev, config: { ...prev.config, pet_amount: Number(e.currentTarget.value) } }))} /></label>
+                            <label>Pet type<input style={inputStyle} type="number" value={editableConfig.config.pet_type} onChange={e => setEditableConfig(prev => ({ ...prev, config: { ...prev.config, pet_type: Number(e.currentTarget.value) } }))} /></label>
+                            <label>Bimbo word length<input style={inputStyle} type="number" min={1} value={editableConfig.config.bimbo_word_length} onChange={e => setEditableConfig(prev => ({ ...prev, config: { ...prev.config, bimbo_word_length: Number(e.currentTarget.value) } }))} /></label>
+                            <label>Censored replacement<input style={inputStyle} value={editableConfig.config.censored_replacement} onChange={e => setEditableConfig(prev => ({ ...prev, config: { ...prev.config, censored_replacement: e.currentTarget.value } }))} /></label>
+                            <label>Drone health (0-100)<input style={inputStyle} type="number" min={0} max={100} value={editableConfig.drone_config.drone_health} onChange={e => setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, drone_health: Number(e.currentTarget.value) } }))} /></label>
+                            <label>Drone term<input style={inputStyle} value={editableConfig.drone_config.drone_term} onChange={e => setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, drone_term: e.currentTarget.value } }))} /></label>
+                            <label style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                                <input
+                                    type="checkbox"
+                                    checked={editableConfig.config.debug}
+                                    onChange={e => setEditableConfig(prev => ({ ...prev, config: { ...prev.config, debug: e.currentTarget.checked } }))}
+                                />
+                                Debug mode
+                            </label>
+                        </div>
+                    </div>
+
+                    <div style={sectionStyle}>
+                        <strong>Word lists</strong>
+                        <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
+                            <label>Pet words (one per line)<textarea style={{ ...inputStyle, minHeight: "90px" }} value={petWordsText} onChange={e => setPetWordsText(e.currentTarget.value)} /></label>
+                            <label>Censored words (one per line)<textarea style={{ ...inputStyle, minHeight: "90px" }} value={censoredWordsText} onChange={e => setCensoredWordsText(e.currentTarget.value)} /></label>
+                        </div>
+                    </div>
+
+                    <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                        <button style={buttonStyle} onClick={() => refresh().then(() => setStatus("Reloaded config")).catch(err => setStatus(String(err)))}>Reload</button>
+                        <button style={buttonStyle} onClick={() => saveConfig().catch(err => setStatus(String(err)))}>{isOwnProfile ? "Save Local Config" : "Save Remote Config"}</button>
+                    </div>
+                </>
+            )}
+
+            {isOwnProfile && (
+                <>
+                    <div style={sectionStyle}>
+                        <strong>Allowed editors</strong>
+                        <div style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
+                            <input
+                                placeholder="Discord ID"
+                                value={newEditorId}
+                                onChange={e => setNewEditorId(e.currentTarget.value)}
+                                style={inputStyle}
+                            />
+                            <button
+                                style={buttonStyle}
+                                onClick={async () => {
                                     try {
-                                        await removeAllowedEditor(currentUser().id, editor);
+                                        await addAllowedEditor(activeUserId, newEditorId);
+                                        setNewEditorId("");
                                         await refresh();
-                                        setStatus(`Removed ${editor}`);
+                                        setStatus("Added allowed editor");
                                     } catch (err) {
                                         setStatus(String(err));
                                     }
-                                }}>Remove</button>
-                            </li>
-                        ))}
-                    </ul>
-                </div>
-            </div>
-            <p style={{ marginBottom: 0 }}>{status}</p>
+                                }}
+                            >
+                                Add
+                            </button>
+                        </div>
+                        <ul style={{ marginBottom: 0 }}>
+                            {allowedEditors.map(editor => (
+                                <li key={editor} style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
+                                    <span>{editor}</span>
+                                    <button
+                                        style={{ ...buttonStyle, background: "#da373c", borderColor: "#da373c" }}
+                                        onClick={async () => {
+                                            try {
+                                                await removeAllowedEditor(activeUserId, editor);
+                                                await refresh();
+                                                setStatus(`Removed ${editor}`);
+                                            } catch (err) {
+                                                setStatus(String(err));
+                                            }
+                                        }}
+                                    >
+                                        Remove
+                                    </button>
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+
+                    <div style={sectionStyle}>
+                        <strong>Pending relay access requests</strong>
+                        <ul style={{ marginBottom: 0 }}>
+                            {pendingRequests.length === 0 && <li>No pending requests</li>}
+                            {pendingRequests.map(requesterId => (
+                                <li key={requesterId} style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
+                                    <span>{requesterId}</span>
+                                    <div style={{ display: "flex", gap: "8px" }}>
+                                        <button
+                                            style={buttonStyle}
+                                            onClick={async () => {
+                                                try {
+                                                    await approveAccessRequest(settings.store.relayUrl, activeUserId, requesterId);
+                                                    await refresh();
+                                                    setStatus(`Approved ${requesterId}`);
+                                                } catch (err) {
+                                                    setStatus(String(err));
+                                                }
+                                            }}
+                                        >
+                                            Approve
+                                        </button>
+                                        <button
+                                            style={{ ...buttonStyle, background: "#da373c", borderColor: "#da373c" }}
+                                            onClick={async () => {
+                                                try {
+                                                    await denyAccessRequest(settings.store.relayUrl, activeUserId, requesterId);
+                                                    await refresh();
+                                                    setStatus(`Denied ${requesterId}`);
+                                                } catch (err) {
+                                                    setStatus(String(err));
+                                                }
+                                            }}
+                                        >
+                                            Deny
+                                        </button>
+                                    </div>
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                </>
+            )}
+
+            <p style={{ margin: 0, color: "#b5bac1" }}>{status}</p>
         </div>
     );
 }

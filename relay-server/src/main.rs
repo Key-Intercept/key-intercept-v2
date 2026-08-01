@@ -4,17 +4,22 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    net::SocketAddr,
+    sync::Arc,
+};
 use tokio::sync::RwLock;
 use tracing::info;
 
 #[derive(Clone)]
 struct AppState {
     peers: Arc<RwLock<HashMap<String, RegisteredPeer>>>,
+    pending_access_requests: Arc<RwLock<HashMap<String, HashSet<String>>>>,
     client: reqwest::Client,
 }
 
@@ -45,9 +50,26 @@ struct ConfigReadQuery {
     requester_id: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AccessRequestPayload {
+    requester_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AccessRequestApprovalPayload {
+    owner_id: String,
+}
+
 #[derive(Serialize)]
 struct UsersResponse {
     online_users: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct AccessRequestsResponse {
+    requests: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -76,8 +98,21 @@ async fn main() -> Result<()> {
             "/users/:owner_id/config",
             get(get_remote_config).put(put_remote_config),
         )
+        .route(
+            "/users/:owner_id/access-requests",
+            get(list_access_requests).post(create_access_request),
+        )
+        .route(
+            "/users/:owner_id/access-requests/:requester_id",
+            delete(deny_access_request),
+        )
+        .route(
+            "/users/:owner_id/access-requests/:requester_id/approve",
+            post(approve_access_request),
+        )
         .with_state(AppState {
             peers: Arc::new(RwLock::new(HashMap::new())),
+            pending_access_requests: Arc::new(RwLock::new(HashMap::new())),
             client: reqwest::Client::new(),
         });
 
@@ -248,6 +283,208 @@ async fn put_remote_config(
         )
             .into_response(),
     }
+}
+
+async fn create_access_request(
+    State(state): State<AppState>,
+    Path(owner_id): Path<String>,
+    Json(payload): Json<AccessRequestPayload>,
+) -> impl IntoResponse {
+    if !is_discord_id(&owner_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "owner_id must be numeric".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    if !is_discord_id(&payload.requester_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "requester_id must be numeric".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    if owner_id == payload.requester_id {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "owner and requester cannot be the same".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    if !state.peers.read().await.contains_key(&owner_id) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "target user is offline or unknown".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let mut requests = state.pending_access_requests.write().await;
+    requests
+        .entry(owner_id)
+        .or_default()
+        .insert(payload.requester_id);
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
+async fn list_access_requests(
+    State(state): State<AppState>,
+    Path(owner_id): Path<String>,
+    Query(query): Query<ConfigReadQuery>,
+) -> impl IntoResponse {
+    if !is_discord_id(&owner_id) || !is_discord_id(&query.requester_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "owner_id and requester_id must be numeric".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    if query.requester_id != owner_id {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "only owner can list access requests".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let mut requests = state
+        .pending_access_requests
+        .read()
+        .await
+        .get(&owner_id)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .collect::<Vec<_>>();
+    requests.sort();
+
+    Json(AccessRequestsResponse { requests }).into_response()
+}
+
+async fn approve_access_request(
+    State(state): State<AppState>,
+    Path((owner_id, requester_id)): Path<(String, String)>,
+    Json(payload): Json<AccessRequestApprovalPayload>,
+) -> impl IntoResponse {
+    if !is_discord_id(&owner_id) || !is_discord_id(&requester_id) || !is_discord_id(&payload.owner_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "owner_id and requester_id must be numeric".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    if payload.owner_id != owner_id {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "only owner can approve access requests".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let Some(peer) = state.peers.read().await.get(&owner_id).cloned() else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "target user is offline or unknown".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    let mut req = state
+        .client
+        .post(format!(
+            "{}/allowed-editors",
+            peer.base_url.trim_end_matches('/')
+        ))
+        .header("x-discord-user-id", owner_id.clone())
+        .json(&serde_json::json!({ "editor_id": requester_id }));
+    if let Some(token) = peer.shared_token {
+        req = req.header("x-loopback-token", token);
+    }
+
+    match req.send().await {
+        Ok(response) if response.status().is_success() => {
+            let mut pending = state.pending_access_requests.write().await;
+            if let Some(entry) = pending.get_mut(&owner_id) {
+                entry.remove(&requester_id);
+                if entry.is_empty() {
+                    pending.remove(&owner_id);
+                }
+            }
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(response) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse {
+                error: format!("target rejected access grant with status {}", response.status()),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse {
+                error: format!("target is unreachable: {err}"),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn deny_access_request(
+    State(state): State<AppState>,
+    Path((owner_id, requester_id)): Path<(String, String)>,
+    Query(query): Query<ConfigReadQuery>,
+) -> impl IntoResponse {
+    if !is_discord_id(&owner_id) || !is_discord_id(&requester_id) || !is_discord_id(&query.requester_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "owner_id and requester_id must be numeric".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    if query.requester_id != owner_id {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "only owner can deny access requests".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let mut pending = state.pending_access_requests.write().await;
+    if let Some(entry) = pending.get_mut(&owner_id) {
+        entry.remove(&requester_id);
+        if entry.is_empty() {
+            pending.remove(&owner_id);
+        }
+    }
+
+    StatusCode::NO_CONTENT.into_response()
 }
 
 fn is_discord_id(value: &str) -> bool {
