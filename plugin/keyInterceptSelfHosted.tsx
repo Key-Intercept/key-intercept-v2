@@ -125,15 +125,22 @@ function cloneDefaultConfig(): LocalConfig {
 }
 
 function isoToLocalDateTimeInput(value: string): string {
+    if (value === farFuture) return "9999-12-31T23:59";
     if (!value) return "";
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return "";
-    const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
-    return localDate.toISOString().slice(0, 16);
+    const year = date.getFullYear();
+    if (year > 9999) return "9999-12-31T23:59";
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    const hours = String(date.getHours()).padStart(2, "0");
+    const minutes = String(date.getMinutes()).padStart(2, "0");
+    return `${year}-${month}-${day}T${hours}:${minutes}`;
 }
 
 function localDateTimeInputToIso(value: string): string {
     if (!value) return epoch;
+    if (value === "9999-12-31T23:59") return farFuture;
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return epoch;
     return date.toISOString();
