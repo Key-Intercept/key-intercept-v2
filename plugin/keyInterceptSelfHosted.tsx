@@ -65,20 +65,39 @@ type LocalConfig = {
 };
 
 const farFuture = "9999-12-31T23:59:59.000Z";
+const epoch = "1970-01-01T00:00:00.000Z";
+
+const modeTimeoutFields: Array<{ key: keyof Config; label: string; }> = [
+    { key: "rules_end", label: "Rule groups timeout" },
+    { key: "gag_end", label: "Gag timeout" },
+    { key: "pet_end", label: "Pet timeout" },
+    { key: "bimbo_end", label: "Bimbo timeout" },
+    { key: "horny_end", label: "Horny timeout" },
+    { key: "drone_end", label: "Drone timeout" },
+    { key: "uwu_end", label: "UWU timeout" },
+    { key: "censored_end", label: "Censored timeout" }
+];
+
+const petTypeOptions = [
+    { value: 0, label: "Type 0" },
+    { value: 1, label: "Type 1" },
+    { value: 2, label: "Type 2" },
+    { value: 3, label: "Type 3" }
+] as const;
 
 const defaultLocalConfig: LocalConfig = {
     config: {
         rules_end: farFuture,
-        gag_end: "1970-01-01T00:00:00.000Z",
-        pet_end: "1970-01-01T00:00:00.000Z",
+        gag_end: epoch,
+        pet_end: epoch,
         pet_amount: 0,
         pet_type: 0,
-        bimbo_end: "1970-01-01T00:00:00.000Z",
-        horny_end: "1970-01-01T00:00:00.000Z",
+        bimbo_end: epoch,
+        horny_end: epoch,
         bimbo_word_length: 12,
-        drone_end: "1970-01-01T00:00:00.000Z",
-        uwu_end: "1970-01-01T00:00:00.000Z",
-        censored_end: "1970-01-01T00:00:00.000Z",
+        drone_end: epoch,
+        uwu_end: epoch,
+        censored_end: epoch,
         censored_replacement: "*",
         debug: false
     },
@@ -103,6 +122,21 @@ const defaultLocalConfig: LocalConfig = {
 
 function cloneDefaultConfig(): LocalConfig {
     return JSON.parse(JSON.stringify(defaultLocalConfig)) as LocalConfig;
+}
+
+function isoToLocalDateTimeInput(value: string): string {
+    if (!value) return "";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+    return localDate.toISOString().slice(0, 16);
+}
+
+function localDateTimeInputToIso(value: string): string {
+    if (!value) return epoch;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return epoch;
+    return date.toISOString();
 }
 
 let interceptConfig: LocalConfig = cloneDefaultConfig();
@@ -840,45 +874,80 @@ function ConfigPanel(props: any) {
             {(isOwnProfile || canViewRemote) && (
                 <>
                     <div style={sectionStyle}>
-                        <strong>Transform toggles</strong>
+                        <strong>Mode timeouts</strong>
                         <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
-                            {[
-                                ["rules_end", "Rules"],
-                                ["gag_end", "Gag"],
-                                ["pet_end", "Pet"],
-                                ["bimbo_end", "Bimbo"],
-                                ["horny_end", "Horny"],
-                                ["drone_end", "Drone"],
-                                ["uwu_end", "UWU"],
-                                ["censored_end", "Censored"]
-                            ].map(([key, label]) => (
-                                <label key={key} style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                            {modeTimeoutFields.map(({ key, label }) => (
+                                <label key={key}>
+                                    {label}
                                     <input
-                                        type="checkbox"
-                                        checked={(editableConfig.config as any)[key] === farFuture}
+                                        style={inputStyle}
+                                        type="datetime-local"
+                                        value={isoToLocalDateTimeInput(editableConfig.config[key])}
                                         onChange={e => setEditableConfig(prev => ({
                                             ...prev,
                                             config: {
                                                 ...prev.config,
-                                                [key]: e.currentTarget.checked ? farFuture : "1970-01-01T00:00:00.000Z"
+                                                [key]: localDateTimeInputToIso(e.currentTarget.value)
                                             }
                                         }))}
                                     />
-                                    {label}
                                 </label>
                             ))}
                         </div>
                     </div>
 
                     <div style={sectionStyle}>
-                        <strong>Core values</strong>
+                        <strong>Numeric values</strong>
                         <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
                             <label>Pet amount (0-1)<input style={inputStyle} type="number" min={0} max={1} step={0.01} value={editableConfig.config.pet_amount} onChange={e => setEditableConfig(prev => ({ ...prev, config: { ...prev.config, pet_amount: Number(e.currentTarget.value) } }))} /></label>
-                            <label>Pet type<input style={inputStyle} type="number" value={editableConfig.config.pet_type} onChange={e => setEditableConfig(prev => ({ ...prev, config: { ...prev.config, pet_type: Number(e.currentTarget.value) } }))} /></label>
                             <label>Bimbo word length<input style={inputStyle} type="number" min={1} value={editableConfig.config.bimbo_word_length} onChange={e => setEditableConfig(prev => ({ ...prev, config: { ...prev.config, bimbo_word_length: Number(e.currentTarget.value) } }))} /></label>
-                            <label>Censored replacement<input style={inputStyle} value={editableConfig.config.censored_replacement} onChange={e => setEditableConfig(prev => ({ ...prev, config: { ...prev.config, censored_replacement: e.currentTarget.value } }))} /></label>
                             <label>Drone health (0-100)<input style={inputStyle} type="number" min={0} max={100} value={editableConfig.drone_config.drone_health} onChange={e => setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, drone_health: Number(e.currentTarget.value) } }))} /></label>
+                        </div>
+                    </div>
+
+                    <div style={sectionStyle}>
+                        <strong>Enum values</strong>
+                        <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
+                            <label>
+                                Pet type
+                                <select
+                                    style={inputStyle}
+                                    value={petTypeOptions.some(option => option.value === editableConfig.config.pet_type) ? editableConfig.config.pet_type : petTypeOptions[0].value}
+                                    onChange={e => setEditableConfig(prev => ({
+                                        ...prev,
+                                        config: {
+                                            ...prev.config,
+                                            pet_type: Number(e.currentTarget.value)
+                                        }
+                                    }))}
+                                >
+                                    {petTypeOptions.map(option => (
+                                        <option key={option.value} value={option.value}>{option.label}</option>
+                                    ))}
+                                </select>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div style={sectionStyle}>
+                        <strong>Text values</strong>
+                        <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
+                            <label>Censored replacement<input style={inputStyle} value={editableConfig.config.censored_replacement} onChange={e => setEditableConfig(prev => ({ ...prev, config: { ...prev.config, censored_replacement: e.currentTarget.value } }))} /></label>
                             <label>Drone term<input style={inputStyle} value={editableConfig.drone_config.drone_term} onChange={e => setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, drone_term: e.currentTarget.value } }))} /></label>
+                            <label>Drone speech header<input style={inputStyle} value={editableConfig.drone_config.speech_header} onChange={e => setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, speech_header: e.currentTarget.value } }))} /></label>
+                            <label>Drone speech footer<input style={inputStyle} value={editableConfig.drone_config.speech_footer} onChange={e => setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, speech_footer: e.currentTarget.value } }))} /></label>
+                            <label>Drone action header<input style={inputStyle} value={editableConfig.drone_config.action_header} onChange={e => setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, action_header: e.currentTarget.value } }))} /></label>
+                            <label>Drone action footer<input style={inputStyle} value={editableConfig.drone_config.action_footer} onChange={e => setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, action_footer: e.currentTarget.value } }))} /></label>
+                            <label>Drone whisper header<input style={inputStyle} value={editableConfig.drone_config.whisper_header} onChange={e => setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, whisper_header: e.currentTarget.value } }))} /></label>
+                            <label>Drone whisper footer<input style={inputStyle} value={editableConfig.drone_config.whisper_footer} onChange={e => setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, whisper_footer: e.currentTarget.value } }))} /></label>
+                            <label>Drone loud header<input style={inputStyle} value={editableConfig.drone_config.loud_header} onChange={e => setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, loud_header: e.currentTarget.value } }))} /></label>
+                            <label>Drone loud footer<input style={inputStyle} value={editableConfig.drone_config.loud_footer} onChange={e => setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, loud_footer: e.currentTarget.value } }))} /></label>
+                        </div>
+                    </div>
+
+                    <div style={sectionStyle}>
+                        <strong>Boolean toggles</strong>
+                        <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
                             <label style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                                 <input
                                     type="checkbox"
