@@ -124,28 +124,6 @@ function cloneDefaultConfig(): LocalConfig {
     return JSON.parse(JSON.stringify(defaultLocalConfig)) as LocalConfig;
 }
 
-function isoToLocalDateTimeInput(value: string): string {
-    if (value === farFuture) return "9999-12-31T23:59";
-    if (!value) return "";
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return "";
-    const year = date.getFullYear();
-    if (year > 9999) return "9999-12-31T23:59";
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const day = String(date.getDate()).padStart(2, "0");
-    const hours = String(date.getHours()).padStart(2, "0");
-    const minutes = String(date.getMinutes()).padStart(2, "0");
-    return `${year}-${month}-${day}T${hours}:${minutes}`;
-}
-
-function localDateTimeInputToIso(value: string): string {
-    if (!value) return epoch;
-    if (value === "9999-12-31T23:59") return farFuture;
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return epoch;
-    return date.toISOString();
-}
-
 let interceptConfig: LocalConfig = cloneDefaultConfig();
 
 function currentUser() {
@@ -776,6 +754,8 @@ function ConfigPanel(props: any) {
     const [petWordsText, setPetWordsText] = React.useState("");
     const [censoredWordsText, setCensoredWordsText] = React.useState("");
     const [canViewRemote, setCanViewRemote] = React.useState(isOwnProfile);
+    const skipAutosaveRef = React.useRef(true);
+    const lastSavedSnapshotRef = React.useRef("");
 
     const sectionStyle: React.CSSProperties = {
         background: "#2b2d31",
@@ -801,9 +781,15 @@ function ConfigPanel(props: any) {
     };
 
     const updateFromConfig = React.useCallback((config: LocalConfig) => {
+        skipAutosaveRef.current = true;
         setEditableConfig(config);
         setPetWordsText(toLines(config.pet_words));
         setCensoredWordsText(toLines(config.censored_words));
+        lastSavedSnapshotRef.current = JSON.stringify({
+            ...config,
+            pet_words: config.pet_words,
+            censored_words: config.censored_words
+        });
     }, []);
 
     const refresh = React.useCallback(async () => {
@@ -834,21 +820,43 @@ function ConfigPanel(props: any) {
         refresh().catch(err => setStatus(String(err)));
     }, [refresh]);
 
-    const saveConfig = React.useCallback(async () => {
+    const saveConfig = React.useCallback(async (baseConfig: LocalConfig) => {
+        const mergedConfig = mergeLocalConfig({
+            ...baseConfig,
+            pet_words: fromLines(petWordsText),
+            censored_words: fromLines(censoredWordsText)
+        });
+        if (isOwnProfile) {
+            await saveLocalConfig(activeUserId, mergedConfig);
+            setStatus("Auto-saved local config");
+        } else {
+            await pushRemoteConfig(settings.store.relayUrl, activeUserId, profileUserId, mergedConfig);
+            setStatus(`Auto-saved ${profileUserId}'s config via relay`);
+        }
+        lastSavedSnapshotRef.current = JSON.stringify(mergedConfig);
+    }, [activeUserId, censoredWordsText, isOwnProfile, petWordsText, profileUserId]);
+
+    React.useEffect(() => {
+        if (!(isOwnProfile || canViewRemote)) return;
+        if (skipAutosaveRef.current) {
+            skipAutosaveRef.current = false;
+            return;
+        }
+
         const nextConfig = mergeLocalConfig({
             ...editableConfig,
             pet_words: fromLines(petWordsText),
             censored_words: fromLines(censoredWordsText)
         });
-        if (isOwnProfile) {
-            await saveLocalConfig(activeUserId, nextConfig);
-            setStatus("Saved local config");
-        } else {
-            await pushRemoteConfig(settings.store.relayUrl, activeUserId, profileUserId, nextConfig);
-            setStatus(`Saved ${profileUserId}'s config via relay`);
-        }
-        updateFromConfig(nextConfig);
-    }, [activeUserId, censoredWordsText, editableConfig, isOwnProfile, petWordsText, profileUserId, updateFromConfig]);
+        const nextSnapshot = JSON.stringify(nextConfig);
+        if (nextSnapshot === lastSavedSnapshotRef.current) return;
+
+        const handle = setTimeout(() => {
+            saveConfig(nextConfig).catch(err => setStatus(`Auto-save failed: ${String(err)}`));
+        }, 250);
+
+        return () => clearTimeout(handle);
+    }, [canViewRemote, censoredWordsText, editableConfig, isOwnProfile, petWordsText, saveConfig]);
 
     return (
         <div style={{ width: "100%", maxWidth: "760px", margin: "0 auto", color: "#f2f3f5", background: "#313338", border: "1px solid #3f4147", borderRadius: "16px", padding: "16px", display: "grid", gap: "12px" }}>
@@ -888,13 +896,14 @@ function ConfigPanel(props: any) {
                                     {label}
                                     <input
                                         style={inputStyle}
-                                        type="datetime-local"
-                                        value={isoToLocalDateTimeInput(editableConfig.config[key])}
+                                        type="text"
+                                        placeholder="ISO timestamp (e.g. 1970-01-01T00:00:00.000Z or 9999-12-31T23:59:59.000Z)"
+                                        value={editableConfig.config[key]}
                                         onChange={e => setEditableConfig(prev => ({
                                             ...prev,
                                             config: {
                                                 ...prev.config,
-                                                [key]: localDateTimeInputToIso(e.currentTarget.value)
+                                                [key]: e.currentTarget.value
                                             }
                                         }))}
                                     />
@@ -976,7 +985,6 @@ function ConfigPanel(props: any) {
 
                     <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                         <button style={buttonStyle} onClick={() => refresh().then(() => setStatus("Reloaded config")).catch(err => setStatus(String(err)))}>Reload</button>
-                        <button style={buttonStyle} onClick={() => saveConfig().catch(err => setStatus(String(err)))}>{isOwnProfile ? "Save Local Config" : "Save Remote Config"}</button>
                     </div>
                 </>
             )}
