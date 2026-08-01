@@ -379,14 +379,12 @@ fn vencord_repo_dir() -> Result<PathBuf> {
 
 fn ensure_vencord_checkout() -> Result<PathBuf> {
     let repo_dir = vencord_repo_dir()?;
-    if repo_dir.is_dir() {
-        if !repo_dir.join(".git").exists() {
-            bail!(
-                "directory {} exists but is not a git checkout; remove it or point HOME to a clean environment",
-                repo_dir.display()
-            );
-        }
-        return Ok(repo_dir);
+    if repo_dir.exists() {
+        println!(
+            "Removing existing Vencord checkout at {} before reinstall.",
+            repo_dir.display()
+        );
+        remove_existing_path(&repo_dir)?;
     }
 
     run_command(
@@ -400,6 +398,17 @@ fn ensure_vencord_checkout() -> Result<PathBuf> {
     .context("failed to clone Vencord repository")?;
 
     Ok(repo_dir)
+}
+
+fn remove_existing_path(path: &Path) -> Result<()> {
+    if path.is_dir() {
+        fs::remove_dir_all(path)
+            .with_context(|| format!("failed to remove existing directory {}", path.display()))?;
+    } else {
+        fs::remove_file(path)
+            .with_context(|| format!("failed to remove existing file {}", path.display()))?;
+    }
+    Ok(())
 }
 
 fn sync_vencord_checkout(vencord_dir: &Path) -> Result<()> {
@@ -716,6 +725,17 @@ mod tests {
             git_status_clean_args(),
             ["status", "--porcelain", "--untracked-files=no"]
         );
+    }
+
+    #[test]
+    fn remove_existing_path_deletes_directory_tree() {
+        let root = tempdir().unwrap();
+        let nested = root.path().join("nested");
+        std::fs::create_dir_all(nested.join("child")).unwrap();
+        std::fs::write(nested.join("child").join("sample.txt"), "data").unwrap();
+
+        remove_existing_path(&nested).unwrap();
+        assert!(!nested.exists());
     }
 
 }
