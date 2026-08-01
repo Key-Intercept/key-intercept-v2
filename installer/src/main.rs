@@ -592,7 +592,7 @@ fn run_command_in_dir_warn(command: &str, args: &[&str], dir: &Path) {
 fn git_working_tree_clean(dir: &Path) -> Result<bool> {
     let output = Command::new("git")
         .current_dir(dir)
-        .args(["status", "--porcelain"])
+        .args(git_status_clean_args())
         .output()
         .with_context(|| format!("failed to execute git status in {}", dir.display()))?;
 
@@ -601,6 +601,10 @@ fn git_working_tree_clean(dir: &Path) -> Result<bool> {
     }
 
     Ok(output.stdout.is_empty())
+}
+
+fn git_status_clean_args() -> [&'static str; 3] {
+    ["status", "--porcelain", "--untracked-files=no"]
 }
 
 #[cfg(test)]
@@ -704,6 +708,14 @@ mod tests {
     #[test]
     fn pnpm_install_includes_dev_dependencies() {
         assert_eq!(pnpm_install_args(), ["install", "--prod=false"]);
+    }
+
+    #[test]
+    fn git_status_clean_ignores_untracked_files() {
+        assert_eq!(
+            git_status_clean_args(),
+            ["status", "--porcelain", "--untracked-files=no"]
+        );
     }
 
 }
