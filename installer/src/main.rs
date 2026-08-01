@@ -465,7 +465,7 @@ fn install_vencord_userplugin(
     fs::create_dir_all(&destination_dir)
         .with_context(|| format!("failed to create {}", destination_dir.display()))?;
 
-    let target_file = destination_dir.join(plugin_file_name);
+    let target_file = destination_dir.join(plugin_entry_file_name(plugin_file_name)?);
     fs::copy(source_file, &target_file).with_context(|| {
         format!(
             "failed to copy plugin file from {} to {}",
@@ -474,37 +474,21 @@ fn install_vencord_userplugin(
         )
     })?;
 
-    write_plugin_entrypoint_if_needed(&destination_dir, plugin_file_name)?;
-
     Ok(())
 }
 
-fn write_plugin_entrypoint_if_needed(destination_dir: &Path, plugin_file_name: &str) -> Result<()> {
+fn plugin_entry_file_name(plugin_file_name: &str) -> Result<&'static str> {
     let plugin_path = Path::new(plugin_file_name);
-    let plugin_stem = plugin_path
+    let _plugin_stem = plugin_path
         .file_stem()
         .and_then(|stem| stem.to_str())
         .ok_or_else(|| anyhow!("invalid plugin file name: {plugin_file_name}"))?;
     let plugin_ext = plugin_path.extension().and_then(|ext| ext.to_str());
-
-    if plugin_stem == "index" {
-        return Ok(());
-    }
-
-    let entry_ext = match plugin_ext {
-        Some("tsx") => "tsx",
-        Some("jsx") => "tsx",
-        _ => "ts",
+    let entry_file = match plugin_ext {
+        Some("tsx") | Some("jsx") => "index.tsx",
+        _ => "index.ts",
     };
-    let entry_file = destination_dir.join(format!("index.{entry_ext}"));
-    let entry_content = format!(
-        "export * from \"./{plugin_stem}\";\nexport {{ default }} from \"./{plugin_stem}\";\n"
-    );
-
-    fs::write(&entry_file, entry_content)
-        .with_context(|| format!("failed to write {}", entry_file.display()))?;
-
-    Ok(())
+    Ok(entry_file)
 }
 
 fn find_file_recursive(root: &Path, name: &str) -> Result<PathBuf> {
@@ -673,11 +657,11 @@ mod tests {
     }
 
     #[test]
-    fn install_vencord_userplugin_writes_index_entrypoint_for_custom_filename() {
+    fn install_vencord_userplugin_copies_source_to_index_entrypoint() {
         let vencord_dir = tempdir().unwrap();
         std::fs::create_dir_all(vencord_dir.path().join("src").join("userplugins")).unwrap();
         let source = NamedTempFile::new().unwrap();
-        std::fs::write(source.path(), "export default {};").unwrap();
+        std::fs::write(source.path(), "export default definePlugin({ name: \"x\" });").unwrap();
 
         install_vencord_userplugin(
             source.path(),
@@ -693,25 +677,21 @@ mod tests {
             .join("userplugins")
             .join("key-intercept");
         let entry = std::fs::read_to_string(plugin_dir.join("index.tsx")).unwrap();
-        assert!(entry.contains("export { default } from \"./keyInterceptSelfHosted\";"));
+        assert!(entry.contains("definePlugin"));
+        assert!(!plugin_dir.join("keyInterceptSelfHosted.tsx").exists());
     }
 
     #[test]
-    fn install_vencord_userplugin_skips_entrypoint_when_filename_is_index() {
-        let vencord_dir = tempdir().unwrap();
-        std::fs::create_dir_all(vencord_dir.path().join("src").join("userplugins")).unwrap();
-        let source = NamedTempFile::new().unwrap();
-        std::fs::write(source.path(), "export default {};").unwrap();
+    fn plugin_entry_file_name_prefers_tsx_for_jsx_or_tsx_plugins() {
+        assert_eq!(plugin_entry_file_name("plugin.tsx").unwrap(), "index.tsx");
+        assert_eq!(plugin_entry_file_name("plugin.jsx").unwrap(), "index.tsx");
+    }
 
-        install_vencord_userplugin(source.path(), vencord_dir.path(), "key-intercept", "index.ts")
-            .unwrap();
-
-        let plugin_dir = vencord_dir
-            .path()
-            .join("src")
-            .join("userplugins")
-            .join("key-intercept");
-        assert!(!plugin_dir.join("index.tsx").exists());
+    #[test]
+    fn plugin_entry_file_name_defaults_to_ts_for_other_extensions() {
+        assert_eq!(plugin_entry_file_name("plugin.ts").unwrap(), "index.ts");
+        assert_eq!(plugin_entry_file_name("plugin.js").unwrap(), "index.ts");
+        assert_eq!(plugin_entry_file_name("index.ts").unwrap(), "index.ts");
     }
 
     #[test]

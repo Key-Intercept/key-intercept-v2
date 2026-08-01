@@ -52,7 +52,7 @@ You can override artifact names with:
 
 It installs:
 - loopback binary to `~/.local/bin/key-intercept-loopback`
-- plugin file to `~/Vencord/src/userplugins/key-intercept/keyInterceptSelfHosted.tsx` (removes and reclones `~/Vencord` automatically)
+- plugin file to `~/Vencord/src/userplugins/key-intercept/index.tsx` (removes and reclones `~/Vencord` automatically)
 - user systemd service `key-intercept-loopback.service`
 
 `--plugin-install-mode vencord-custom` is accepted for backward compatibility; custom Vencord installation is always used.
