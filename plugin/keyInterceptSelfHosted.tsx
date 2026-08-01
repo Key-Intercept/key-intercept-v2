@@ -756,6 +756,9 @@ function ConfigPanel(props: any) {
     const [canViewRemote, setCanViewRemote] = React.useState(isOwnProfile);
     const skipAutosaveRef = React.useRef(true);
     const lastSavedSnapshotRef = React.useRef("");
+    const stopKeyPropagation = React.useCallback((event: React.KeyboardEvent) => {
+        event.stopPropagation();
+    }, []);
 
     const sectionStyle: React.CSSProperties = {
         background: "#2b2d31",
@@ -859,7 +862,11 @@ function ConfigPanel(props: any) {
     }, [canViewRemote, censoredWordsText, editableConfig, isOwnProfile, petWordsText, saveConfig]);
 
     return (
-        <div style={{ width: "100%", maxWidth: "760px", margin: "0 auto", color: "#f2f3f5", background: "#313338", border: "1px solid #3f4147", borderRadius: "16px", padding: "16px", display: "grid", gap: "12px" }}>
+        <div
+            style={{ width: "100%", maxWidth: "760px", margin: "0 auto", color: "#f2f3f5", background: "#313338", border: "1px solid #3f4147", borderRadius: "16px", padding: "16px", display: "grid", gap: "12px" }}
+            onKeyDownCapture={stopKeyPropagation}
+            onKeyUpCapture={stopKeyPropagation}
+        >
             <div style={{ ...sectionStyle, background: "#2b2d31" }}>
                 <h3 style={{ margin: 0 }}>key-intercept control center</h3>
                 <p style={{ margin: "6px 0 0 0", color: "#b5bac1" }}>
