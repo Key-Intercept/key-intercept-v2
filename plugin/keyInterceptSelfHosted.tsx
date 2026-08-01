@@ -1,7 +1,7 @@
+import { definePluginSettings } from "@api/Settings";
 import definePlugin, { OptionType } from "@utils/types";
-import { React } from "@webpack/common";
-
-declare const Vencord: any;
+import { findByPropsLazy } from "@webpack";
+import { React, UserStore } from "@webpack/common";
 
 const LOOPBACK = "http://127.0.0.1:35491";
 
@@ -108,8 +108,13 @@ function cloneDefaultConfig(): LocalConfig {
 let interceptConfig: LocalConfig = cloneDefaultConfig();
 
 function currentUser() {
-    return Vencord.Webpack.Common.UserStore.getCurrentUser();
+    return UserStore.getCurrentUser();
 }
+
+const MessageStore = findByPropsLazy("getMessage", "getMessages");
+const MessageActions = findByPropsLazy("editMessage");
+const ChannelStore = findByPropsLazy("getChannel", "getDMFromUserId");
+const GuildStore = findByPropsLazy("getGuild", "getGuilds");
 
 function mergeLocalConfig(raw: unknown): LocalConfig {
     if (!raw || typeof raw !== "object") return cloneDefaultConfig();
@@ -507,7 +512,6 @@ function applyGag(msg: string): string {
 }
 
 function getPreviousMessage(channelId: string) {
-    const MessageStore = Vencord.Webpack.findByProps("getMessage", "getMessages");
     const messages = MessageStore?.getMessages?.(channelId);
     if (!messages) return null;
 
@@ -516,7 +520,6 @@ function getPreviousMessage(channelId: string) {
 }
 
 function editPreviousMessage(channelId: string, messageId: string, newContent: string) {
-    const MessageActions = Vencord.Webpack.findByProps("editMessage");
     if (!MessageActions?.editMessage) return;
     MessageActions.editMessage(channelId, messageId, { content: newContent });
 }
@@ -700,7 +703,7 @@ function ConfigPanel() {
                     />
                     <button onClick={async () => {
                         try {
-                            await pushRemoteConfig(plugin.settings.store.relayUrl, currentUser().id, targetUserId, mergeLocalConfig(JSON.parse(rawConfig)));
+                            await pushRemoteConfig(settings.store.relayUrl, currentUser().id, targetUserId, mergeLocalConfig(JSON.parse(rawConfig)));
                             setStatus(`Pushed remote update to ${targetUserId}`);
                         } catch (err) {
                             setStatus(String(err));
@@ -750,17 +753,19 @@ function ConfigPanel() {
     );
 }
 
+const settings = definePluginSettings({
+    relayUrl: {
+        type: OptionType.STRING,
+        description: "Public relay URL",
+        default: "http://82.165.196.147:45491"
+    }
+});
+
 const plugin = definePlugin({
     name: "key-intercept",
     description: "Original key-intercept behavior with self-hosted loopback/relay config",
     authors: [{ name: "Tom", id: 277137325342064640n }],
-    settings: {
-        relayUrl: {
-            type: OptionType.STRING,
-            description: "Public relay URL",
-            default: "http://82.165.196.147:45491"
-        }
-    },
+    settings,
     async start() {
         try {
             await readLocalConfig();
@@ -770,10 +775,6 @@ const plugin = definePlugin({
     },
     stop() {},
     onBeforeMessageSend(channelId: string, msg: { content: string }) {
-        const ChannelStore = Vencord.Webpack.findByProps("getChannel", "getDMFromUserId");
-        const GuildStore = Vencord.Webpack.findByProps("getGuild", "getGuilds");
-        const UserStore = Vencord.Webpack.findByProps("getCurrentUser", "getUser");
-
         const channel = ChannelStore?.getChannel?.(channelId);
         if (!channel || !interceptConfig?.config) return;
 
