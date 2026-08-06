@@ -5,7 +5,7 @@ use anyhow::Result;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, Method, StatusCode, header::{CONTENT_TYPE, HeaderName}},
     response::IntoResponse,
     routing::{delete, get},
 };
@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, time::Duration};
 use store::ConfigStore;
 use tokio::time::sleep;
+use tower_http::cors::CorsLayer;
 use tracing::{error, info};
 
 #[derive(Clone)]
@@ -99,7 +100,8 @@ async fn main() -> Result<()> {
             get(get_allowed_editors).post(add_allowed_editor),
         )
         .route("/allowed-editors/:editor_id", delete(remove_allowed_editor))
-        .with_state(AppState { store });
+        .with_state(AppState { store })
+        .layer(discord_cors_layer());
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     info!("loopback server listening on {addr}");
@@ -311,4 +313,27 @@ fn requester_header(headers: &HeaderMap) -> Option<String> {
 
 fn requester_id(headers: &HeaderMap, query: &HashMap<String, String>) -> Option<String> {
     requester_header(headers).or_else(|| query.get("requester_id").cloned())
+}
+
+fn discord_cors_layer() -> CorsLayer {
+    let origins = [
+        "https://discord.com".parse().expect("valid discord origin"),
+        "https://ptb.discord.com"
+            .parse()
+            .expect("valid discord ptb origin"),
+        "https://canary.discord.com"
+            .parse()
+            .expect("valid discord canary origin"),
+    ];
+
+    CorsLayer::new()
+        .allow_origin(origins)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([CONTENT_TYPE, HeaderName::from_static("x-discord-user-id")])
 }

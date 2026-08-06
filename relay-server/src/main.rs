@@ -2,7 +2,7 @@ use anyhow::Result;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{Method, StatusCode, header::CONTENT_TYPE},
     response::IntoResponse,
     routing::{delete, get, post},
 };
@@ -14,6 +14,7 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::RwLock;
+use tower_http::cors::CorsLayer;
 use tracing::info;
 
 #[derive(Clone)]
@@ -88,7 +89,7 @@ async fn main() -> Result<()> {
     let port = std::env::var("RELAY_PORT")
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
-        .unwrap_or(45491);
+        .unwrap_or(35491);
 
     let app = Router::new()
         .route("/health", get(health))
@@ -110,6 +111,7 @@ async fn main() -> Result<()> {
             "/users/:owner_id/access-requests/:requester_id/approve",
             post(approve_access_request),
         )
+        .layer(discord_cors_layer())
         .with_state(AppState {
             peers: Arc::new(RwLock::new(HashMap::new())),
             pending_access_requests: Arc::new(RwLock::new(HashMap::new())),
@@ -239,11 +241,7 @@ async fn put_remote_config(
             .into_response();
     }
     if let Err(err) = validate_config_shape(&payload.config) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse { error: err }),
-        )
-            .into_response();
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: err })).into_response();
     }
 
     let Some(peer) = state.peers.read().await.get(&owner_id).cloned() else {
@@ -381,7 +379,10 @@ async fn approve_access_request(
     Path((owner_id, requester_id)): Path<(String, String)>,
     Json(payload): Json<AccessRequestApprovalPayload>,
 ) -> impl IntoResponse {
-    if !is_discord_id(&owner_id) || !is_discord_id(&requester_id) || !is_discord_id(&payload.owner_id) {
+    if !is_discord_id(&owner_id)
+        || !is_discord_id(&requester_id)
+        || !is_discord_id(&payload.owner_id)
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -437,7 +438,10 @@ async fn approve_access_request(
         Ok(response) => (
             StatusCode::BAD_GATEWAY,
             Json(ErrorResponse {
-                error: format!("target rejected access grant with status {}", response.status()),
+                error: format!(
+                    "target rejected access grant with status {}",
+                    response.status()
+                ),
             }),
         )
             .into_response(),
@@ -456,7 +460,10 @@ async fn deny_access_request(
     Path((owner_id, requester_id)): Path<(String, String)>,
     Query(query): Query<ConfigReadQuery>,
 ) -> impl IntoResponse {
-    if !is_discord_id(&owner_id) || !is_discord_id(&requester_id) || !is_discord_id(&query.requester_id) {
+    if !is_discord_id(&owner_id)
+        || !is_discord_id(&requester_id)
+        || !is_discord_id(&query.requester_id)
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -489,6 +496,29 @@ async fn deny_access_request(
 
 fn is_discord_id(value: &str) -> bool {
     !value.is_empty() && value.chars().all(|c| c.is_ascii_digit())
+}
+
+fn discord_cors_layer() -> CorsLayer {
+    let origins = [
+        "https://discord.com".parse().expect("valid discord origin"),
+        "https://ptb.discord.com"
+            .parse()
+            .expect("valid discord ptb origin"),
+        "https://canary.discord.com"
+            .parse()
+            .expect("valid discord canary origin"),
+    ];
+
+    CorsLayer::new()
+        .allow_origin(origins)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([CONTENT_TYPE])
 }
 
 fn is_valid_base_url(value: &str) -> bool {

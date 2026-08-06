@@ -21,7 +21,7 @@ struct Args {
     #[arg(long)]
     owner_discord_id: String,
 
-    #[arg(long, default_value = "http://82.165.196.147:45491")]
+    #[arg(long, default_value = "https://82.165.196.147:45491")]
     relay_server_url: Option<String>,
 
     #[arg(long, default_value = "Key-Intercept")]
@@ -97,6 +97,7 @@ async fn main() -> Result<()> {
             &local_sources.plugin_file,
             &args.plugin_file_name,
             &args.vencord_plugin_folder,
+            args.relay_server_url.as_deref(),
         )?;
     } else {
         let client = build_client()?;
@@ -127,6 +128,7 @@ async fn main() -> Result<()> {
             &plugin_source,
             &args.plugin_file_name,
             &args.vencord_plugin_folder,
+            args.relay_server_url.as_deref(),
         )?;
     }
 
@@ -307,9 +309,11 @@ fn install_plugin_into_vencord(
     source: &Path,
     plugin_file_name: &str,
     plugin_folder: &str,
+    relay_server_url: Option<&str>,
 ) -> Result<()> {
     let vencord_dir = ensure_vencord_checkout()?;
     sync_vencord_checkout(&vencord_dir)?;
+    patch_vencord_csp(&vencord_dir, relay_server_url)?;
     ensure_pnpm_available()?;
     install_vencord_userplugin(source, &vencord_dir, plugin_folder, plugin_file_name)?;
     run_command_in_dir("pnpm", &pnpm_install_args(), &vencord_dir)?;
@@ -320,6 +324,47 @@ fn install_plugin_into_vencord(
     }
 
     Ok(())
+}
+
+fn patch_vencord_csp(vencord_dir: &Path, relay_server_url: Option<&str>) -> Result<()> {
+    let Some(relay_url) = relay_server_url.filter(|value| !value.trim().is_empty()) else {
+        return Ok(());
+    };
+
+    let relay_origin = relay_origin_for_csp(relay_url)?;
+    let csp_path = vencord_dir.join("src").join("main").join("csp").join("index.ts");
+    let mut csp_source = fs::read_to_string(&csp_path)
+        .with_context(|| format!("failed to read {}", csp_path.display()))?;
+
+    if csp_source.contains(&format!("\"{relay_origin}\": ConnectSrc")) {
+        return Ok(());
+    }
+
+    let marker = "export const CspPolicies: PolicyMap = {\n";
+    let insert =
+        format!("{marker}    \"{relay_origin}\": ConnectSrc, // key-intercept relay server\n");
+    if !csp_source.contains(marker) {
+        bail!(
+            "failed to patch {}, CspPolicies marker not found",
+            csp_path.display()
+        );
+    }
+    csp_source = csp_source.replacen(marker, &insert, 1);
+    fs::write(&csp_path, csp_source).with_context(|| format!("failed to write {}", csp_path.display()))?;
+    Ok(())
+}
+
+fn relay_origin_for_csp(relay_server_url: &str) -> Result<String> {
+    let parsed = reqwest::Url::parse(relay_server_url)
+        .with_context(|| format!("invalid --relay-server-url: {relay_server_url}"))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow!("relay URL has no host: {relay_server_url}"))?;
+    let origin = match parsed.port() {
+        Some(port) => format!("{}://{host}:{port}", parsed.scheme()),
+        None => format!("{}://{host}", parsed.scheme()),
+    };
+    Ok(origin)
 }
 
 fn pnpm_install_args() -> [&'static str; 2] {
@@ -705,6 +750,30 @@ mod tests {
             git_status_clean_args(),
             ["status", "--porcelain", "--untracked-files=no"]
         );
+    }
+
+    #[test]
+    fn relay_origin_for_csp_preserves_scheme_host_and_port() {
+        let origin = relay_origin_for_csp("http://82.165.196.147:45491").unwrap();
+        assert_eq!(origin, "http://82.165.196.147:45491");
+    }
+
+    #[test]
+    fn patch_vencord_csp_adds_relay_connect_src_rule() {
+        let vencord_dir = tempdir().unwrap();
+        let csp_dir = vencord_dir.path().join("src").join("main").join("csp");
+        std::fs::create_dir_all(&csp_dir).unwrap();
+        let csp_file = csp_dir.join("index.ts");
+        std::fs::write(
+            &csp_file,
+            "export const CspPolicies: PolicyMap = {\n    \"localhost:*\": ImageAndCssSrc,\n};\n",
+        )
+        .unwrap();
+
+        patch_vencord_csp(vencord_dir.path(), Some("http://82.165.196.147:45491")).unwrap();
+
+        let patched = std::fs::read_to_string(&csp_file).unwrap();
+        assert!(patched.contains("\"http://82.165.196.147:45491\": ConnectSrc"));
     }
 
     #[test]
