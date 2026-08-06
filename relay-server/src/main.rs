@@ -88,7 +88,7 @@ async fn main() -> Result<()> {
     let port = std::env::var("RELAY_PORT")
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
-        .unwrap_or(45491);
+        .unwrap_or(35491);
 
     let app = Router::new()
         .route("/health", get(health))
@@ -239,11 +239,7 @@ async fn put_remote_config(
             .into_response();
     }
     if let Err(err) = validate_config_shape(&payload.config) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse { error: err }),
-        )
-            .into_response();
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: err })).into_response();
     }
 
     let Some(peer) = state.peers.read().await.get(&owner_id).cloned() else {
@@ -381,7 +377,10 @@ async fn approve_access_request(
     Path((owner_id, requester_id)): Path<(String, String)>,
     Json(payload): Json<AccessRequestApprovalPayload>,
 ) -> impl IntoResponse {
-    if !is_discord_id(&owner_id) || !is_discord_id(&requester_id) || !is_discord_id(&payload.owner_id) {
+    if !is_discord_id(&owner_id)
+        || !is_discord_id(&requester_id)
+        || !is_discord_id(&payload.owner_id)
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -437,7 +436,10 @@ async fn approve_access_request(
         Ok(response) => (
             StatusCode::BAD_GATEWAY,
             Json(ErrorResponse {
-                error: format!("target rejected access grant with status {}", response.status()),
+                error: format!(
+                    "target rejected access grant with status {}",
+                    response.status()
+                ),
             }),
         )
             .into_response(),
@@ -456,7 +458,10 @@ async fn deny_access_request(
     Path((owner_id, requester_id)): Path<(String, String)>,
     Query(query): Query<ConfigReadQuery>,
 ) -> impl IntoResponse {
-    if !is_discord_id(&owner_id) || !is_discord_id(&requester_id) || !is_discord_id(&query.requester_id) {
+    if !is_discord_id(&owner_id)
+        || !is_discord_id(&requester_id)
+        || !is_discord_id(&query.requester_id)
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
