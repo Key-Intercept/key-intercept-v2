@@ -339,6 +339,20 @@ function fromLines(value: string): string[] {
         .filter(Boolean);
 }
 
+function parseNumericInput(
+    rawValue: string,
+    previousValue: number,
+    options?: { min?: number; max?: number; }
+): number {
+    const nextValue = Number(rawValue);
+    if (!Number.isFinite(nextValue)) return previousValue;
+
+    let output = nextValue;
+    if (options?.min !== undefined) output = Math.max(options.min, output);
+    if (options?.max !== undefined) output = Math.min(options.max, output);
+    return output;
+}
+
 function createTimeoutAdjustmentDefaults(): Record<ModeTimeoutFieldKey, string> {
     return modeTimeoutFields.reduce((acc, field) => {
         acc[field.key] = "1";
@@ -1055,9 +1069,9 @@ function ConfigPanel(props: any) {
                     <div style={sectionStyle}>
                         <strong>Numeric values</strong>
                         <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
-                            <label>Pet amount (0-1)<input style={inputStyle} type="number" min={0} max={1} step={0.01} value={editableConfig.config.pet_amount} onChange={e => setEditableConfig(prev => ({ ...prev, config: { ...prev.config, pet_amount: Number(e.currentTarget.value) } }))} /></label>
-                            <label>Bimbo word length<input style={inputStyle} type="number" min={1} value={editableConfig.config.bimbo_word_length} onChange={e => setEditableConfig(prev => ({ ...prev, config: { ...prev.config, bimbo_word_length: Number(e.currentTarget.value) } }))} /></label>
-                            <label>Drone health (0-100)<input style={inputStyle} type="number" min={0} max={100} value={editableConfig.drone_config.drone_health} onChange={e => setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, drone_health: Number(e.currentTarget.value) } }))} /></label>
+                            <label>Pet amount (0-1)<input style={inputStyle} type="number" min={0} max={1} step={0.01} value={editableConfig.config.pet_amount} onChange={e => setEditableConfig(prev => ({ ...prev, config: { ...prev.config, pet_amount: parseNumericInput(e.currentTarget.value, prev.config.pet_amount, { min: 0, max: 1 }) } }))} /></label>
+                            <label>Bimbo word length<input style={inputStyle} type="number" min={1} value={editableConfig.config.bimbo_word_length} onChange={e => setEditableConfig(prev => ({ ...prev, config: { ...prev.config, bimbo_word_length: parseNumericInput(e.currentTarget.value, prev.config.bimbo_word_length, { min: 1 }) } }))} /></label>
+                            <label>Drone health (0-100)<input style={inputStyle} type="number" min={0} max={100} value={editableConfig.drone_config.drone_health} onChange={e => setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, drone_health: parseNumericInput(e.currentTarget.value, prev.drone_config.drone_health, { min: 0, max: 100 }) } }))} /></label>
                         </div>
                     </div>
 
