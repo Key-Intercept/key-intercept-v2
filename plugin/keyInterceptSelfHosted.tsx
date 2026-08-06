@@ -92,11 +92,24 @@ const modeTimeoutFields: Array<{ key: ModeTimeoutFieldKey; label: string; }> = [
 const permanentTimestamp = new Date(farFuture).getTime();
 
 const petTypeOptions = [
-    { value: 0, label: "Type 0" },
-    { value: 1, label: "Type 1" },
-    { value: 2, label: "Type 2" },
-    { value: 3, label: "Type 3" }
+    { value: 1, label: "puppy" },
+    { value: 2, label: "kitty" },
+    { value: 3, label: "cow" },
+    { value: 4, label: "fox" },
+    { value: 5, label: "birb" },
+    { value: 6, label: "bee" },
+    { value: 7, label: "bun" }
 ] as const;
+
+const petWordsByType: Record<number, string[]> = {
+    1: ["woof", "ruff", "wruff", "arf"],
+    2: ["meow", "mrow", "nya", "mreow", "mew"],
+    3: ["moo", "mmmooo"],
+    4: ["yip", "eeeekkkk", "waaaaaaaahh", "eeeee", "grrrrr", "grr-uff", "eeeek"],
+    5: ["tweet", "squark", "chirp", "caw"],
+    6: ["bzzzz", "buzz"],
+    7: ["squeak", "pyon"]
+};
 
 const defaultLocalConfig: LocalConfig = {
     config: {
@@ -104,7 +117,7 @@ const defaultLocalConfig: LocalConfig = {
         gag_end: epoch,
         pet_end: epoch,
         pet_amount: 0,
-        pet_type: 0,
+        pet_type: 1,
         bimbo_end: epoch,
         horny_end: epoch,
         bimbo_word_length: 12,
@@ -117,7 +130,7 @@ const defaultLocalConfig: LocalConfig = {
     rules: [],
     rules_groups: [],
     whitelist: [],
-    pet_words: [],
+    pet_words: [...petWordsByType[1]],
     censored_words: [],
     drone_config: {
         drone_health: 100,
@@ -167,6 +180,10 @@ function mergeLocalConfig(raw: unknown): LocalConfig {
             ...((asRecord.drone_config as Record<string, unknown>) ?? {})
         } as DroneConfig
     };
+}
+
+function getPetWordsForType(petType: number, fallback: string[] = []): string[] {
+    return petWordsByType[petType] ?? fallback;
 }
 
 async function readLocalConfig(): Promise<LocalConfig> {
@@ -540,7 +557,7 @@ function applyHorny(msg: string): string {
 function applyPet(msg: string): string {
     if (!shouldApplyPet(interceptConfig.config)) return msg;
 
-    const petWords = interceptConfig.pet_words;
+    const petWords = getPetWordsForType(interceptConfig.config.pet_type, interceptConfig.pet_words);
     if (petWords.length === 0) return msg;
 
     let output = "";
@@ -815,7 +832,6 @@ function ConfigPanel(props: any) {
     const [pendingRequests, setPendingRequests] = React.useState<string[]>([]);
     const [status, setStatus] = React.useState("");
     const [editableConfig, setEditableConfig] = React.useState<LocalConfig>(cloneDefaultConfig());
-    const [petWordsText, setPetWordsText] = React.useState("");
     const [censoredWordsText, setCensoredWordsText] = React.useState("");
     const [timeoutAdjustments, setTimeoutAdjustments] = React.useState<Record<ModeTimeoutFieldKey, string>>(
         () => createTimeoutAdjustmentDefaults()
@@ -857,7 +873,6 @@ function ConfigPanel(props: any) {
     const updateFromConfig = React.useCallback((config: LocalConfig) => {
         skipAutosaveRef.current = true;
         setEditableConfig(config);
-        setPetWordsText(toLines(config.pet_words));
         setCensoredWordsText(toLines(config.censored_words));
         lastSavedSnapshotRef.current = JSON.stringify({
             ...config,
@@ -933,7 +948,7 @@ function ConfigPanel(props: any) {
     const saveConfig = React.useCallback(async (baseConfig: LocalConfig) => {
         const mergedConfig = mergeLocalConfig({
             ...baseConfig,
-            pet_words: fromLines(petWordsText),
+            pet_words: getPetWordsForType(baseConfig.config.pet_type, baseConfig.pet_words),
             censored_words: fromLines(censoredWordsText)
         });
         if (isOwnProfile) {
@@ -944,7 +959,7 @@ function ConfigPanel(props: any) {
             setStatus(`Auto-saved ${profileUserId}'s config via relay`);
         }
         lastSavedSnapshotRef.current = JSON.stringify(mergedConfig);
-    }, [activeUserId, censoredWordsText, isOwnProfile, petWordsText, profileUserId]);
+    }, [activeUserId, censoredWordsText, isOwnProfile, profileUserId]);
 
     React.useEffect(() => {
         if (!(isOwnProfile || canViewRemote)) return;
@@ -955,7 +970,7 @@ function ConfigPanel(props: any) {
 
         const nextConfig = mergeLocalConfig({
             ...editableConfig,
-            pet_words: fromLines(petWordsText),
+            pet_words: getPetWordsForType(editableConfig.config.pet_type, editableConfig.pet_words),
             censored_words: fromLines(censoredWordsText)
         });
         const nextSnapshot = JSON.stringify(nextConfig);
@@ -966,7 +981,7 @@ function ConfigPanel(props: any) {
         }, 250);
 
         return () => clearTimeout(handle);
-    }, [canViewRemote, censoredWordsText, editableConfig, isOwnProfile, petWordsText, saveConfig]);
+    }, [canViewRemote, censoredWordsText, editableConfig, isOwnProfile, saveConfig]);
 
     return (
         <div
@@ -1103,7 +1118,7 @@ function ConfigPanel(props: any) {
                     <div style={sectionStyle}>
                         <strong>Word lists</strong>
                         <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
-                            <label>Pet words (one per line)<textarea style={{ ...inputStyle, minHeight: "90px" }} value={petWordsText} onChange={e => setPetWordsText(e.currentTarget.value)} /></label>
+                            <label>Pet words (based on pet type)<textarea style={{ ...inputStyle, minHeight: "90px" }} value={toLines(getPetWordsForType(editableConfig.config.pet_type, editableConfig.pet_words))} readOnly /></label>
                             <label>Censored words (one per line)<textarea style={{ ...inputStyle, minHeight: "90px" }} value={censoredWordsText} onChange={e => setCensoredWordsText(e.currentTarget.value)} /></label>
                         </div>
                     </div>
