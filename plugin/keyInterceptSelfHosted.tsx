@@ -4,6 +4,7 @@ import { findByPropsLazy } from "@webpack";
 import { React, UserStore } from "@webpack/common";
 
 const LOOPBACK = "http://127.0.0.1:35491";
+const DISCORD_SECURE_ORIGINS = new Set(["https://discord.com", "https://ptb.discord.com", "https://canary.discord.com"]);
 
 type Config = {
     rules_end: string;
@@ -224,8 +225,30 @@ async function removeAllowedEditor(requesterId: string, editorId: string) {
     if (!response.ok) throw new Error(`Failed removing editor: ${response.status}`);
 }
 
+function isLoopbackHostname(hostname: string): boolean {
+    return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
+}
+
+function relayBaseUrl(relayUrl: string): string {
+    const trimmed = relayUrl.trim();
+    try {
+        const parsed = new URL(trimmed);
+        if (
+            typeof window !== "undefined"
+            && DISCORD_SECURE_ORIGINS.has(window.location.origin)
+            && parsed.protocol === "http:"
+            && !isLoopbackHostname(parsed.hostname)
+        ) {
+            parsed.protocol = "https:";
+        }
+        return parsed.toString().replace(/\/$/, "");
+    } catch {
+        return trimmed.replace(/\/$/, "");
+    }
+}
+
 async function pushRemoteConfig(relayUrl: string, editorId: string, targetUserId: string, config: LocalConfig) {
-    const response = await fetch(`${relayUrl.replace(/\/$/, "")}/users/${targetUserId}/config`, {
+    const response = await fetch(`${relayBaseUrl(relayUrl)}/users/${targetUserId}/config`, {
         method: "PUT",
         headers: {
             "content-type": "application/json"
@@ -241,14 +264,14 @@ async function pushRemoteConfig(relayUrl: string, editorId: string, targetUserId
 
 async function readRemoteConfig(relayUrl: string, requesterId: string, targetUserId: string): Promise<LocalConfig> {
     const response = await fetch(
-        `${relayUrl.replace(/\/$/, "")}/users/${targetUserId}/config?requester_id=${encodeURIComponent(requesterId)}`
+        `${relayBaseUrl(relayUrl)}/users/${targetUserId}/config?requester_id=${encodeURIComponent(requesterId)}`
     );
     if (!response.ok) throw new Error(`Relay config read failed: ${response.status}`);
     return mergeLocalConfig(await response.json());
 }
 
 async function requestRemoteAccess(relayUrl: string, requesterId: string, targetUserId: string) {
-    const response = await fetch(`${relayUrl.replace(/\/$/, "")}/users/${targetUserId}/access-requests`, {
+    const response = await fetch(`${relayBaseUrl(relayUrl)}/users/${targetUserId}/access-requests`, {
         method: "POST",
         headers: {
             "content-type": "application/json"
@@ -260,7 +283,7 @@ async function requestRemoteAccess(relayUrl: string, requesterId: string, target
 
 async function getAccessRequests(relayUrl: string, ownerId: string) {
     const response = await fetch(
-        `${relayUrl.replace(/\/$/, "")}/users/${ownerId}/access-requests?requester_id=${encodeURIComponent(ownerId)}`
+        `${relayBaseUrl(relayUrl)}/users/${ownerId}/access-requests?requester_id=${encodeURIComponent(ownerId)}`
     );
     if (!response.ok) throw new Error(`Failed loading access requests: ${response.status}`);
     return response.json() as Promise<{ requests: string[] }>;
@@ -268,7 +291,7 @@ async function getAccessRequests(relayUrl: string, ownerId: string) {
 
 async function approveAccessRequest(relayUrl: string, ownerId: string, requesterId: string) {
     const response = await fetch(
-        `${relayUrl.replace(/\/$/, "")}/users/${ownerId}/access-requests/${encodeURIComponent(requesterId)}/approve`,
+        `${relayBaseUrl(relayUrl)}/users/${ownerId}/access-requests/${encodeURIComponent(requesterId)}/approve`,
         {
             method: "POST",
             headers: {
@@ -282,7 +305,7 @@ async function approveAccessRequest(relayUrl: string, ownerId: string, requester
 
 async function denyAccessRequest(relayUrl: string, ownerId: string, requesterId: string) {
     const response = await fetch(
-        `${relayUrl.replace(/\/$/, "")}/users/${ownerId}/access-requests/${encodeURIComponent(requesterId)}?requester_id=${encodeURIComponent(ownerId)}`,
+        `${relayBaseUrl(relayUrl)}/users/${ownerId}/access-requests/${encodeURIComponent(requesterId)}?requester_id=${encodeURIComponent(ownerId)}`,
         { method: "DELETE" }
     );
     if (!response.ok) throw new Error(`Failed denying access request: ${response.status}`);
@@ -1194,7 +1217,7 @@ const settings = definePluginSettings({
     relayUrl: {
         type: OptionType.STRING,
         description: "Public relay URL",
-        default: "http://82.165.196.147:45491"
+        default: "https://82.165.196.147:45491"
     }
 });
 

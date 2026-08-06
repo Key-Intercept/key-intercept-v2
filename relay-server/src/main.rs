@@ -2,7 +2,7 @@ use anyhow::Result;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{Method, StatusCode, header::CONTENT_TYPE},
     response::IntoResponse,
     routing::{delete, get, post},
 };
@@ -14,6 +14,7 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::RwLock;
+use tower_http::cors::CorsLayer;
 use tracing::info;
 
 #[derive(Clone)]
@@ -110,6 +111,7 @@ async fn main() -> Result<()> {
             "/users/:owner_id/access-requests/:requester_id/approve",
             post(approve_access_request),
         )
+        .layer(discord_cors_layer())
         .with_state(AppState {
             peers: Arc::new(RwLock::new(HashMap::new())),
             pending_access_requests: Arc::new(RwLock::new(HashMap::new())),
@@ -494,6 +496,29 @@ async fn deny_access_request(
 
 fn is_discord_id(value: &str) -> bool {
     !value.is_empty() && value.chars().all(|c| c.is_ascii_digit())
+}
+
+fn discord_cors_layer() -> CorsLayer {
+    let origins = [
+        "https://discord.com".parse().expect("valid discord origin"),
+        "https://ptb.discord.com"
+            .parse()
+            .expect("valid discord ptb origin"),
+        "https://canary.discord.com"
+            .parse()
+            .expect("valid discord canary origin"),
+    ];
+
+    CorsLayer::new()
+        .allow_origin(origins)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([CONTENT_TYPE])
 }
 
 fn is_valid_base_url(value: &str) -> bool {

@@ -21,7 +21,7 @@ struct Args {
     #[arg(long)]
     owner_discord_id: String,
 
-    #[arg(long, default_value = "http://82.165.196.147:45491")]
+    #[arg(long, default_value = "https://82.165.196.147:45491")]
     relay_server_url: Option<String>,
 
     #[arg(long, default_value = "Key-Intercept")]
