@@ -899,10 +899,12 @@ function ConfigPanel(props: any) {
         const baseline = Number.isFinite(currentEndMs) && currentEndMs > nowMs ? currentEndMs : nowMs;
         const nextIso = new Date(baseline + amount * multiplierSeconds * 1000).toISOString();
         setTimeoutValue(field, nextIso);
+        setStatus(`${field}: ${formatTimeoutStatus(nextIso, nowMs)}`);
     }, [editableConfig.config, nowMs, setTimeoutValue, timeoutAdjustments]);
 
     const setPermanentTimeout = React.useCallback((field: ModeTimeoutFieldKey) => {
         setTimeoutValue(field, farFuture);
+        setStatus(`${field}: Permanent`);
     }, [setTimeoutValue]);
 
     const saveConfig = React.useCallback(async (baseConfig: LocalConfig) => {
@@ -946,10 +948,10 @@ function ConfigPanel(props: any) {
     return (
         <div
             style={{ width: "100%", maxWidth: "760px", margin: "0 auto", color: "#f2f3f5", background: "#313338", border: "1px solid #3f4147", borderRadius: "16px", padding: "16px", display: "grid", gap: "12px" }}
-            onKeyDownCapture={stopKeyPropagation}
-            onKeyUpCapture={stopKeyPropagation}
-            onMouseDownCapture={stopMousePropagation}
-            onClickCapture={stopMousePropagation}
+            onKeyDown={stopKeyPropagation}
+            onKeyUp={stopKeyPropagation}
+            onMouseDown={stopMousePropagation}
+            onClick={stopMousePropagation}
         >
             <div style={{ ...sectionStyle, background: "#2b2d31" }}>
                 <h3 style={{ margin: 0 }}>key-intercept control center</h3>
