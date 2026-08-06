@@ -1069,9 +1069,18 @@ function ConfigPanel(props: any) {
                     <div style={sectionStyle}>
                         <strong>Numeric values</strong>
                         <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
-                            <label>Pet amount (0-1)<input style={inputStyle} type="number" min={0} max={1} step={0.01} value={editableConfig.config.pet_amount} onChange={e => setEditableConfig(prev => ({ ...prev, config: { ...prev.config, pet_amount: parseNumericInput(e.currentTarget.value, prev.config.pet_amount, { min: 0, max: 1 }) } }))} /></label>
-                            <label>Bimbo word length<input style={inputStyle} type="number" min={1} value={editableConfig.config.bimbo_word_length} onChange={e => setEditableConfig(prev => ({ ...prev, config: { ...prev.config, bimbo_word_length: parseNumericInput(e.currentTarget.value, prev.config.bimbo_word_length, { min: 1 }) } }))} /></label>
-                            <label>Drone health (0-100)<input style={inputStyle} type="number" min={0} max={100} value={editableConfig.drone_config.drone_health} onChange={e => setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, drone_health: parseNumericInput(e.currentTarget.value, prev.drone_config.drone_health, { min: 0, max: 100 }) } }))} /></label>
+                            <label>Pet amount (0-1)<input style={inputStyle} type="number" min={0} max={1} step={0.01} value={editableConfig.config.pet_amount} onChange={e => {
+                                const nextValue = e.currentTarget.value;
+                                setEditableConfig(prev => ({ ...prev, config: { ...prev.config, pet_amount: parseNumericInput(nextValue, prev.config.pet_amount, { min: 0, max: 1 }) } }));
+                            }} /></label>
+                            <label>Bimbo word length<input style={inputStyle} type="number" min={1} value={editableConfig.config.bimbo_word_length} onChange={e => {
+                                const nextValue = e.currentTarget.value;
+                                setEditableConfig(prev => ({ ...prev, config: { ...prev.config, bimbo_word_length: parseNumericInput(nextValue, prev.config.bimbo_word_length, { min: 1 }) } }));
+                            }} /></label>
+                            <label>Drone health (0-100)<input style={inputStyle} type="number" min={0} max={100} value={editableConfig.drone_config.drone_health} onChange={e => {
+                                const nextValue = e.currentTarget.value;
+                                setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, drone_health: parseNumericInput(nextValue, prev.drone_config.drone_health, { min: 0, max: 100 }) } }));
+                            }} /></label>
                         </div>
                     </div>
 
