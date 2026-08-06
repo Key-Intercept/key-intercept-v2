@@ -339,6 +339,21 @@ function fromLines(value: string): string[] {
         .filter(Boolean);
 }
 
+function parseNumericInput(
+    rawValue: string,
+    previousValue: number,
+    options?: { min?: number; max?: number; }
+): number {
+    if (rawValue.trim() === "") return previousValue;
+    const nextValue = Number(rawValue);
+    if (!Number.isFinite(nextValue)) return previousValue;
+
+    let output = nextValue;
+    if (options?.min !== undefined) output = Math.max(options.min, output);
+    if (options?.max !== undefined) output = Math.min(options.max, output);
+    return output;
+}
+
 function createTimeoutAdjustmentDefaults(): Record<ModeTimeoutFieldKey, string> {
     return modeTimeoutFields.reduce((acc, field) => {
         acc[field.key] = "1";
@@ -1055,9 +1070,18 @@ function ConfigPanel(props: any) {
                     <div style={sectionStyle}>
                         <strong>Numeric values</strong>
                         <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
-                            <label>Pet amount (0-1)<input style={inputStyle} type="number" min={0} max={1} step={0.01} value={editableConfig.config.pet_amount} onChange={e => setEditableConfig(prev => ({ ...prev, config: { ...prev.config, pet_amount: Number(e.currentTarget.value) } }))} /></label>
-                            <label>Bimbo word length<input style={inputStyle} type="number" min={1} value={editableConfig.config.bimbo_word_length} onChange={e => setEditableConfig(prev => ({ ...prev, config: { ...prev.config, bimbo_word_length: Number(e.currentTarget.value) } }))} /></label>
-                            <label>Drone health (0-100)<input style={inputStyle} type="number" min={0} max={100} value={editableConfig.drone_config.drone_health} onChange={e => setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, drone_health: Number(e.currentTarget.value) } }))} /></label>
+                            <label>Pet amount (0-1)<input style={inputStyle} type="number" min={0} max={1} step={0.01} value={editableConfig.config.pet_amount} onChange={e => {
+                                const nextValue = e.currentTarget.value;
+                                setEditableConfig(prev => ({ ...prev, config: { ...prev.config, pet_amount: parseNumericInput(nextValue, prev.config.pet_amount, { min: 0, max: 1 }) } }));
+                            }} /></label>
+                            <label>Bimbo word length<input style={inputStyle} type="number" min={1} value={editableConfig.config.bimbo_word_length} onChange={e => {
+                                const nextValue = e.currentTarget.value;
+                                setEditableConfig(prev => ({ ...prev, config: { ...prev.config, bimbo_word_length: parseNumericInput(nextValue, prev.config.bimbo_word_length, { min: 1 }) } }));
+                            }} /></label>
+                            <label>Drone health (0-100)<input style={inputStyle} type="number" min={0} max={100} value={editableConfig.drone_config.drone_health} onChange={e => {
+                                const nextValue = e.currentTarget.value;
+                                setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, drone_health: parseNumericInput(nextValue, prev.drone_config.drone_health, { min: 0, max: 100 }) } }));
+                            }} /></label>
                         </div>
                     </div>
 
@@ -1069,13 +1093,16 @@ function ConfigPanel(props: any) {
                                 <select
                                     style={inputStyle}
                                     value={petTypeOptions.some(option => option.value === editableConfig.config.pet_type) ? editableConfig.config.pet_type : petTypeOptions[0].value}
-                                    onChange={e => setEditableConfig(prev => ({
-                                        ...prev,
-                                        config: {
-                                            ...prev.config,
-                                            pet_type: Number(e.currentTarget.value)
-                                        }
-                                    }))}
+                                    onChange={e => {
+                                        const nextValue = Number(e.currentTarget.value);
+                                        setEditableConfig(prev => ({
+                                            ...prev,
+                                            config: {
+                                                ...prev.config,
+                                                pet_type: nextValue
+                                            }
+                                        }));
+                                    }}
                                 >
                                     {petTypeOptions.map(option => (
                                         <option key={option.value} value={option.value}>{option.label}</option>
@@ -1088,16 +1115,46 @@ function ConfigPanel(props: any) {
                     <div style={sectionStyle}>
                         <strong>Text values</strong>
                         <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
-                            <label>Censored replacement<input style={inputStyle} value={editableConfig.config.censored_replacement} onChange={e => setEditableConfig(prev => ({ ...prev, config: { ...prev.config, censored_replacement: e.currentTarget.value } }))} /></label>
-                            <label>Drone term<input style={inputStyle} value={editableConfig.drone_config.drone_term} onChange={e => setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, drone_term: e.currentTarget.value } }))} /></label>
-                            <label>Drone speech header<input style={inputStyle} value={editableConfig.drone_config.speech_header} onChange={e => setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, speech_header: e.currentTarget.value } }))} /></label>
-                            <label>Drone speech footer<input style={inputStyle} value={editableConfig.drone_config.speech_footer} onChange={e => setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, speech_footer: e.currentTarget.value } }))} /></label>
-                            <label>Drone action header<input style={inputStyle} value={editableConfig.drone_config.action_header} onChange={e => setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, action_header: e.currentTarget.value } }))} /></label>
-                            <label>Drone action footer<input style={inputStyle} value={editableConfig.drone_config.action_footer} onChange={e => setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, action_footer: e.currentTarget.value } }))} /></label>
-                            <label>Drone whisper header<input style={inputStyle} value={editableConfig.drone_config.whisper_header} onChange={e => setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, whisper_header: e.currentTarget.value } }))} /></label>
-                            <label>Drone whisper footer<input style={inputStyle} value={editableConfig.drone_config.whisper_footer} onChange={e => setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, whisper_footer: e.currentTarget.value } }))} /></label>
-                            <label>Drone loud header<input style={inputStyle} value={editableConfig.drone_config.loud_header} onChange={e => setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, loud_header: e.currentTarget.value } }))} /></label>
-                            <label>Drone loud footer<input style={inputStyle} value={editableConfig.drone_config.loud_footer} onChange={e => setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, loud_footer: e.currentTarget.value } }))} /></label>
+                            <label>Censored replacement<input style={inputStyle} value={editableConfig.config.censored_replacement} onChange={e => {
+                                const nextValue = e.currentTarget.value;
+                                setEditableConfig(prev => ({ ...prev, config: { ...prev.config, censored_replacement: nextValue } }));
+                            }} /></label>
+                            <label>Drone term<input style={inputStyle} value={editableConfig.drone_config.drone_term} onChange={e => {
+                                const nextValue = e.currentTarget.value;
+                                setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, drone_term: nextValue } }));
+                            }} /></label>
+                            <label>Drone speech header<input style={inputStyle} value={editableConfig.drone_config.speech_header} onChange={e => {
+                                const nextValue = e.currentTarget.value;
+                                setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, speech_header: nextValue } }));
+                            }} /></label>
+                            <label>Drone speech footer<input style={inputStyle} value={editableConfig.drone_config.speech_footer} onChange={e => {
+                                const nextValue = e.currentTarget.value;
+                                setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, speech_footer: nextValue } }));
+                            }} /></label>
+                            <label>Drone action header<input style={inputStyle} value={editableConfig.drone_config.action_header} onChange={e => {
+                                const nextValue = e.currentTarget.value;
+                                setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, action_header: nextValue } }));
+                            }} /></label>
+                            <label>Drone action footer<input style={inputStyle} value={editableConfig.drone_config.action_footer} onChange={e => {
+                                const nextValue = e.currentTarget.value;
+                                setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, action_footer: nextValue } }));
+                            }} /></label>
+                            <label>Drone whisper header<input style={inputStyle} value={editableConfig.drone_config.whisper_header} onChange={e => {
+                                const nextValue = e.currentTarget.value;
+                                setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, whisper_header: nextValue } }));
+                            }} /></label>
+                            <label>Drone whisper footer<input style={inputStyle} value={editableConfig.drone_config.whisper_footer} onChange={e => {
+                                const nextValue = e.currentTarget.value;
+                                setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, whisper_footer: nextValue } }));
+                            }} /></label>
+                            <label>Drone loud header<input style={inputStyle} value={editableConfig.drone_config.loud_header} onChange={e => {
+                                const nextValue = e.currentTarget.value;
+                                setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, loud_header: nextValue } }));
+                            }} /></label>
+                            <label>Drone loud footer<input style={inputStyle} value={editableConfig.drone_config.loud_footer} onChange={e => {
+                                const nextValue = e.currentTarget.value;
+                                setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, loud_footer: nextValue } }));
+                            }} /></label>
                         </div>
                     </div>
 
@@ -1108,7 +1165,10 @@ function ConfigPanel(props: any) {
                                 <input
                                     type="checkbox"
                                     checked={editableConfig.config.debug}
-                                    onChange={e => setEditableConfig(prev => ({ ...prev, config: { ...prev.config, debug: e.currentTarget.checked } }))}
+                                    onChange={e => {
+                                        const nextValue = e.currentTarget.checked;
+                                        setEditableConfig(prev => ({ ...prev, config: { ...prev.config, debug: nextValue } }));
+                                    }}
                                 />
                                 Debug mode
                             </label>
