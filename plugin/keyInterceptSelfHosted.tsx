@@ -67,7 +67,17 @@ type LocalConfig = {
 const farFuture = "9999-12-31T23:59:59.000Z";
 const epoch = "1970-01-01T00:00:00.000Z";
 
-const modeTimeoutFields: Array<{ key: keyof Config; label: string; }> = [
+type ModeTimeoutFieldKey =
+    | "rules_end"
+    | "gag_end"
+    | "pet_end"
+    | "bimbo_end"
+    | "horny_end"
+    | "drone_end"
+    | "uwu_end"
+    | "censored_end";
+
+const modeTimeoutFields: Array<{ key: ModeTimeoutFieldKey; label: string; }> = [
     { key: "rules_end", label: "Rule groups timeout" },
     { key: "gag_end", label: "Gag timeout" },
     { key: "pet_end", label: "Pet timeout" },
@@ -77,6 +87,8 @@ const modeTimeoutFields: Array<{ key: keyof Config; label: string; }> = [
     { key: "uwu_end", label: "UWU timeout" },
     { key: "censored_end", label: "Censored timeout" }
 ];
+
+const permanentTimestamp = new Date(farFuture).getTime();
 
 const petTypeOptions = [
     { value: 0, label: "Type 0" },
@@ -285,6 +297,35 @@ function fromLines(value: string): string[] {
         .split("\n")
         .map(v => v.trim())
         .filter(Boolean);
+}
+
+function createTimeoutAdjustmentDefaults(): Record<ModeTimeoutFieldKey, string> {
+    return modeTimeoutFields.reduce((acc, field) => {
+        acc[field.key] = "1";
+        return acc;
+    }, {} as Record<ModeTimeoutFieldKey, string>);
+}
+
+function formatCountdown(msRemaining: number): string {
+    if (msRemaining <= 0) return "Expired";
+    const totalSeconds = Math.floor(msRemaining / 1000);
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.floor((totalSeconds % 86400) / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    const parts: string[] = [];
+    if (days > 0) parts.push(`${days}d`);
+    if (hours > 0 || days > 0) parts.push(`${hours}h`);
+    if (minutes > 0 || hours > 0 || days > 0) parts.push(`${minutes}m`);
+    parts.push(`${seconds}s`);
+    return parts.join(" ");
+}
+
+function formatTimeoutStatus(endIso: string, nowMs: number): string {
+    const endMs = Date.parse(endIso);
+    if (!Number.isFinite(endMs)) return "Invalid timestamp";
+    if (endMs >= permanentTimestamp - 1000) return "Permanent";
+    return formatCountdown(endMs - nowMs);
 }
 
 function getProfileUserId(props: any): string | null {
@@ -753,10 +794,17 @@ function ConfigPanel(props: any) {
     const [editableConfig, setEditableConfig] = React.useState<LocalConfig>(cloneDefaultConfig());
     const [petWordsText, setPetWordsText] = React.useState("");
     const [censoredWordsText, setCensoredWordsText] = React.useState("");
+    const [timeoutAdjustments, setTimeoutAdjustments] = React.useState<Record<ModeTimeoutFieldKey, string>>(
+        () => createTimeoutAdjustmentDefaults()
+    );
+    const [nowMs, setNowMs] = React.useState(() => Date.now());
     const [canViewRemote, setCanViewRemote] = React.useState(isOwnProfile);
     const skipAutosaveRef = React.useRef(true);
     const lastSavedSnapshotRef = React.useRef("");
     const stopKeyPropagation = React.useCallback((event: React.KeyboardEvent) => {
+        event.stopPropagation();
+    }, []);
+    const stopMousePropagation = React.useCallback((event: React.MouseEvent) => {
         event.stopPropagation();
     }, []);
 
@@ -823,6 +871,40 @@ function ConfigPanel(props: any) {
         refresh().catch(err => setStatus(String(err)));
     }, [refresh]);
 
+    React.useEffect(() => {
+        const handle = setInterval(() => {
+            setNowMs(Date.now());
+        }, 1000);
+        return () => clearInterval(handle);
+    }, []);
+
+    const setTimeoutValue = React.useCallback((field: ModeTimeoutFieldKey, nextIso: string) => {
+        setEditableConfig(prev => ({
+            ...prev,
+            config: {
+                ...prev.config,
+                [field]: nextIso
+            }
+        }));
+    }, []);
+
+    const addTimeoutAmount = React.useCallback((field: ModeTimeoutFieldKey, multiplierSeconds: number) => {
+        const amount = Number(timeoutAdjustments[field]);
+        if (!Number.isFinite(amount) || amount <= 0) {
+            setStatus(`Enter a positive number for ${field}`);
+            return;
+        }
+
+        const currentEndMs = Date.parse(editableConfig.config[field]);
+        const baseline = Number.isFinite(currentEndMs) && currentEndMs > nowMs ? currentEndMs : nowMs;
+        const nextIso = new Date(baseline + amount * multiplierSeconds * 1000).toISOString();
+        setTimeoutValue(field, nextIso);
+    }, [editableConfig.config, nowMs, setTimeoutValue, timeoutAdjustments]);
+
+    const setPermanentTimeout = React.useCallback((field: ModeTimeoutFieldKey) => {
+        setTimeoutValue(field, farFuture);
+    }, [setTimeoutValue]);
+
     const saveConfig = React.useCallback(async (baseConfig: LocalConfig) => {
         const mergedConfig = mergeLocalConfig({
             ...baseConfig,
@@ -866,6 +948,8 @@ function ConfigPanel(props: any) {
             style={{ width: "100%", maxWidth: "760px", margin: "0 auto", color: "#f2f3f5", background: "#313338", border: "1px solid #3f4147", borderRadius: "16px", padding: "16px", display: "grid", gap: "12px" }}
             onKeyDownCapture={stopKeyPropagation}
             onKeyUpCapture={stopKeyPropagation}
+            onMouseDownCapture={stopMousePropagation}
+            onClickCapture={stopMousePropagation}
         >
             <div style={{ ...sectionStyle, background: "#2b2d31" }}>
                 <h3 style={{ margin: 0 }}>key-intercept control center</h3>
@@ -899,22 +983,31 @@ function ConfigPanel(props: any) {
                         <strong>Mode timeouts</strong>
                         <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
                             {modeTimeoutFields.map(({ key, label }) => (
-                                <label key={key}>
-                                    {label}
-                                    <input
-                                        style={inputStyle}
-                                        type="text"
-                                        placeholder="ISO timestamp (e.g. 1970-01-01T00:00:00.000Z or 9999-12-31T23:59:59.000Z)"
-                                        value={editableConfig.config[key]}
-                                        onChange={e => setEditableConfig(prev => ({
-                                            ...prev,
-                                            config: {
-                                                ...prev.config,
-                                                [key]: e.currentTarget.value
-                                            }
-                                        }))}
-                                    />
-                                </label>
+                                <div key={key} style={{ border: "1px solid #3f4147", borderRadius: "10px", padding: "10px", display: "grid", gap: "8px" }}>
+                                    <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", flexWrap: "wrap" }}>
+                                        <strong>{label}</strong>
+                                        <span style={{ color: "#b5bac1" }}>{formatTimeoutStatus(editableConfig.config[key], nowMs)}</span>
+                                    </div>
+                                    <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                                        <input
+                                            style={{ ...inputStyle, width: "110px" }}
+                                            type="number"
+                                            min={1}
+                                            value={timeoutAdjustments[key]}
+                                            onChange={e => {
+                                                const nextValue = e.currentTarget.value;
+                                                setTimeoutAdjustments(prev => ({
+                                                    ...prev,
+                                                    [key]: nextValue
+                                                }));
+                                            }}
+                                        />
+                                        <button style={buttonStyle} onClick={() => addTimeoutAmount(key, 1)}>Add Seconds</button>
+                                        <button style={buttonStyle} onClick={() => addTimeoutAmount(key, 60)}>Add Minutes</button>
+                                        <button style={buttonStyle} onClick={() => addTimeoutAmount(key, 3600)}>Add Hours</button>
+                                        <button style={buttonStyle} onClick={() => setPermanentTimeout(key)}>Permanent</button>
+                                    </div>
+                                </div>
                             ))}
                         </div>
                     </div>
