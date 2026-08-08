@@ -76,6 +76,7 @@ async fn main() -> Result<()> {
     let config_path = std::env::var("KEY_INTERCEPT_CONFIG_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_config_path());
+    info!("using config path {}", config_path.display());
 
     let store = ConfigStore::load_or_create(config_path, owner_discord_id.clone()).await?;
 
@@ -161,6 +162,7 @@ async fn get_config(
     let stored = state.store.get().await;
 
     let Some(requester) = requester_id(&headers, &query) else {
+        info!("GET /config denied: missing requester id");
         return (
             StatusCode::UNAUTHORIZED,
             Json(ErrorResponse {
@@ -171,6 +173,7 @@ async fn get_config(
     };
 
     if requester != stored.owner_discord_id && !stored.allowed_editors.contains(&requester) {
+        info!("GET /config denied for requester {}", requester);
         return (
             StatusCode::FORBIDDEN,
             Json(ErrorResponse {
@@ -180,6 +183,7 @@ async fn get_config(
             .into_response();
     };
 
+    info!("GET /config success for requester {}", requester);
     Json(stored.config).into_response()
 }
 
@@ -189,6 +193,7 @@ async fn put_config(
     Json(payload): Json<ConfigPayload>,
 ) -> impl IntoResponse {
     let Some(requester_id) = requester_header(&headers) else {
+        info!("PUT /config denied: missing x-discord-user-id");
         return (
             StatusCode::UNAUTHORIZED,
             Json(ErrorResponse {
@@ -199,6 +204,7 @@ async fn put_config(
     };
 
     if let Err(err) = payload.config.validate() {
+        info!("PUT /config rejected for requester {}: {}", requester_id, err);
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse { error: err }),
@@ -211,14 +217,20 @@ async fn put_config(
         .update_config(&requester_id, payload.config)
         .await
     {
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
-        Err(err) => (
-            StatusCode::FORBIDDEN,
-            Json(ErrorResponse {
-                error: err.to_string(),
-            }),
-        )
-            .into_response(),
+        Ok(_) => {
+            info!("PUT /config success for requester {}", requester_id);
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(err) => {
+            info!("PUT /config denied for requester {}: {}", requester_id, err);
+            (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: err.to_string(),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 

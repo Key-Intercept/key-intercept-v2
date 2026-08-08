@@ -34,6 +34,13 @@ pub struct Rule {
 #[serde(deny_unknown_fields)]
 pub struct RuleGroup {
     pub id: i64,
+    #[serde(default = "default_group_timeout_end")]
+    pub timeout_end: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub order: i64,
+    #[serde(default)]
     pub disabled_at: String,
 }
 
@@ -131,6 +138,15 @@ impl LocalConfig {
             }
         }
 
+        for group in &self.rules_groups {
+            if group.id < 1 {
+                return Err("rules_groups[*].id must be at least 1".to_string());
+            }
+            if group.order < 0 {
+                return Err("rules_groups[*].order must be 0 or greater".to_string());
+            }
+        }
+
         for item in &self.whitelist {
             if !item.discord_id.is_empty() && !is_discord_id(&item.discord_id) {
                 return Err("whitelist[*].discord_id must be numeric".to_string());
@@ -143,4 +159,12 @@ impl LocalConfig {
 
 pub fn is_discord_id(value: &str) -> bool {
     !value.is_empty() && value.chars().all(|c| c.is_ascii_digit())
+}
+
+fn default_group_timeout_end() -> String {
+    "9999-12-31T23:59:59.000Z".to_string()
+}
+
+fn default_true() -> bool {
+    true
 }

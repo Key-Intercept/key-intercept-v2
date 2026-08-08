@@ -5,6 +5,7 @@ import { React, UserStore } from "@webpack/common";
 
 const LOOPBACK = "http://127.0.0.1:35491";
 const DISCORD_SECURE_ORIGINS = new Set(["https://discord.com", "https://ptb.discord.com", "https://canary.discord.com"]);
+const LOG_PREFIX = "[key-intercept]";
 
 type Config = {
     rules_end: string;
@@ -34,7 +35,10 @@ type Rule = {
 
 type RuleGroup = {
     id: number;
-    disabled_at: string;
+    timeout_end: string;
+    enabled: boolean;
+    order: number;
+    disabled_at?: string;
 };
 
 type WhitelistItem = {
@@ -69,7 +73,6 @@ const farFuture = "9999-12-31T23:59:59.000Z";
 const epoch = "1970-01-01T00:00:00.000Z";
 
 type ModeTimeoutFieldKey =
-    | "rules_end"
     | "gag_end"
     | "pet_end"
     | "bimbo_end"
@@ -79,7 +82,6 @@ type ModeTimeoutFieldKey =
     | "censored_end";
 
 const modeTimeoutFields: Array<{ key: ModeTimeoutFieldKey; label: string; }> = [
-    { key: "rules_end", label: "Rule groups timeout" },
     { key: "gag_end", label: "Gag timeout" },
     { key: "pet_end", label: "Pet timeout" },
     { key: "bimbo_end", label: "Bimbo timeout" },
@@ -165,19 +167,68 @@ function mergeLocalConfig(raw: unknown): LocalConfig {
     if (!raw || typeof raw !== "object") return cloneDefaultConfig();
 
     const asRecord = raw as Record<string, unknown>;
+    const nestedConfig = asRecord.config;
+    const source = (
+        nestedConfig
+        && typeof nestedConfig === "object"
+        && (
+            Array.isArray((nestedConfig as Record<string, unknown>).rules)
+            || Array.isArray((nestedConfig as Record<string, unknown>).rules_groups)
+            || Array.isArray((nestedConfig as Record<string, unknown>).whitelist)
+            || "drone_config" in (nestedConfig as Record<string, unknown>)
+            || "pet_words" in (nestedConfig as Record<string, unknown>)
+            || "censored_words" in (nestedConfig as Record<string, unknown>)
+        )
+    ) ? nestedConfig as Record<string, unknown> : asRecord;
+
+    const mergedRules = Array.isArray(source.rules)
+        ? (source.rules as Array<Record<string, unknown>>).map((rule, index) => ({
+            rule_regex: typeof rule.rule_regex === "string" ? rule.rule_regex : "",
+            rule_replacement: typeof rule.rule_replacement === "string" ? rule.rule_replacement : "",
+            regex_normalize: Boolean(rule.regex_normalize),
+            enabled: rule.enabled === undefined ? true : Boolean(rule.enabled),
+            chance_to_apply: parseNumericInput(String(rule.chance_to_apply ?? "1"), 1, { min: 0, max: 1 }),
+            order: parseNumericInput(String(rule.order ?? index), index, { min: 0 }),
+            group_id: parseNumericInput(String(rule.group_id ?? 1), 1, { min: 1 })
+        }))
+        : [];
+    const mergedGroups = Array.isArray(source.rules_groups)
+        ? (source.rules_groups as Array<Record<string, unknown>>).map((group, index) => {
+            const fallbackTimeout = typeof group.disabled_at === "string" ? group.disabled_at : farFuture;
+            return {
+                id: parseNumericInput(String(group.id ?? index + 1), index + 1, { min: 1 }),
+                timeout_end: typeof group.timeout_end === "string" ? group.timeout_end : fallbackTimeout,
+                enabled: group.enabled === undefined
+                    ? (typeof group.disabled_at === "string" ? Date.parse(group.disabled_at) > Date.now() : true)
+                    : Boolean(group.enabled),
+                order: parseNumericInput(String(group.order ?? index), index, { min: 0 }),
+                disabled_at: typeof group.disabled_at === "string" ? group.disabled_at : undefined
+            };
+        })
+        : [];
+    const mergedWhitelist = Array.isArray(source.whitelist)
+        ? (source.whitelist as Array<Record<string, unknown>>).map(item => {
+            const server_name = typeof item.server_name === "string" ? item.server_name : "";
+            const discord_id = typeof item.discord_id === "string" && /^\d*$/.test(item.discord_id)
+                ? item.discord_id
+                : "";
+            return { server_name, discord_id };
+        })
+        : [];
+
     return {
         config: {
             ...defaultLocalConfig.config,
-            ...((asRecord.config as Record<string, unknown>) ?? {})
+            ...((source.config as Record<string, unknown>) ?? {})
         } as Config,
-        rules: Array.isArray(asRecord.rules) ? (asRecord.rules as Rule[]) : [],
-        rules_groups: Array.isArray(asRecord.rules_groups) ? (asRecord.rules_groups as RuleGroup[]) : [],
-        whitelist: Array.isArray(asRecord.whitelist) ? (asRecord.whitelist as WhitelistItem[]) : [],
-        pet_words: Array.isArray(asRecord.pet_words) ? (asRecord.pet_words as string[]) : [],
-        censored_words: Array.isArray(asRecord.censored_words) ? (asRecord.censored_words as string[]) : [],
+        rules: mergedRules,
+        rules_groups: mergedGroups,
+        whitelist: mergedWhitelist,
+        pet_words: Array.isArray(source.pet_words) ? (source.pet_words as string[]) : [],
+        censored_words: Array.isArray(source.censored_words) ? (source.censored_words as string[]) : [],
         drone_config: {
             ...defaultLocalConfig.drone_config,
-            ...((asRecord.drone_config as Record<string, unknown>) ?? {})
+            ...((source.drone_config as Record<string, unknown>) ?? {})
         } as DroneConfig
     };
 }
@@ -186,19 +237,50 @@ function getPetWordsForType(petType: number, fallback: string[] = []): string[] 
     return petWordsByType[petType] ?? fallback;
 }
 
+function configLogSummary(config: LocalConfig) {
+    return {
+        rules: config.rules.length,
+        groups: config.rules_groups.length,
+        whitelist: config.whitelist.length,
+        petAmount: config.config.pet_amount,
+        petType: config.config.pet_type,
+        timeouts: {
+            gag_end: config.config.gag_end,
+            pet_end: config.config.pet_end,
+            bimbo_end: config.config.bimbo_end,
+            horny_end: config.config.horny_end,
+            drone_end: config.config.drone_end,
+            uwu_end: config.config.uwu_end,
+            censored_end: config.config.censored_end
+        },
+        drone: {
+            drone_health: config.drone_config.drone_health,
+            drone_term: config.drone_config.drone_term
+        }
+    };
+}
+
 async function readLocalConfig(): Promise<LocalConfig> {
+    const userId = currentUser().id;
+    console.info(`${LOG_PREFIX} readLocalConfig:start`, { userId });
     const response = await fetch(`${LOOPBACK}/config`, {
+        cache: "no-store",
         headers: {
-            "x-discord-user-id": currentUser().id
+            "x-discord-user-id": userId
         }
     });
-    if (!response.ok) throw new Error(`Failed reading local config: ${response.status}`);
+    if (!response.ok) {
+        console.error(`${LOG_PREFIX} readLocalConfig:failed`, { userId, status: response.status });
+        throw new Error(`Failed reading local config: ${response.status}`);
+    }
     const payload = mergeLocalConfig(await response.json());
     interceptConfig = payload;
+    console.info(`${LOG_PREFIX} readLocalConfig:success`, { userId, summary: configLogSummary(payload) });
     return payload;
 }
 
 async function saveLocalConfig(userId: string, config: LocalConfig) {
+    console.info(`${LOG_PREFIX} saveLocalConfig:start`, { userId, summary: configLogSummary(config) });
     const response = await fetch(`${LOOPBACK}/config`, {
         method: "PUT",
         headers: {
@@ -208,12 +290,18 @@ async function saveLocalConfig(userId: string, config: LocalConfig) {
         body: JSON.stringify({ config })
     });
 
-    if (!response.ok) throw new Error(`Failed saving local config: ${response.status}`);
+    if (!response.ok) {
+        console.error(`${LOG_PREFIX} saveLocalConfig:failed`, { userId, status: response.status });
+        throw new Error(`Failed saving local config: ${response.status}`);
+    }
     interceptConfig = mergeLocalConfig(config);
+    console.info(`${LOG_PREFIX} saveLocalConfig:success`, { userId, summary: configLogSummary(interceptConfig) });
 }
 
 async function getAllowedEditors() {
-    const response = await fetch(`${LOOPBACK}/allowed-editors`);
+    const response = await fetch(`${LOOPBACK}/allowed-editors`, {
+        cache: "no-store"
+    });
     if (!response.ok) throw new Error(`Failed loading editors: ${response.status}`);
     return response.json() as Promise<{ allowed_editors: string[] }>;
 }
@@ -280,11 +368,26 @@ async function pushRemoteConfig(relayUrl: string, editorId: string, targetUserId
 }
 
 async function readRemoteConfig(relayUrl: string, requesterId: string, targetUserId: string): Promise<LocalConfig> {
+    console.info(`${LOG_PREFIX} readRemoteConfig:start`, { requesterId, targetUserId });
     const response = await fetch(
-        `${relayBaseUrl(relayUrl)}/users/${targetUserId}/config?requester_id=${encodeURIComponent(requesterId)}`
+        `${relayBaseUrl(relayUrl)}/users/${targetUserId}/config?requester_id=${encodeURIComponent(requesterId)}`,
+        { cache: "no-store" }
     );
-    if (!response.ok) throw new Error(`Relay config read failed: ${response.status}`);
-    return mergeLocalConfig(await response.json());
+    if (!response.ok) {
+        console.error(`${LOG_PREFIX} readRemoteConfig:failed`, {
+            requesterId,
+            targetUserId,
+            status: response.status
+        });
+        throw new Error(`Relay config read failed: ${response.status}`);
+    }
+    const payload = mergeLocalConfig(await response.json());
+    console.info(`${LOG_PREFIX} readRemoteConfig:success`, {
+        requesterId,
+        targetUserId,
+        summary: configLogSummary(payload)
+    });
+    return payload;
 }
 
 async function requestRemoteAccess(relayUrl: string, requesterId: string, targetUserId: string) {
@@ -300,7 +403,8 @@ async function requestRemoteAccess(relayUrl: string, requesterId: string, target
 
 async function getAccessRequests(relayUrl: string, ownerId: string) {
     const response = await fetch(
-        `${relayBaseUrl(relayUrl)}/users/${ownerId}/access-requests?requester_id=${encodeURIComponent(ownerId)}`
+        `${relayBaseUrl(relayUrl)}/users/${ownerId}/access-requests?requester_id=${encodeURIComponent(ownerId)}`,
+        { cache: "no-store" }
     );
     if (!response.ok) throw new Error(`Failed loading access requests: ${response.status}`);
     return response.json() as Promise<{ requests: string[] }>;
@@ -394,6 +498,22 @@ function getProfileUserId(props: any): string | null {
     return candidates.find((id: unknown): id is string => typeof id === "string" && id.length > 0) ?? null;
 }
 
+function getProfilePanelOpenInfo(props: any): { isOpen: boolean; hasExplicitState: boolean } {
+    const openStateCandidates = [
+        props?.isOpen,
+        props?.open,
+        props?.isActive,
+        props?.active,
+        props?.isVisible,
+        props?.visible
+    ];
+    const explicitState = openStateCandidates.find((value): value is boolean => typeof value === "boolean");
+    return {
+        isOpen: explicitState ?? true,
+        hasExplicitState: explicitState !== undefined
+    };
+}
+
 class NormalizedString {
     str: string;
     nfkdStr: string;
@@ -468,7 +588,9 @@ function shouldApply(endIso: string): boolean {
 }
 
 function shouldApplyRules(config: Config): boolean {
-    return shouldApply(config.rules_end);
+    if (!config) return false;
+    if (!interceptConfig.rules.length || !interceptConfig.rules_groups.length) return false;
+    return interceptConfig.rules_groups.some(group => group.enabled && shouldApply(group.timeout_end));
 }
 
 function shouldApplyGag(config: Config): boolean {
@@ -503,29 +625,28 @@ function applyRules(msg: string): string {
     if (!shouldApplyRules(interceptConfig.config)) return msg;
 
     let output = msg.normalize("NFKC");
-    const groups = interceptConfig.rules_groups;
-    const sortedRules = [...interceptConfig.rules].sort((a, b) => a.order - b.order);
+    const groups = [...interceptConfig.rules_groups]
+        .filter(group => group.enabled && shouldApply(group.timeout_end))
+        .sort((a, b) => a.order - b.order);
 
-    for (const rule of sortedRules) {
-        let enabled = rule.enabled;
-        for (const group of groups) {
-            if (group.id === rule.group_id && new Date(group.disabled_at).getTime() > Date.now()) {
-                enabled = true;
+    for (const group of groups) {
+        const sortedRules = [...interceptConfig.rules]
+            .filter(rule => rule.group_id === group.id && rule.enabled)
+            .sort((a, b) => a.order - b.order);
+
+        for (const rule of sortedRules) {
+            if (!rule.rule_regex) continue;
+            const temp = new RegExp(rule.rule_regex.toString().replaceAll("\\\\", "\\"));
+            const matchCallback = (match: string): string => {
+                if (Math.random() > rule.chance_to_apply) return match;
+                return match.replace(new RegExp(temp, "i"), rule.rule_replacement);
+            };
+
+            if (rule.regex_normalize) {
+                output = new NormalizedString(output).replace(new RegExp(temp, "gi"), matchCallback);
+            } else {
+                output = output.replace(new RegExp(temp, "gi"), matchCallback);
             }
-        }
-
-        if (!enabled) continue;
-
-        const temp = new RegExp(rule.rule_regex.toString().replaceAll("\\\\", "\\"));
-        const matchCallback = (match: string): string => {
-            if (Math.random() > rule.chance_to_apply) return match;
-            return match.replace(new RegExp(temp, "i"), rule.rule_replacement);
-        };
-
-        if (rule.regex_normalize) {
-            output = new NormalizedString(output).replace(new RegExp(temp, "gi"), matchCallback);
-        } else {
-            output = output.replace(new RegExp(temp, "gi"), matchCallback);
         }
     }
 
@@ -841,20 +962,27 @@ function ConfigPanel(props: any) {
     const activeUserId = currentUser().id;
     const profileUserId = getProfileUserId(props) ?? activeUserId;
     const isOwnProfile = profileUserId === activeUserId;
+    const panelOpenInfo = getProfilePanelOpenInfo(props);
+    const isPanelOpen = panelOpenInfo.isOpen;
+    const hasExplicitPanelOpenState = panelOpenInfo.hasExplicitState;
 
     const [newEditorId, setNewEditorId] = React.useState("");
     const [allowedEditors, setAllowedEditors] = React.useState<string[]>([]);
     const [pendingRequests, setPendingRequests] = React.useState<string[]>([]);
     const [status, setStatus] = React.useState("");
-    const [editableConfig, setEditableConfig] = React.useState<LocalConfig>(cloneDefaultConfig());
-    const [censoredWordsText, setCensoredWordsText] = React.useState("");
+    const [editableConfig, setEditableConfig] = React.useState<LocalConfig>(() => mergeLocalConfig(interceptConfig));
+    const [censoredWordsText, setCensoredWordsText] = React.useState(() => toLines(interceptConfig.censored_words));
     const [timeoutAdjustments, setTimeoutAdjustments] = React.useState<Record<ModeTimeoutFieldKey, string>>(
         () => createTimeoutAdjustmentDefaults()
     );
+    const [groupTimeoutAdjustments, setGroupTimeoutAdjustments] = React.useState<Record<number, string>>({});
+    const [isRulesEditorOpen, setIsRulesEditorOpen] = React.useState(false);
     const [nowMs, setNowMs] = React.useState(() => Date.now());
     const [canViewRemote, setCanViewRemote] = React.useState(isOwnProfile);
     const skipAutosaveRef = React.useRef(true);
     const lastSavedSnapshotRef = React.useRef("");
+    const saveQueueRef = React.useRef(Promise.resolve());
+    const refreshInFlightRef = React.useRef(false);
     const stopKeyPropagation = React.useCallback((event: React.KeyboardEvent) => {
         event.stopPropagation();
     }, []);
@@ -884,6 +1012,10 @@ function ConfigPanel(props: any) {
         padding: "8px 12px",
         cursor: "pointer"
     };
+    const sectionHeaderStyle: React.CSSProperties = {
+        margin: 0,
+        fontSize: "16px"
+    };
 
     const updateFromConfig = React.useCallback((config: LocalConfig) => {
         skipAutosaveRef.current = true;
@@ -897,32 +1029,65 @@ function ConfigPanel(props: any) {
     }, []);
 
     const refresh = React.useCallback(async () => {
-        if (isOwnProfile) {
-            const [config, editors, requests] = await Promise.all([
-                readLocalConfig(),
-                getAllowedEditors(),
-                getAccessRequests(settings.store.relayUrl, activeUserId).catch(() => ({ requests: [] }))
-            ]);
-            updateFromConfig(config);
-            setAllowedEditors(editors.allowed_editors.sort());
-            setPendingRequests(requests.requests.sort());
-            setCanViewRemote(true);
-            return;
-        }
-
+        if (refreshInFlightRef.current) return;
+        refreshInFlightRef.current = true;
+        console.info(`${LOG_PREFIX} refresh:start`, { activeUserId, profileUserId, isOwnProfile });
         try {
+            if (isOwnProfile) {
+                const [config, editors, requests] = await Promise.all([
+                    readLocalConfig(),
+                    getAllowedEditors(),
+                    getAccessRequests(settings.store.relayUrl, activeUserId).catch(() => ({ requests: [] }))
+                ]);
+                updateFromConfig(config);
+                setAllowedEditors(editors.allowed_editors.sort());
+                setPendingRequests(requests.requests.sort());
+                setCanViewRemote(true);
+                console.info(`${LOG_PREFIX} refresh:success`, {
+                    activeUserId,
+                    profileUserId,
+                    isOwnProfile,
+                    summary: configLogSummary(config)
+                });
+                return;
+            }
+
             const remote = await readRemoteConfig(settings.store.relayUrl, activeUserId, profileUserId);
             updateFromConfig(remote);
             setCanViewRemote(true);
+            console.info(`${LOG_PREFIX} refresh:success`, {
+                activeUserId,
+                profileUserId,
+                isOwnProfile,
+                summary: configLogSummary(remote)
+            });
         } catch (err) {
             setCanViewRemote(false);
             setStatus(String(err));
+            console.error(`${LOG_PREFIX} refresh:failed`, { activeUserId, profileUserId, isOwnProfile, error: String(err) });
+        } finally {
+            refreshInFlightRef.current = false;
         }
     }, [activeUserId, isOwnProfile, profileUserId, updateFromConfig]);
 
     React.useEffect(() => {
+        if (!isPanelOpen) return;
         refresh().catch(err => setStatus(String(err)));
-    }, [refresh]);
+    }, [isPanelOpen, refresh]);
+
+    React.useEffect(() => {
+        if (!isPanelOpen || hasExplicitPanelOpenState) return;
+        const handle = setInterval(() => {
+            const currentSnapshot = JSON.stringify({
+                ...editableConfig,
+                pet_words: getPetWordsForType(editableConfig.config.pet_type, editableConfig.pet_words),
+                censored_words: fromLines(censoredWordsText)
+            });
+            if (currentSnapshot !== lastSavedSnapshotRef.current) return;
+            refresh().catch(err => setStatus(String(err)));
+        }, 1500);
+        return () => clearInterval(handle);
+    }, [censoredWordsText, editableConfig, hasExplicitPanelOpenState, isPanelOpen, refresh]);
 
     React.useEffect(() => {
         const handle = setInterval(() => {
@@ -960,20 +1125,133 @@ function ConfigPanel(props: any) {
         setStatus(`${field}: Permanent`);
     }, [setTimeoutValue]);
 
-    const saveConfig = React.useCallback(async (baseConfig: LocalConfig) => {
+    const setGroupTimeout = React.useCallback((groupId: number, nextIso: string) => {
+        setEditableConfig(prev => ({
+            ...prev,
+            rules_groups: prev.rules_groups.map(group => (
+                group.id === groupId ? { ...group, timeout_end: nextIso } : group
+            ))
+        }));
+    }, []);
+
+    const addGroupTimeoutAmount = React.useCallback((groupId: number, multiplierSeconds: number) => {
+        const amount = Number(groupTimeoutAdjustments[groupId] ?? "1");
+        if (!Number.isFinite(amount) || amount <= 0) {
+            setStatus(`Enter a positive number for group ${groupId}`);
+            return;
+        }
+
+        setEditableConfig(prev => ({
+            ...prev,
+            rules_groups: prev.rules_groups.map(group => {
+                if (group.id !== groupId) return group;
+                const currentEndMs = Date.parse(group.timeout_end);
+                const baseline = Number.isFinite(currentEndMs) && currentEndMs > nowMs ? currentEndMs : nowMs;
+                return {
+                    ...group,
+                    timeout_end: new Date(baseline + amount * multiplierSeconds * 1000).toISOString()
+                };
+            })
+        }));
+    }, [groupTimeoutAdjustments, nowMs]);
+
+    const setGroupPermanentTimeout = React.useCallback((groupId: number) => {
+        setGroupTimeout(groupId, farFuture);
+    }, [setGroupTimeout]);
+
+    const addRuleGroup = React.useCallback(() => {
+        setEditableConfig(prev => {
+            const nextGroupId = prev.rules_groups.reduce((maxId, group) => Math.max(maxId, group.id), 0) + 1;
+            const nextOrder = prev.rules_groups.length;
+            return {
+                ...prev,
+                rules_groups: [
+                    ...prev.rules_groups,
+                    { id: nextGroupId, timeout_end: farFuture, enabled: true, order: nextOrder }
+                ]
+            };
+        });
+    }, []);
+
+    const removeRuleGroup = React.useCallback((groupId: number) => {
+        setEditableConfig(prev => ({
+            ...prev,
+            rules_groups: prev.rules_groups.filter(group => group.id !== groupId),
+            rules: prev.rules.filter(rule => rule.group_id !== groupId)
+        }));
+    }, []);
+
+    const updateRuleGroup = React.useCallback((groupId: number, updater: (group: RuleGroup) => RuleGroup) => {
+        setEditableConfig(prev => ({
+            ...prev,
+            rules_groups: prev.rules_groups.map(group => (group.id === groupId ? updater(group) : group))
+        }));
+    }, []);
+
+    const addRuleToGroup = React.useCallback((groupId: number) => {
+        setEditableConfig(prev => {
+            const nextOrder = prev.rules
+                .filter(rule => rule.group_id === groupId)
+                .reduce((maxOrder, rule) => Math.max(maxOrder, rule.order), -1) + 1;
+            return {
+                ...prev,
+                rules: [
+                    ...prev.rules,
+                    {
+                        rule_regex: "",
+                        rule_replacement: "",
+                        regex_normalize: false,
+                        enabled: true,
+                        chance_to_apply: 1,
+                        order: nextOrder,
+                        group_id: groupId
+                    }
+                ]
+            };
+        });
+    }, []);
+
+    const updateRuleAtIndex = React.useCallback((ruleIndex: number, updater: (rule: Rule) => Rule) => {
+        setEditableConfig(prev => ({
+            ...prev,
+            rules: prev.rules.map((rule, index) => (index === ruleIndex ? updater(rule) : rule))
+        }));
+    }, []);
+
+    const removeRuleAtIndex = React.useCallback((ruleIndex: number) => {
+        setEditableConfig(prev => ({
+            ...prev,
+            rules: prev.rules.filter((_, index) => index !== ruleIndex)
+        }));
+    }, []);
+
+    const saveConfig = React.useCallback(async (baseConfig: LocalConfig, options?: { quiet?: boolean }) => {
         const mergedConfig = mergeLocalConfig({
             ...baseConfig,
             pet_words: getPetWordsForType(baseConfig.config.pet_type, baseConfig.pet_words),
             censored_words: fromLines(censoredWordsText)
         });
+        console.info(`${LOG_PREFIX} saveConfig:start`, {
+            activeUserId,
+            profileUserId,
+            isOwnProfile,
+            quiet: Boolean(options?.quiet),
+            summary: configLogSummary(mergedConfig)
+        });
         if (isOwnProfile) {
             await saveLocalConfig(activeUserId, mergedConfig);
-            setStatus("Auto-saved local config");
+            if (!options?.quiet) setStatus("Auto-saved local config");
         } else {
             await pushRemoteConfig(settings.store.relayUrl, activeUserId, profileUserId, mergedConfig);
-            setStatus(`Auto-saved ${profileUserId}'s config via relay`);
+            if (!options?.quiet) setStatus(`Auto-saved ${profileUserId}'s config via relay`);
         }
         lastSavedSnapshotRef.current = JSON.stringify(mergedConfig);
+        console.info(`${LOG_PREFIX} saveConfig:success`, {
+            activeUserId,
+            profileUserId,
+            isOwnProfile,
+            summary: configLogSummary(mergedConfig)
+        });
     }, [activeUserId, censoredWordsText, isOwnProfile, profileUserId]);
 
     React.useEffect(() => {
@@ -991,12 +1269,45 @@ function ConfigPanel(props: any) {
         const nextSnapshot = JSON.stringify(nextConfig);
         if (nextSnapshot === lastSavedSnapshotRef.current) return;
 
-        const handle = setTimeout(() => {
-            saveConfig(nextConfig).catch(err => setStatus(`Auto-save failed: ${String(err)}`));
-        }, 250);
-
-        return () => clearTimeout(handle);
+        console.info(`${LOG_PREFIX} autosave:enqueue`, {
+            activeUserId,
+            profileUserId,
+            isOwnProfile,
+            summary: configLogSummary(nextConfig)
+        });
+        saveQueueRef.current = saveQueueRef.current
+            .catch(() => {})
+            .then(() => saveConfig(nextConfig))
+            .catch(err => setStatus(`Auto-save failed: ${String(err)}`));
     }, [canViewRemote, censoredWordsText, editableConfig, isOwnProfile, saveConfig]);
+
+    const renderTimeoutControls = (field: ModeTimeoutFieldKey, label: string) => (
+        <div style={{ display: "grid", gap: "8px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", flexWrap: "wrap" }}>
+                <strong>{label}</strong>
+                <span style={{ color: "#b5bac1" }}>{formatTimeoutStatus(editableConfig.config[field], nowMs)}</span>
+            </div>
+            <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                <input
+                    style={{ ...inputStyle, width: "110px" }}
+                    type="number"
+                    min={1}
+                    value={timeoutAdjustments[field]}
+                    onChange={e => {
+                        const nextValue = e.currentTarget.value;
+                        setTimeoutAdjustments(prev => ({
+                            ...prev,
+                            [field]: nextValue
+                        }));
+                    }}
+                />
+                <button style={buttonStyle} onClick={() => addTimeoutAmount(field, 1)}>Add Seconds</button>
+                <button style={buttonStyle} onClick={() => addTimeoutAmount(field, 60)}>Add Minutes</button>
+                <button style={buttonStyle} onClick={() => addTimeoutAmount(field, 3600)}>Add Hours</button>
+                <button style={buttonStyle} onClick={() => setPermanentTimeout(field)}>Permanent</button>
+            </div>
+        </div>
+    );
 
     return (
         <div
@@ -1035,59 +1346,14 @@ function ConfigPanel(props: any) {
             {(isOwnProfile || canViewRemote) && (
                 <>
                     <div style={sectionStyle}>
-                        <strong>Mode timeouts</strong>
-                        <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
-                            {modeTimeoutFields.map(({ key, label }) => (
-                                <div key={key} style={{ border: "1px solid #3f4147", borderRadius: "10px", padding: "10px", display: "grid", gap: "8px" }}>
-                                    <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", flexWrap: "wrap" }}>
-                                        <strong>{label}</strong>
-                                        <span style={{ color: "#b5bac1" }}>{formatTimeoutStatus(editableConfig.config[key], nowMs)}</span>
-                                    </div>
-                                    <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
-                                        <input
-                                            style={{ ...inputStyle, width: "110px" }}
-                                            type="number"
-                                            min={1}
-                                            value={timeoutAdjustments[key]}
-                                            onChange={e => {
-                                                const nextValue = e.currentTarget.value;
-                                                setTimeoutAdjustments(prev => ({
-                                                    ...prev,
-                                                    [key]: nextValue
-                                                }));
-                                            }}
-                                        />
-                                        <button style={buttonStyle} onClick={() => addTimeoutAmount(key, 1)}>Add Seconds</button>
-                                        <button style={buttonStyle} onClick={() => addTimeoutAmount(key, 60)}>Add Minutes</button>
-                                        <button style={buttonStyle} onClick={() => addTimeoutAmount(key, 3600)}>Add Hours</button>
-                                        <button style={buttonStyle} onClick={() => setPermanentTimeout(key)}>Permanent</button>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
+                        <h4 style={sectionHeaderStyle}>Gag</h4>
+                        <div style={{ marginTop: "8px" }}>{renderTimeoutControls("gag_end", "Gag timeout")}</div>
                     </div>
 
                     <div style={sectionStyle}>
-                        <strong>Numeric values</strong>
+                        <h4 style={sectionHeaderStyle}>Pet</h4>
                         <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
-                            <label>Pet amount (0-1)<input style={inputStyle} type="number" min={0} max={1} step={0.01} value={editableConfig.config.pet_amount} onChange={e => {
-                                const nextValue = e.currentTarget.value;
-                                setEditableConfig(prev => ({ ...prev, config: { ...prev.config, pet_amount: parseNumericInput(nextValue, prev.config.pet_amount, { min: 0, max: 1 }) } }));
-                            }} /></label>
-                            <label>Bimbo word length<input style={inputStyle} type="number" min={1} value={editableConfig.config.bimbo_word_length} onChange={e => {
-                                const nextValue = e.currentTarget.value;
-                                setEditableConfig(prev => ({ ...prev, config: { ...prev.config, bimbo_word_length: parseNumericInput(nextValue, prev.config.bimbo_word_length, { min: 1 }) } }));
-                            }} /></label>
-                            <label>Drone health (0-100)<input style={inputStyle} type="number" min={0} max={100} value={editableConfig.drone_config.drone_health} onChange={e => {
-                                const nextValue = e.currentTarget.value;
-                                setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, drone_health: parseNumericInput(nextValue, prev.drone_config.drone_health, { min: 0, max: 100 }) } }));
-                            }} /></label>
-                        </div>
-                    </div>
-
-                    <div style={sectionStyle}>
-                        <strong>Enum values</strong>
-                        <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
+                            {renderTimeoutControls("pet_end", "Pet timeout")}
                             <label>
                                 Pet type
                                 <select
@@ -1109,16 +1375,50 @@ function ConfigPanel(props: any) {
                                     ))}
                                 </select>
                             </label>
+                            <label>
+                                Pet amount ({Math.round(editableConfig.config.pet_amount * 100)}%)
+                                <input
+                                    style={inputStyle}
+                                    type="range"
+                                    min={0}
+                                    max={100}
+                                    step={1}
+                                    value={Math.round(editableConfig.config.pet_amount * 100)}
+                                    onChange={e => {
+                                        const nextValue = parseNumericInput(e.currentTarget.value, 100, { min: 0, max: 100 });
+                                        setEditableConfig(prev => ({
+                                            ...prev,
+                                            config: {
+                                                ...prev.config,
+                                                pet_amount: nextValue / 100
+                                            }
+                                        }));
+                                    }}
+                                />
+                            </label>
                         </div>
                     </div>
 
                     <div style={sectionStyle}>
-                        <strong>Text values</strong>
+                        <h4 style={sectionHeaderStyle}>Bimbo</h4>
                         <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
-                            <label>Censored replacement<input style={inputStyle} value={editableConfig.config.censored_replacement} onChange={e => {
+                            {renderTimeoutControls("bimbo_end", "Bimbo timeout")}
+                            <label>Bimbo word length<input style={inputStyle} type="number" min={1} value={editableConfig.config.bimbo_word_length} onChange={e => {
                                 const nextValue = e.currentTarget.value;
-                                setEditableConfig(prev => ({ ...prev, config: { ...prev.config, censored_replacement: nextValue } }));
+                                setEditableConfig(prev => ({ ...prev, config: { ...prev.config, bimbo_word_length: parseNumericInput(nextValue, prev.config.bimbo_word_length, { min: 1 }) } }));
                             }} /></label>
+                        </div>
+                    </div>
+
+                    <div style={sectionStyle}>
+                        <h4 style={sectionHeaderStyle}>Horny</h4>
+                        <div style={{ marginTop: "8px" }}>{renderTimeoutControls("horny_end", "Horny timeout")}</div>
+                    </div>
+
+                    <div style={sectionStyle}>
+                        <h4 style={sectionHeaderStyle}>Drone</h4>
+                        <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
+                            {renderTimeoutControls("drone_end", "Drone timeout")}
                             <label>Drone term<input style={inputStyle} value={editableConfig.drone_config.drone_term} onChange={e => {
                                 const nextValue = e.currentTarget.value;
                                 setEditableConfig(prev => ({ ...prev, drone_config: { ...prev.drone_config, drone_term: nextValue } }));
@@ -1159,8 +1459,27 @@ function ConfigPanel(props: any) {
                     </div>
 
                     <div style={sectionStyle}>
-                        <strong>Boolean toggles</strong>
+                        <h4 style={sectionHeaderStyle}>UWU</h4>
+                        <div style={{ marginTop: "8px" }}>{renderTimeoutControls("uwu_end", "UWU timeout")}</div>
+                    </div>
+
+                    <div style={sectionStyle}>
+                        <h4 style={sectionHeaderStyle}>Censored</h4>
                         <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
+                            {renderTimeoutControls("censored_end", "Censored timeout")}
+                            <label>Censored replacement<input style={inputStyle} value={editableConfig.config.censored_replacement} onChange={e => {
+                                const nextValue = e.currentTarget.value;
+                                setEditableConfig(prev => ({ ...prev, config: { ...prev.config, censored_replacement: nextValue } }));
+                            }} /></label>
+                            <label>Censored words (one per line)<textarea style={{ ...inputStyle, minHeight: "90px" }} value={censoredWordsText} onChange={e => setCensoredWordsText(e.currentTarget.value)} /></label>
+                        </div>
+                    </div>
+
+                    <div style={sectionStyle}>
+                        <h4 style={sectionHeaderStyle}>Custom Rules</h4>
+                        <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
+                            <p style={{ margin: 0, color: "#b5bac1" }}>{editableConfig.rules_groups.length} group(s), {editableConfig.rules.length} rule(s)</p>
+                            <button style={buttonStyle} onClick={() => setIsRulesEditorOpen(true)}>Open rules editor popup</button>
                             <label style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                                 <input
                                     type="checkbox"
@@ -1175,24 +1494,113 @@ function ConfigPanel(props: any) {
                         </div>
                     </div>
 
-                    <div style={sectionStyle}>
-                        <strong>Word lists</strong>
-                        <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
-                            <label>Pet words (based on pet type)<textarea style={{ ...inputStyle, minHeight: "90px" }} value={toLines(getPetWordsForType(editableConfig.config.pet_type, editableConfig.pet_words))} readOnly /></label>
-                            <label>Censored words (one per line)<textarea style={{ ...inputStyle, minHeight: "90px" }} value={censoredWordsText} onChange={e => setCensoredWordsText(e.currentTarget.value)} /></label>
-                        </div>
-                    </div>
-
                     <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                         <button style={buttonStyle} onClick={() => refresh().then(() => setStatus("Reloaded config")).catch(err => setStatus(String(err)))}>Reload</button>
                     </div>
                 </>
             )}
 
+            {(isOwnProfile || canViewRemote) && isRulesEditorOpen && (
+                <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 9999, display: "grid", placeItems: "center", padding: "20px" }}>
+                    <div style={{ width: "min(980px, 95vw)", maxHeight: "90vh", overflow: "auto", ...sectionStyle, background: "#1e1f22", display: "grid", gap: "10px" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
+                            <h4 style={sectionHeaderStyle}>Custom Rules Editor</h4>
+                            <button style={buttonStyle} onClick={() => setIsRulesEditorOpen(false)}>Close</button>
+                        </div>
+
+                        <button style={buttonStyle} onClick={addRuleGroup}>Add rule group</button>
+
+                        {editableConfig.rules_groups.length === 0 && (
+                            <p style={{ margin: 0, color: "#b5bac1" }}>No rule groups yet. Add one to start.</p>
+                        )}
+
+                        {[...editableConfig.rules_groups].sort((a, b) => a.order - b.order).map(group => {
+                            const groupRules = editableConfig.rules
+                                .map((rule, index) => ({ rule, index }))
+                                .filter(item => item.rule.group_id === group.id)
+                                .sort((a, b) => a.rule.order - b.rule.order);
+
+                            return (
+                                <div key={group.id} style={{ border: "1px solid #3f4147", borderRadius: "10px", padding: "10px", display: "grid", gap: "8px" }}>
+                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                                        <strong>Group #{group.id}</strong>
+                                        <button style={{ ...buttonStyle, background: "#da373c", borderColor: "#da373c" }} onClick={() => removeRuleGroup(group.id)}>Remove Group</button>
+                                    </div>
+                                    <label style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                                        <input
+                                            type="checkbox"
+                                            checked={group.enabled}
+                                            onChange={e => updateRuleGroup(group.id, current => ({ ...current, enabled: e.currentTarget.checked }))}
+                                        />
+                                        Enabled
+                                    </label>
+                                    <label>Group order<input style={inputStyle} type="number" min={0} value={group.order} onChange={e => {
+                                        const nextValue = parseNumericInput(e.currentTarget.value, group.order, { min: 0 });
+                                        updateRuleGroup(group.id, current => ({ ...current, order: nextValue }));
+                                    }} /></label>
+                                    <div style={{ display: "grid", gap: "8px" }}>
+                                        <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", flexWrap: "wrap" }}>
+                                            <strong>Group timeout</strong>
+                                            <span style={{ color: "#b5bac1" }}>{formatTimeoutStatus(group.timeout_end, nowMs)}</span>
+                                        </div>
+                                        <input style={inputStyle} value={group.timeout_end} onChange={e => setGroupTimeout(group.id, e.currentTarget.value)} />
+                                        <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                                            <input
+                                                style={{ ...inputStyle, width: "110px" }}
+                                                type="number"
+                                                min={1}
+                                                value={groupTimeoutAdjustments[group.id] ?? "1"}
+                                                onChange={e => setGroupTimeoutAdjustments(prev => ({ ...prev, [group.id]: e.currentTarget.value }))}
+                                            />
+                                            <button style={buttonStyle} onClick={() => addGroupTimeoutAmount(group.id, 1)}>Add Seconds</button>
+                                            <button style={buttonStyle} onClick={() => addGroupTimeoutAmount(group.id, 60)}>Add Minutes</button>
+                                            <button style={buttonStyle} onClick={() => addGroupTimeoutAmount(group.id, 3600)}>Add Hours</button>
+                                            <button style={buttonStyle} onClick={() => setGroupPermanentTimeout(group.id)}>Permanent</button>
+                                        </div>
+                                    </div>
+                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                                        <strong>Rules</strong>
+                                        <button style={buttonStyle} onClick={() => addRuleToGroup(group.id)}>Add Rule</button>
+                                    </div>
+                                    {groupRules.length === 0 && (
+                                        <p style={{ margin: 0, color: "#b5bac1" }}>No rules in this group.</p>
+                                    )}
+                                    {groupRules.map(({ rule, index }) => (
+                                        <div key={`${group.id}-${index}`} style={{ border: "1px solid #3f4147", borderRadius: "8px", padding: "8px", display: "grid", gap: "8px" }}>
+                                            <label>Regex rule<input style={inputStyle} value={rule.rule_regex} onChange={e => updateRuleAtIndex(index, current => ({ ...current, rule_regex: e.currentTarget.value }))} /></label>
+                                            <label>Replacement<input style={inputStyle} value={rule.rule_replacement} onChange={e => updateRuleAtIndex(index, current => ({ ...current, rule_replacement: e.currentTarget.value }))} /></label>
+                                            <label>Trigger chance ({Math.round(rule.chance_to_apply * 100)}%)<input style={inputStyle} type="range" min={0} max={100} step={1} value={Math.round(rule.chance_to_apply * 100)} onChange={e => {
+                                                const nextValue = parseNumericInput(e.currentTarget.value, 100, { min: 0, max: 100 });
+                                                updateRuleAtIndex(index, current => ({ ...current, chance_to_apply: nextValue / 100 }));
+                                            }} /></label>
+                                            <label>Rule order<input style={inputStyle} type="number" min={0} value={rule.order} onChange={e => {
+                                                const nextValue = parseNumericInput(e.currentTarget.value, rule.order, { min: 0 });
+                                                updateRuleAtIndex(index, current => ({ ...current, order: nextValue }));
+                                            }} /></label>
+                                            <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
+                                                <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                                    <input type="checkbox" checked={rule.enabled} onChange={e => updateRuleAtIndex(index, current => ({ ...current, enabled: e.currentTarget.checked }))} />
+                                                    Enabled
+                                                </label>
+                                                <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                                    <input type="checkbox" checked={rule.regex_normalize} onChange={e => updateRuleAtIndex(index, current => ({ ...current, regex_normalize: e.currentTarget.checked }))} />
+                                                    Normalize regex
+                                                </label>
+                                            </div>
+                                            <button style={{ ...buttonStyle, background: "#da373c", borderColor: "#da373c" }} onClick={() => removeRuleAtIndex(index)}>Remove Rule</button>
+                                        </div>
+                                    ))}
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            )}
+
             {isOwnProfile && (
                 <>
                     <div style={sectionStyle}>
-                        <strong>Allowed editors</strong>
+                        <h4 style={sectionHeaderStyle}>Allowed Editors</h4>
                         <div style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
                             <input
                                 placeholder="Discord ID"
@@ -1240,7 +1648,7 @@ function ConfigPanel(props: any) {
                     </div>
 
                     <div style={sectionStyle}>
-                        <strong>Pending relay access requests</strong>
+                        <h4 style={sectionHeaderStyle}>Pending Requests</h4>
                         <ul style={{ marginBottom: 0 }}>
                             {pendingRequests.length === 0 && <li>No pending requests</li>}
                             {pendingRequests.map(requesterId => (
