@@ -881,7 +881,6 @@ function ConfigPanel(props: any) {
     );
     const [groupTimeoutAdjustments, setGroupTimeoutAdjustments] = React.useState<Record<number, string>>({});
     const [isRulesEditorOpen, setIsRulesEditorOpen] = React.useState(false);
-    const [draggedRule, setDraggedRule] = React.useState<{ ruleIndex: number; groupId: number; position: number; } | null>(null);
     const [nowMs, setNowMs] = React.useState(() => Date.now());
     const [canViewRemote, setCanViewRemote] = React.useState(isOwnProfile);
     const skipAutosaveRef = React.useRef(true);
@@ -1093,38 +1092,6 @@ function ConfigPanel(props: any) {
             ...prev,
             rules: prev.rules.filter((_, index) => index !== ruleIndex)
         }));
-    }, []);
-
-    const moveRuleToGroupPosition = React.useCallback((ruleIndex: number, targetGroupId: number, targetPosition: number) => {
-        setEditableConfig(prev => {
-            if (ruleIndex < 0 || ruleIndex >= prev.rules.length) return prev;
-            const movingRule = prev.rules[ruleIndex];
-            const sourceGroupId = movingRule.group_id;
-            const remainingRules = prev.rules.filter((_, index) => index !== ruleIndex);
-
-            const insertIntoGroup = remainingRules
-                .filter(rule => rule.group_id === targetGroupId)
-                .sort((a, b) => a.order - b.order);
-            const clampedPosition = Math.max(0, Math.min(targetPosition, insertIntoGroup.length));
-            insertIntoGroup.splice(clampedPosition, 0, { ...movingRule, group_id: targetGroupId });
-
-            const reorderedTargetGroup = insertIntoGroup.map((rule, order) => ({ ...rule, order }));
-            const reorderedSourceGroup = sourceGroupId === targetGroupId
-                ? []
-                : remainingRules
-                    .filter(rule => rule.group_id === sourceGroupId)
-                    .sort((a, b) => a.order - b.order)
-                    .map((rule, order) => ({ ...rule, order }));
-
-            return {
-                ...prev,
-                rules: [
-                    ...remainingRules.filter(rule => rule.group_id !== targetGroupId && rule.group_id !== sourceGroupId),
-                    ...reorderedSourceGroup,
-                    ...reorderedTargetGroup
-                ]
-            };
-        });
     }, []);
 
     const saveConfig = React.useCallback(async (baseConfig: LocalConfig) => {
@@ -1449,35 +1416,8 @@ function ConfigPanel(props: any) {
                                     {groupRules.length === 0 && (
                                         <p style={{ margin: 0, color: "#b5bac1" }}>No rules in this group.</p>
                                     )}
-                                    {groupRules.map(({ rule, index }, position) => (
-                                        <div
-                                            key={`${group.id}-${index}`}
-                                            draggable
-                                            onDragStart={() => setDraggedRule({ ruleIndex: index, groupId: group.id, position })}
-                                            onDragEnd={() => setDraggedRule(null)}
-                                            onDragOver={event => {
-                                                event.preventDefault();
-                                                event.dataTransfer.dropEffect = "move";
-                                            }}
-                                            onDrop={event => {
-                                                event.preventDefault();
-                                                if (!draggedRule) return;
-                                                const adjustedPosition = draggedRule.groupId === group.id && draggedRule.position < position
-                                                    ? position - 1
-                                                    : position;
-                                                moveRuleToGroupPosition(draggedRule.ruleIndex, group.id, adjustedPosition);
-                                                setDraggedRule(null);
-                                            }}
-                                            style={{
-                                                border: "1px solid #3f4147",
-                                                borderRadius: "8px",
-                                                padding: "8px",
-                                                display: "grid",
-                                                gap: "8px",
-                                                cursor: "grab",
-                                                opacity: draggedRule?.ruleIndex === index ? 0.6 : 1
-                                            }}
-                                        >
+                                    {groupRules.map(({ rule, index }) => (
+                                        <div key={`${group.id}-${index}`} style={{ border: "1px solid #3f4147", borderRadius: "8px", padding: "8px", display: "grid", gap: "8px" }}>
                                             <label>Regex rule<input style={inputStyle} value={rule.rule_regex} onChange={e => updateRuleAtIndex(index, current => ({ ...current, rule_regex: e.currentTarget.value }))} /></label>
                                             <label>Replacement<input style={inputStyle} value={rule.rule_replacement} onChange={e => updateRuleAtIndex(index, current => ({ ...current, rule_replacement: e.currentTarget.value }))} /></label>
                                             <label>Trigger chance ({Math.round(rule.chance_to_apply * 100)}%)<input style={inputStyle} type="range" min={0} max={100} step={1} value={Math.round(rule.chance_to_apply * 100)} onChange={e => {
@@ -1501,30 +1441,6 @@ function ConfigPanel(props: any) {
                                             <button style={{ ...buttonStyle, background: "#da373c", borderColor: "#da373c" }} onClick={() => removeRuleAtIndex(index)}>Remove Rule</button>
                                         </div>
                                     ))}
-                                    <div
-                                        onDragOver={event => {
-                                            event.preventDefault();
-                                            event.dataTransfer.dropEffect = "move";
-                                        }}
-                                        onDrop={event => {
-                                            event.preventDefault();
-                                            if (!draggedRule) return;
-                                            const adjustedPosition = draggedRule.groupId === group.id && draggedRule.position < groupRules.length
-                                                ? groupRules.length - 1
-                                                : groupRules.length;
-                                            moveRuleToGroupPosition(draggedRule.ruleIndex, group.id, adjustedPosition);
-                                            setDraggedRule(null);
-                                        }}
-                                        style={{
-                                            border: "1px dashed #3f4147",
-                                            borderRadius: "8px",
-                                            padding: "8px",
-                                            color: "#b5bac1",
-                                            textAlign: "center"
-                                        }}
-                                    >
-                                        Drop rule here to move to this group
-                                    </div>
                                 </div>
                             );
                         })}

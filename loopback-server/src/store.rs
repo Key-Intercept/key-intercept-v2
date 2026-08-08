@@ -167,4 +167,27 @@ mod tests {
             "*".to_string()
         );
     }
+
+    #[tokio::test]
+    async fn updates_persist_to_disk_for_reload() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let store = ConfigStore::load_or_create(&path, "owner".to_string())
+            .await
+            .unwrap();
+
+        let mut updated = LocalConfig::default();
+        updated.config.censored_replacement = "#".to_string();
+
+        store.update_config("owner", updated.clone()).await.unwrap();
+
+        let reloaded = ConfigStore::load_or_create(&path, "owner".to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            reloaded.get().await.config.config.censored_replacement,
+            updated.config.censored_replacement
+        );
+    }
 }
