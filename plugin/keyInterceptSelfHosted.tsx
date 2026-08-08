@@ -970,8 +970,8 @@ function ConfigPanel(props: any) {
     const [allowedEditors, setAllowedEditors] = React.useState<string[]>([]);
     const [pendingRequests, setPendingRequests] = React.useState<string[]>([]);
     const [status, setStatus] = React.useState("");
-    const [editableConfig, setEditableConfig] = React.useState<LocalConfig>(cloneDefaultConfig());
-    const [censoredWordsText, setCensoredWordsText] = React.useState("");
+    const [editableConfig, setEditableConfig] = React.useState<LocalConfig>(() => mergeLocalConfig(interceptConfig));
+    const [censoredWordsText, setCensoredWordsText] = React.useState(() => toLines(interceptConfig.censored_words));
     const [timeoutAdjustments, setTimeoutAdjustments] = React.useState<Record<ModeTimeoutFieldKey, string>>(
         () => createTimeoutAdjustmentDefaults()
     );
