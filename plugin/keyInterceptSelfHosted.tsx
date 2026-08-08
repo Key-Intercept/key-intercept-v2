@@ -167,8 +167,22 @@ function mergeLocalConfig(raw: unknown): LocalConfig {
     if (!raw || typeof raw !== "object") return cloneDefaultConfig();
 
     const asRecord = raw as Record<string, unknown>;
-    const mergedRules = Array.isArray(asRecord.rules)
-        ? (asRecord.rules as Array<Record<string, unknown>>).map((rule, index) => ({
+    const nestedConfig = asRecord.config;
+    const source = (
+        nestedConfig
+        && typeof nestedConfig === "object"
+        && (
+            Array.isArray((nestedConfig as Record<string, unknown>).rules)
+            || Array.isArray((nestedConfig as Record<string, unknown>).rules_groups)
+            || Array.isArray((nestedConfig as Record<string, unknown>).whitelist)
+            || "drone_config" in (nestedConfig as Record<string, unknown>)
+            || "pet_words" in (nestedConfig as Record<string, unknown>)
+            || "censored_words" in (nestedConfig as Record<string, unknown>)
+        )
+    ) ? nestedConfig as Record<string, unknown> : asRecord;
+
+    const mergedRules = Array.isArray(source.rules)
+        ? (source.rules as Array<Record<string, unknown>>).map((rule, index) => ({
             rule_regex: typeof rule.rule_regex === "string" ? rule.rule_regex : "",
             rule_replacement: typeof rule.rule_replacement === "string" ? rule.rule_replacement : "",
             regex_normalize: Boolean(rule.regex_normalize),
@@ -178,8 +192,8 @@ function mergeLocalConfig(raw: unknown): LocalConfig {
             group_id: parseNumericInput(String(rule.group_id ?? 1), 1, { min: 1 })
         }))
         : [];
-    const mergedGroups = Array.isArray(asRecord.rules_groups)
-        ? (asRecord.rules_groups as Array<Record<string, unknown>>).map((group, index) => {
+    const mergedGroups = Array.isArray(source.rules_groups)
+        ? (source.rules_groups as Array<Record<string, unknown>>).map((group, index) => {
             const fallbackTimeout = typeof group.disabled_at === "string" ? group.disabled_at : farFuture;
             return {
                 id: parseNumericInput(String(group.id ?? index + 1), index + 1, { min: 1 }),
@@ -192,8 +206,8 @@ function mergeLocalConfig(raw: unknown): LocalConfig {
             };
         })
         : [];
-    const mergedWhitelist = Array.isArray(asRecord.whitelist)
-        ? (asRecord.whitelist as Array<Record<string, unknown>>).map(item => {
+    const mergedWhitelist = Array.isArray(source.whitelist)
+        ? (source.whitelist as Array<Record<string, unknown>>).map(item => {
             const server_name = typeof item.server_name === "string" ? item.server_name : "";
             const discord_id = typeof item.discord_id === "string" && /^\d*$/.test(item.discord_id)
                 ? item.discord_id
@@ -205,16 +219,16 @@ function mergeLocalConfig(raw: unknown): LocalConfig {
     return {
         config: {
             ...defaultLocalConfig.config,
-            ...((asRecord.config as Record<string, unknown>) ?? {})
+            ...((source.config as Record<string, unknown>) ?? {})
         } as Config,
         rules: mergedRules,
         rules_groups: mergedGroups,
         whitelist: mergedWhitelist,
-        pet_words: Array.isArray(asRecord.pet_words) ? (asRecord.pet_words as string[]) : [],
-        censored_words: Array.isArray(asRecord.censored_words) ? (asRecord.censored_words as string[]) : [],
+        pet_words: Array.isArray(source.pet_words) ? (source.pet_words as string[]) : [],
+        censored_words: Array.isArray(source.censored_words) ? (source.censored_words as string[]) : [],
         drone_config: {
             ...defaultLocalConfig.drone_config,
-            ...((asRecord.drone_config as Record<string, unknown>) ?? {})
+            ...((source.drone_config as Record<string, unknown>) ?? {})
         } as DroneConfig
     };
 }
@@ -229,7 +243,20 @@ function configLogSummary(config: LocalConfig) {
         groups: config.rules_groups.length,
         whitelist: config.whitelist.length,
         petAmount: config.config.pet_amount,
-        petType: config.config.pet_type
+        petType: config.config.pet_type,
+        timeouts: {
+            gag_end: config.config.gag_end,
+            pet_end: config.config.pet_end,
+            bimbo_end: config.config.bimbo_end,
+            horny_end: config.config.horny_end,
+            drone_end: config.config.drone_end,
+            uwu_end: config.config.uwu_end,
+            censored_end: config.config.censored_end
+        },
+        drone: {
+            drone_health: config.drone_config.drone_health,
+            drone_term: config.drone_config.drone_term
+        }
     };
 }
 

@@ -76,6 +76,7 @@ async fn main() -> Result<()> {
     let config_path = std::env::var("KEY_INTERCEPT_CONFIG_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_config_path());
+    info!("using config path {}", config_path.display());
 
     let store = ConfigStore::load_or_create(config_path, owner_discord_id.clone()).await?;
 
