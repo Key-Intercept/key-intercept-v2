@@ -191,6 +191,15 @@ function mergeLocalConfig(raw: unknown): LocalConfig {
             };
         })
         : [];
+    const mergedWhitelist = Array.isArray(asRecord.whitelist)
+        ? (asRecord.whitelist as Array<Record<string, unknown>>).map(item => {
+            const server_name = typeof item.server_name === "string" ? item.server_name : "";
+            const discord_id = typeof item.discord_id === "string" && /^\d*$/.test(item.discord_id)
+                ? item.discord_id
+                : "";
+            return { server_name, discord_id };
+        })
+        : [];
 
     return {
         config: {
@@ -199,7 +208,7 @@ function mergeLocalConfig(raw: unknown): LocalConfig {
         } as Config,
         rules: mergedRules,
         rules_groups: mergedGroups,
-        whitelist: Array.isArray(asRecord.whitelist) ? (asRecord.whitelist as WhitelistItem[]) : [],
+        whitelist: mergedWhitelist,
         pet_words: Array.isArray(asRecord.pet_words) ? (asRecord.pet_words as string[]) : [],
         censored_words: Array.isArray(asRecord.censored_words) ? (asRecord.censored_words as string[]) : [],
         drone_config: {
