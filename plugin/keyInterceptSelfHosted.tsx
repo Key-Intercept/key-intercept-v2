@@ -894,6 +894,9 @@ function ConfigPanel(props: any) {
     const [canViewRemote, setCanViewRemote] = React.useState(isOwnProfile);
     const skipAutosaveRef = React.useRef(true);
     const lastSavedSnapshotRef = React.useRef("");
+    const pendingAutosaveRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+    const pendingAutosaveConfigRef = React.useRef<LocalConfig | null>(null);
+    const pendingAutosaveSnapshotRef = React.useRef<string | null>(null);
     const stopKeyPropagation = React.useCallback((event: React.KeyboardEvent) => {
         event.stopPropagation();
     }, []);
@@ -930,6 +933,12 @@ function ConfigPanel(props: any) {
 
     const updateFromConfig = React.useCallback((config: LocalConfig) => {
         skipAutosaveRef.current = true;
+        if (pendingAutosaveRef.current) {
+            clearTimeout(pendingAutosaveRef.current);
+            pendingAutosaveRef.current = null;
+        }
+        pendingAutosaveConfigRef.current = null;
+        pendingAutosaveSnapshotRef.current = null;
         setEditableConfig(config);
         setCensoredWordsText(toLines(config.censored_words));
         lastSavedSnapshotRef.current = JSON.stringify({
@@ -1103,7 +1112,7 @@ function ConfigPanel(props: any) {
         }));
     }, []);
 
-    const saveConfig = React.useCallback(async (baseConfig: LocalConfig) => {
+    const saveConfig = React.useCallback(async (baseConfig: LocalConfig, options?: { quiet?: boolean }) => {
         const mergedConfig = mergeLocalConfig({
             ...baseConfig,
             pet_words: getPetWordsForType(baseConfig.config.pet_type, baseConfig.pet_words),
@@ -1111,10 +1120,10 @@ function ConfigPanel(props: any) {
         });
         if (isOwnProfile) {
             await saveLocalConfig(activeUserId, mergedConfig);
-            setStatus("Auto-saved local config");
+            if (!options?.quiet) setStatus("Auto-saved local config");
         } else {
             await pushRemoteConfig(settings.store.relayUrl, activeUserId, profileUserId, mergedConfig);
-            setStatus(`Auto-saved ${profileUserId}'s config via relay`);
+            if (!options?.quiet) setStatus(`Auto-saved ${profileUserId}'s config via relay`);
         }
         lastSavedSnapshotRef.current = JSON.stringify(mergedConfig);
     }, [activeUserId, censoredWordsText, isOwnProfile, profileUserId]);
@@ -1134,12 +1143,33 @@ function ConfigPanel(props: any) {
         const nextSnapshot = JSON.stringify(nextConfig);
         if (nextSnapshot === lastSavedSnapshotRef.current) return;
 
-        const handle = setTimeout(() => {
-            saveConfig(nextConfig).catch(err => setStatus(`Auto-save failed: ${String(err)}`));
+        if (pendingAutosaveRef.current) clearTimeout(pendingAutosaveRef.current);
+        pendingAutosaveConfigRef.current = nextConfig;
+        pendingAutosaveSnapshotRef.current = nextSnapshot;
+        pendingAutosaveRef.current = setTimeout(() => {
+            const configToSave = pendingAutosaveConfigRef.current;
+            pendingAutosaveRef.current = null;
+            pendingAutosaveConfigRef.current = null;
+            pendingAutosaveSnapshotRef.current = null;
+            if (!configToSave) return;
+            saveConfig(configToSave).catch(err => setStatus(`Auto-save failed: ${String(err)}`));
         }, 250);
-
-        return () => clearTimeout(handle);
     }, [canViewRemote, censoredWordsText, editableConfig, isOwnProfile, saveConfig]);
+
+    React.useEffect(() => {
+        return () => {
+            if (pendingAutosaveRef.current) {
+                clearTimeout(pendingAutosaveRef.current);
+                pendingAutosaveRef.current = null;
+            }
+            const pendingConfig = pendingAutosaveConfigRef.current;
+            const pendingSnapshot = pendingAutosaveSnapshotRef.current;
+            pendingAutosaveConfigRef.current = null;
+            pendingAutosaveSnapshotRef.current = null;
+            if (!pendingConfig || !pendingSnapshot || pendingSnapshot === lastSavedSnapshotRef.current) return;
+            saveConfig(pendingConfig, { quiet: true }).catch(() => {});
+        };
+    }, [saveConfig]);
 
     const renderTimeoutControls = (field: ModeTimeoutFieldKey, label: string) => (
         <div style={{ display: "grid", gap: "8px" }}>
