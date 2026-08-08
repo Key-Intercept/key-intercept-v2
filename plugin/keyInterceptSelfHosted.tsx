@@ -498,7 +498,7 @@ function getProfileUserId(props: any): string | null {
     return candidates.find((id: unknown): id is string => typeof id === "string" && id.length > 0) ?? null;
 }
 
-function getProfilePanelOpenState(props: any): boolean {
+function getProfilePanelOpenInfo(props: any): { isOpen: boolean; hasExplicitState: boolean } {
     const openStateCandidates = [
         props?.isOpen,
         props?.open,
@@ -508,7 +508,10 @@ function getProfilePanelOpenState(props: any): boolean {
         props?.visible
     ];
     const explicitState = openStateCandidates.find((value): value is boolean => typeof value === "boolean");
-    return explicitState ?? true;
+    return {
+        isOpen: explicitState ?? true,
+        hasExplicitState: explicitState !== undefined
+    };
 }
 
 class NormalizedString {
@@ -959,7 +962,9 @@ function ConfigPanel(props: any) {
     const activeUserId = currentUser().id;
     const profileUserId = getProfileUserId(props) ?? activeUserId;
     const isOwnProfile = profileUserId === activeUserId;
-    const isPanelOpen = getProfilePanelOpenState(props);
+    const panelOpenInfo = getProfilePanelOpenInfo(props);
+    const isPanelOpen = panelOpenInfo.isOpen;
+    const hasExplicitPanelOpenState = panelOpenInfo.hasExplicitState;
 
     const [newEditorId, setNewEditorId] = React.useState("");
     const [allowedEditors, setAllowedEditors] = React.useState<string[]>([]);
@@ -977,6 +982,7 @@ function ConfigPanel(props: any) {
     const skipAutosaveRef = React.useRef(true);
     const lastSavedSnapshotRef = React.useRef("");
     const saveQueueRef = React.useRef(Promise.resolve());
+    const refreshInFlightRef = React.useRef(false);
     const stopKeyPropagation = React.useCallback((event: React.KeyboardEvent) => {
         event.stopPropagation();
     }, []);
@@ -1023,27 +1029,29 @@ function ConfigPanel(props: any) {
     }, []);
 
     const refresh = React.useCallback(async () => {
+        if (refreshInFlightRef.current) return;
+        refreshInFlightRef.current = true;
         console.info(`${LOG_PREFIX} refresh:start`, { activeUserId, profileUserId, isOwnProfile });
-        if (isOwnProfile) {
-            const [config, editors, requests] = await Promise.all([
-                readLocalConfig(),
-                getAllowedEditors(),
-                getAccessRequests(settings.store.relayUrl, activeUserId).catch(() => ({ requests: [] }))
-            ]);
-            updateFromConfig(config);
-            setAllowedEditors(editors.allowed_editors.sort());
-            setPendingRequests(requests.requests.sort());
-            setCanViewRemote(true);
-            console.info(`${LOG_PREFIX} refresh:success`, {
-                activeUserId,
-                profileUserId,
-                isOwnProfile,
-                summary: configLogSummary(config)
-            });
-            return;
-        }
-
         try {
+            if (isOwnProfile) {
+                const [config, editors, requests] = await Promise.all([
+                    readLocalConfig(),
+                    getAllowedEditors(),
+                    getAccessRequests(settings.store.relayUrl, activeUserId).catch(() => ({ requests: [] }))
+                ]);
+                updateFromConfig(config);
+                setAllowedEditors(editors.allowed_editors.sort());
+                setPendingRequests(requests.requests.sort());
+                setCanViewRemote(true);
+                console.info(`${LOG_PREFIX} refresh:success`, {
+                    activeUserId,
+                    profileUserId,
+                    isOwnProfile,
+                    summary: configLogSummary(config)
+                });
+                return;
+            }
+
             const remote = await readRemoteConfig(settings.store.relayUrl, activeUserId, profileUserId);
             updateFromConfig(remote);
             setCanViewRemote(true);
@@ -1057,6 +1065,8 @@ function ConfigPanel(props: any) {
             setCanViewRemote(false);
             setStatus(String(err));
             console.error(`${LOG_PREFIX} refresh:failed`, { activeUserId, profileUserId, isOwnProfile, error: String(err) });
+        } finally {
+            refreshInFlightRef.current = false;
         }
     }, [activeUserId, isOwnProfile, profileUserId, updateFromConfig]);
 
@@ -1064,6 +1074,20 @@ function ConfigPanel(props: any) {
         if (!isPanelOpen) return;
         refresh().catch(err => setStatus(String(err)));
     }, [isPanelOpen, refresh]);
+
+    React.useEffect(() => {
+        if (!isPanelOpen || hasExplicitPanelOpenState) return;
+        const handle = setInterval(() => {
+            const currentSnapshot = JSON.stringify({
+                ...editableConfig,
+                pet_words: getPetWordsForType(editableConfig.config.pet_type, editableConfig.pet_words),
+                censored_words: fromLines(censoredWordsText)
+            });
+            if (currentSnapshot !== lastSavedSnapshotRef.current) return;
+            refresh().catch(err => setStatus(String(err)));
+        }, 1500);
+        return () => clearInterval(handle);
+    }, [censoredWordsText, editableConfig, hasExplicitPanelOpenState, isPanelOpen, refresh]);
 
     React.useEffect(() => {
         const handle = setInterval(() => {
