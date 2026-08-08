@@ -52,6 +52,19 @@ pub struct WhitelistItem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopeFilterMode {
+    Whitelist,
+    Blacklist,
+}
+
+impl Default for ScopeFilterMode {
+    fn default() -> Self {
+        Self::Whitelist
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DroneConfig {
     pub drone_health: i64,
@@ -73,6 +86,9 @@ pub struct LocalConfig {
     pub rules: Vec<Rule>,
     pub rules_groups: Vec<RuleGroup>,
     pub whitelist: Vec<WhitelistItem>,
+    pub blacklist: Vec<WhitelistItem>,
+    #[serde(default)]
+    pub filter_mode: ScopeFilterMode,
     pub pet_words: Vec<String>,
     pub censored_words: Vec<String>,
     pub drone_config: DroneConfig,
@@ -99,6 +115,8 @@ impl Default for LocalConfig {
             rules: vec![],
             rules_groups: vec![],
             whitelist: vec![],
+            blacklist: vec![],
+            filter_mode: ScopeFilterMode::Whitelist,
             pet_words: vec![],
             censored_words: vec![],
             drone_config: DroneConfig {
@@ -150,6 +168,11 @@ impl LocalConfig {
         for item in &self.whitelist {
             if !item.discord_id.is_empty() && !is_discord_id(&item.discord_id) {
                 return Err("whitelist[*].discord_id must be numeric".to_string());
+            }
+        }
+        for item in &self.blacklist {
+            if !item.discord_id.is_empty() && !is_discord_id(&item.discord_id) {
+                return Err("blacklist[*].discord_id must be numeric".to_string());
             }
         }
 

@@ -545,6 +545,8 @@ fn validate_config_shape(value: &Value) -> Result<(), String> {
         "rules",
         "rules_groups",
         "whitelist",
+        "blacklist",
+        "filter_mode",
         "pet_words",
         "censored_words",
         "drone_config",
@@ -578,10 +580,18 @@ fn validate_config_shape(value: &Value) -> Result<(), String> {
     if !root.get("rules").is_some_and(Value::is_array)
         || !root.get("rules_groups").is_some_and(Value::is_array)
         || !root.get("whitelist").is_some_and(Value::is_array)
+        || !root.get("blacklist").is_some_and(Value::is_array)
         || !root.get("pet_words").is_some_and(Value::is_array)
         || !root.get("censored_words").is_some_and(Value::is_array)
     {
         return Err("config array fields must be arrays".to_string());
+    }
+
+    if !matches!(
+        root.get("filter_mode").and_then(Value::as_str),
+        Some("whitelist" | "blacklist")
+    ) {
+        return Err("config.filter_mode must be whitelist or blacklist".to_string());
     }
 
     let Some(drone) = root.get("drone_config").and_then(Value::as_object) else {
@@ -682,6 +692,8 @@ mod tests {
                     "rules": [],
                     "rules_groups": [],
                     "whitelist": [],
+                    "blacklist": [],
+                    "filter_mode": "whitelist",
                     "pet_words": [],
                     "censored_words": [],
                     "drone_config": {
@@ -726,6 +738,8 @@ mod tests {
             "rules": [],
             "rules_groups": [],
             "whitelist": [],
+            "blacklist": [],
+            "filter_mode": "whitelist",
             "pet_words": [],
             "censored_words": [],
             "drone_config": {
