@@ -224,6 +224,7 @@ function getPetWordsForType(petType: number, fallback: string[] = []): string[] 
 
 async function readLocalConfig(): Promise<LocalConfig> {
     const response = await fetch(`${LOOPBACK}/config`, {
+        cache: "no-store",
         headers: {
             "x-discord-user-id": currentUser().id
         }
@@ -249,7 +250,9 @@ async function saveLocalConfig(userId: string, config: LocalConfig) {
 }
 
 async function getAllowedEditors() {
-    const response = await fetch(`${LOOPBACK}/allowed-editors`);
+    const response = await fetch(`${LOOPBACK}/allowed-editors`, {
+        cache: "no-store"
+    });
     if (!response.ok) throw new Error(`Failed loading editors: ${response.status}`);
     return response.json() as Promise<{ allowed_editors: string[] }>;
 }
@@ -317,7 +320,8 @@ async function pushRemoteConfig(relayUrl: string, editorId: string, targetUserId
 
 async function readRemoteConfig(relayUrl: string, requesterId: string, targetUserId: string): Promise<LocalConfig> {
     const response = await fetch(
-        `${relayBaseUrl(relayUrl)}/users/${targetUserId}/config?requester_id=${encodeURIComponent(requesterId)}`
+        `${relayBaseUrl(relayUrl)}/users/${targetUserId}/config?requester_id=${encodeURIComponent(requesterId)}`,
+        { cache: "no-store" }
     );
     if (!response.ok) throw new Error(`Relay config read failed: ${response.status}`);
     return mergeLocalConfig(await response.json());
@@ -336,7 +340,8 @@ async function requestRemoteAccess(relayUrl: string, requesterId: string, target
 
 async function getAccessRequests(relayUrl: string, ownerId: string) {
     const response = await fetch(
-        `${relayBaseUrl(relayUrl)}/users/${ownerId}/access-requests?requester_id=${encodeURIComponent(ownerId)}`
+        `${relayBaseUrl(relayUrl)}/users/${ownerId}/access-requests?requester_id=${encodeURIComponent(ownerId)}`,
+        { cache: "no-store" }
     );
     if (!response.ok) throw new Error(`Failed loading access requests: ${response.status}`);
     return response.json() as Promise<{ requests: string[] }>;
@@ -428,6 +433,19 @@ function getProfileUserId(props: any): string | null {
         props?.displayProfile?.userId
     ];
     return candidates.find((id: unknown): id is string => typeof id === "string" && id.length > 0) ?? null;
+}
+
+function getProfilePanelOpenState(props: any): boolean {
+    const openStateCandidates = [
+        props?.isOpen,
+        props?.open,
+        props?.isActive,
+        props?.active,
+        props?.isVisible,
+        props?.visible
+    ];
+    const explicitState = openStateCandidates.find((value): value is boolean => typeof value === "boolean");
+    return explicitState ?? true;
 }
 
 class NormalizedString {
@@ -878,6 +896,7 @@ function ConfigPanel(props: any) {
     const activeUserId = currentUser().id;
     const profileUserId = getProfileUserId(props) ?? activeUserId;
     const isOwnProfile = profileUserId === activeUserId;
+    const isPanelOpen = getProfilePanelOpenState(props);
 
     const [newEditorId, setNewEditorId] = React.useState("");
     const [allowedEditors, setAllowedEditors] = React.useState<string[]>([]);
@@ -894,9 +913,7 @@ function ConfigPanel(props: any) {
     const [canViewRemote, setCanViewRemote] = React.useState(isOwnProfile);
     const skipAutosaveRef = React.useRef(true);
     const lastSavedSnapshotRef = React.useRef("");
-    const pendingAutosaveRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-    const pendingAutosaveConfigRef = React.useRef<LocalConfig | null>(null);
-    const pendingAutosaveSnapshotRef = React.useRef<string | null>(null);
+    const saveQueueRef = React.useRef(Promise.resolve());
     const stopKeyPropagation = React.useCallback((event: React.KeyboardEvent) => {
         event.stopPropagation();
     }, []);
@@ -933,12 +950,6 @@ function ConfigPanel(props: any) {
 
     const updateFromConfig = React.useCallback((config: LocalConfig) => {
         skipAutosaveRef.current = true;
-        if (pendingAutosaveRef.current) {
-            clearTimeout(pendingAutosaveRef.current);
-            pendingAutosaveRef.current = null;
-        }
-        pendingAutosaveConfigRef.current = null;
-        pendingAutosaveSnapshotRef.current = null;
         setEditableConfig(config);
         setCensoredWordsText(toLines(config.censored_words));
         lastSavedSnapshotRef.current = JSON.stringify({
@@ -973,8 +984,9 @@ function ConfigPanel(props: any) {
     }, [activeUserId, isOwnProfile, profileUserId, updateFromConfig]);
 
     React.useEffect(() => {
+        if (!isPanelOpen) return;
         refresh().catch(err => setStatus(String(err)));
-    }, [refresh]);
+    }, [isPanelOpen, refresh]);
 
     React.useEffect(() => {
         const handle = setInterval(() => {
@@ -1143,33 +1155,11 @@ function ConfigPanel(props: any) {
         const nextSnapshot = JSON.stringify(nextConfig);
         if (nextSnapshot === lastSavedSnapshotRef.current) return;
 
-        if (pendingAutosaveRef.current) clearTimeout(pendingAutosaveRef.current);
-        pendingAutosaveConfigRef.current = nextConfig;
-        pendingAutosaveSnapshotRef.current = nextSnapshot;
-        pendingAutosaveRef.current = setTimeout(() => {
-            const configToSave = pendingAutosaveConfigRef.current;
-            pendingAutosaveRef.current = null;
-            pendingAutosaveConfigRef.current = null;
-            pendingAutosaveSnapshotRef.current = null;
-            if (!configToSave) return;
-            saveConfig(configToSave).catch(err => setStatus(`Auto-save failed: ${String(err)}`));
-        }, 250);
+        saveQueueRef.current = saveQueueRef.current
+            .catch(() => {})
+            .then(() => saveConfig(nextConfig))
+            .catch(err => setStatus(`Auto-save failed: ${String(err)}`));
     }, [canViewRemote, censoredWordsText, editableConfig, isOwnProfile, saveConfig]);
-
-    React.useEffect(() => {
-        return () => {
-            if (pendingAutosaveRef.current) {
-                clearTimeout(pendingAutosaveRef.current);
-                pendingAutosaveRef.current = null;
-            }
-            const pendingConfig = pendingAutosaveConfigRef.current;
-            const pendingSnapshot = pendingAutosaveSnapshotRef.current;
-            pendingAutosaveConfigRef.current = null;
-            pendingAutosaveSnapshotRef.current = null;
-            if (!pendingConfig || !pendingSnapshot || pendingSnapshot === lastSavedSnapshotRef.current) return;
-            saveConfig(pendingConfig, { quiet: true }).catch(() => {});
-        };
-    }, [saveConfig]);
 
     const renderTimeoutControls = (field: ModeTimeoutFieldKey, label: string) => (
         <div style={{ display: "grid", gap: "8px" }}>
