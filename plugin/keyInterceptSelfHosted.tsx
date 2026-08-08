@@ -5,6 +5,7 @@ import { React, UserStore } from "@webpack/common";
 
 const LOOPBACK = "http://127.0.0.1:35491";
 const DISCORD_SECURE_ORIGINS = new Set(["https://discord.com", "https://ptb.discord.com", "https://canary.discord.com"]);
+const LOG_PREFIX = "[key-intercept]";
 
 type Config = {
     rules_end: string;
@@ -222,20 +223,37 @@ function getPetWordsForType(petType: number, fallback: string[] = []): string[] 
     return petWordsByType[petType] ?? fallback;
 }
 
+function configLogSummary(config: LocalConfig) {
+    return {
+        rules: config.rules.length,
+        groups: config.rules_groups.length,
+        whitelist: config.whitelist.length,
+        petAmount: config.config.pet_amount,
+        petType: config.config.pet_type
+    };
+}
+
 async function readLocalConfig(): Promise<LocalConfig> {
+    const userId = currentUser().id;
+    console.info(`${LOG_PREFIX} readLocalConfig:start`, { userId });
     const response = await fetch(`${LOOPBACK}/config`, {
         cache: "no-store",
         headers: {
-            "x-discord-user-id": currentUser().id
+            "x-discord-user-id": userId
         }
     });
-    if (!response.ok) throw new Error(`Failed reading local config: ${response.status}`);
+    if (!response.ok) {
+        console.error(`${LOG_PREFIX} readLocalConfig:failed`, { userId, status: response.status });
+        throw new Error(`Failed reading local config: ${response.status}`);
+    }
     const payload = mergeLocalConfig(await response.json());
     interceptConfig = payload;
+    console.info(`${LOG_PREFIX} readLocalConfig:success`, { userId, summary: configLogSummary(payload) });
     return payload;
 }
 
 async function saveLocalConfig(userId: string, config: LocalConfig) {
+    console.info(`${LOG_PREFIX} saveLocalConfig:start`, { userId, summary: configLogSummary(config) });
     const response = await fetch(`${LOOPBACK}/config`, {
         method: "PUT",
         headers: {
@@ -245,8 +263,12 @@ async function saveLocalConfig(userId: string, config: LocalConfig) {
         body: JSON.stringify({ config })
     });
 
-    if (!response.ok) throw new Error(`Failed saving local config: ${response.status}`);
+    if (!response.ok) {
+        console.error(`${LOG_PREFIX} saveLocalConfig:failed`, { userId, status: response.status });
+        throw new Error(`Failed saving local config: ${response.status}`);
+    }
     interceptConfig = mergeLocalConfig(config);
+    console.info(`${LOG_PREFIX} saveLocalConfig:success`, { userId, summary: configLogSummary(interceptConfig) });
 }
 
 async function getAllowedEditors() {
@@ -319,12 +341,26 @@ async function pushRemoteConfig(relayUrl: string, editorId: string, targetUserId
 }
 
 async function readRemoteConfig(relayUrl: string, requesterId: string, targetUserId: string): Promise<LocalConfig> {
+    console.info(`${LOG_PREFIX} readRemoteConfig:start`, { requesterId, targetUserId });
     const response = await fetch(
         `${relayBaseUrl(relayUrl)}/users/${targetUserId}/config?requester_id=${encodeURIComponent(requesterId)}`,
         { cache: "no-store" }
     );
-    if (!response.ok) throw new Error(`Relay config read failed: ${response.status}`);
-    return mergeLocalConfig(await response.json());
+    if (!response.ok) {
+        console.error(`${LOG_PREFIX} readRemoteConfig:failed`, {
+            requesterId,
+            targetUserId,
+            status: response.status
+        });
+        throw new Error(`Relay config read failed: ${response.status}`);
+    }
+    const payload = mergeLocalConfig(await response.json());
+    console.info(`${LOG_PREFIX} readRemoteConfig:success`, {
+        requesterId,
+        targetUserId,
+        summary: configLogSummary(payload)
+    });
+    return payload;
 }
 
 async function requestRemoteAccess(relayUrl: string, requesterId: string, targetUserId: string) {
@@ -960,6 +996,7 @@ function ConfigPanel(props: any) {
     }, []);
 
     const refresh = React.useCallback(async () => {
+        console.info(`${LOG_PREFIX} refresh:start`, { activeUserId, profileUserId, isOwnProfile });
         if (isOwnProfile) {
             const [config, editors, requests] = await Promise.all([
                 readLocalConfig(),
@@ -970,6 +1007,12 @@ function ConfigPanel(props: any) {
             setAllowedEditors(editors.allowed_editors.sort());
             setPendingRequests(requests.requests.sort());
             setCanViewRemote(true);
+            console.info(`${LOG_PREFIX} refresh:success`, {
+                activeUserId,
+                profileUserId,
+                isOwnProfile,
+                summary: configLogSummary(config)
+            });
             return;
         }
 
@@ -977,9 +1020,16 @@ function ConfigPanel(props: any) {
             const remote = await readRemoteConfig(settings.store.relayUrl, activeUserId, profileUserId);
             updateFromConfig(remote);
             setCanViewRemote(true);
+            console.info(`${LOG_PREFIX} refresh:success`, {
+                activeUserId,
+                profileUserId,
+                isOwnProfile,
+                summary: configLogSummary(remote)
+            });
         } catch (err) {
             setCanViewRemote(false);
             setStatus(String(err));
+            console.error(`${LOG_PREFIX} refresh:failed`, { activeUserId, profileUserId, isOwnProfile, error: String(err) });
         }
     }, [activeUserId, isOwnProfile, profileUserId, updateFromConfig]);
 
@@ -1130,6 +1180,13 @@ function ConfigPanel(props: any) {
             pet_words: getPetWordsForType(baseConfig.config.pet_type, baseConfig.pet_words),
             censored_words: fromLines(censoredWordsText)
         });
+        console.info(`${LOG_PREFIX} saveConfig:start`, {
+            activeUserId,
+            profileUserId,
+            isOwnProfile,
+            quiet: Boolean(options?.quiet),
+            summary: configLogSummary(mergedConfig)
+        });
         if (isOwnProfile) {
             await saveLocalConfig(activeUserId, mergedConfig);
             if (!options?.quiet) setStatus("Auto-saved local config");
@@ -1138,6 +1195,12 @@ function ConfigPanel(props: any) {
             if (!options?.quiet) setStatus(`Auto-saved ${profileUserId}'s config via relay`);
         }
         lastSavedSnapshotRef.current = JSON.stringify(mergedConfig);
+        console.info(`${LOG_PREFIX} saveConfig:success`, {
+            activeUserId,
+            profileUserId,
+            isOwnProfile,
+            summary: configLogSummary(mergedConfig)
+        });
     }, [activeUserId, censoredWordsText, isOwnProfile, profileUserId]);
 
     React.useEffect(() => {
@@ -1155,6 +1218,12 @@ function ConfigPanel(props: any) {
         const nextSnapshot = JSON.stringify(nextConfig);
         if (nextSnapshot === lastSavedSnapshotRef.current) return;
 
+        console.info(`${LOG_PREFIX} autosave:enqueue`, {
+            activeUserId,
+            profileUserId,
+            isOwnProfile,
+            summary: configLogSummary(nextConfig)
+        });
         saveQueueRef.current = saveQueueRef.current
             .catch(() => {})
             .then(() => saveConfig(nextConfig))
