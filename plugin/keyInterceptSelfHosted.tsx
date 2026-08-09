@@ -165,6 +165,36 @@ function currentUser() {
     return UserStore.getCurrentUser();
 }
 
+function mergeScopeFilterItems(value: unknown): WhitelistItem[] {
+    return Array.isArray(value)
+        ? (value as Array<Record<string, unknown>>).map(item => {
+            const server_name = typeof item.server_name === "string" ? item.server_name.trim() : "";
+            const discord_id = typeof item.discord_id === "string" && /^\d*$/.test(item.discord_id)
+                ? item.discord_id
+                : "";
+            return { server_name, discord_id };
+        })
+        : [];
+}
+
+function createSharedScopeList(whitelist: unknown, blacklist: unknown): WhitelistItem[] {
+    const merged = [
+        ...mergeScopeFilterItems(whitelist),
+        ...mergeScopeFilterItems(blacklist)
+    ];
+    const seen = new Set<string>();
+    return merged.filter(item => {
+        const key = `${item.discord_id}::${item.server_name.toLowerCase()}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
+function getSharedScopeList(config: Pick<LocalConfig, "whitelist" | "blacklist">): WhitelistItem[] {
+    return createSharedScopeList(config.whitelist, config.blacklist);
+}
+
 const MessageStore = findByPropsLazy("getMessage", "getMessages");
 const MessageActions = findByPropsLazy("editMessage");
 const ChannelStore = findByPropsLazy("getChannel", "getDMFromUserId");
@@ -189,16 +219,6 @@ function mergeLocalConfig(raw: unknown): LocalConfig {
             || "censored_words" in (nestedConfig as Record<string, unknown>)
         )
     ) ? nestedConfig as Record<string, unknown> : asRecord;
-
-    const mergeScopeFilterItems = (value: unknown): WhitelistItem[] => Array.isArray(value)
-        ? (value as Array<Record<string, unknown>>).map(item => {
-            const server_name = typeof item.server_name === "string" ? item.server_name : "";
-            const discord_id = typeof item.discord_id === "string" && /^\d*$/.test(item.discord_id)
-                ? item.discord_id
-                : "";
-            return { server_name, discord_id };
-        })
-        : [];
 
     const mergedRules = Array.isArray(source.rules)
         ? (source.rules as Array<Record<string, unknown>>).map((rule, index) => ({
@@ -225,8 +245,7 @@ function mergeLocalConfig(raw: unknown): LocalConfig {
             };
         })
         : [];
-    const mergedWhitelist = mergeScopeFilterItems(source.whitelist);
-    const mergedBlacklist = mergeScopeFilterItems(source.blacklist);
+    const sharedScopeList = createSharedScopeList(source.whitelist, source.blacklist);
     const mergedFilterMode: ScopeFilterMode = source.filter_mode === "blacklist" ? "blacklist" : "whitelist";
 
     return {
@@ -236,8 +255,8 @@ function mergeLocalConfig(raw: unknown): LocalConfig {
         } as Config,
         rules: mergedRules,
         rules_groups: mergedGroups,
-        whitelist: mergedWhitelist,
-        blacklist: mergedBlacklist,
+        whitelist: sharedScopeList,
+        blacklist: sharedScopeList,
         filter_mode: mergedFilterMode,
         pet_words: Array.isArray(source.pet_words) ? (source.pet_words as string[]) : [],
         censored_words: Array.isArray(source.censored_words) ? (source.censored_words as string[]) : [],
@@ -1006,14 +1025,15 @@ function upsertScopeItem(list: WhitelistItem[], target: ScopeTarget): WhitelistI
 
 async function updateCurrentScopeList(target: ScopeTarget) {
     const nextConfig = mergeLocalConfig(interceptConfig);
-    const activeListKey = nextConfig.filter_mode === "blacklist" ? "blacklist" : "whitelist";
-    const currentList = nextConfig[activeListKey];
+    const currentList = getSharedScopeList(nextConfig);
     const exists = currentList.some(item => scopeItemMatches(item, target.server_name || null, target.discord_id || null));
-    nextConfig[activeListKey] = exists
+    const nextList = exists
         ? removeScopeItem(currentList, target)
         : upsertScopeItem(currentList, target);
+    nextConfig.whitelist = nextList;
+    nextConfig.blacklist = nextList;
     await saveLocalConfig(currentUser().id, nextConfig);
-    return { listName: activeListKey, exists };
+    return { listName: nextConfig.filter_mode, exists };
 }
 
 function buildScopeTargetFromGuild(guild?: { name?: string; id?: string; }): ScopeTarget | null {
@@ -1580,19 +1600,18 @@ function ConfigPanel(props: any) {
                                 </select>
                             </label>
                             <p style={{ margin: 0, color: "#b5bac1" }}>
-                                Use the server or DM right-click menu to add/remove entries for the current mode.
+                                Use the server or DM right-click menu to add/remove entries from the shared scope list.
                             </p>
                             <ul style={{ marginBottom: 0 }}>
-                                {(editableConfig[editableConfig.filter_mode] ?? []).map((item, index) => (
+                                {getSharedScopeList(editableConfig).map((item, index) => (
                                     <li key={`${item.discord_id}-${item.server_name}-${index}`} style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
                                         <span>{item.server_name || item.discord_id}</span>
                                         <button
                                             style={{ ...buttonStyle, background: "#da373c", borderColor: "#da373c" }}
                                             onClick={() => {
                                                 setEditableConfig(prev => {
-                                                    const listKey = prev.filter_mode === "blacklist" ? "blacklist" : "whitelist";
-                                                    const nextList = prev[listKey].filter((_, itemIndex) => itemIndex !== index);
-                                                    return { ...prev, [listKey]: nextList };
+                                                    const nextList = getSharedScopeList(prev).filter((_, itemIndex) => itemIndex !== index);
+                                                    return { ...prev, whitelist: nextList, blacklist: nextList };
                                                 });
                                             }}
                                         >
@@ -1857,10 +1876,11 @@ const plugin = definePlugin({
         const scopeId = scopeTarget?.discord_id ?? null;
         const scopeKnown = Boolean(scopeName || scopeId);
 
+        const scopeList = getSharedScopeList(interceptConfig);
         if (interceptConfig.filter_mode === "blacklist") {
-            if (interceptConfig.blacklist.some(item => scopeItemMatches(item, scopeName, scopeId))) return;
-        } else if (interceptConfig.whitelist.length > 0) {
-            const whitelistMatch = interceptConfig.whitelist.some(item => scopeItemMatches(item, scopeName, scopeId));
+            if (scopeList.some(item => scopeItemMatches(item, scopeName, scopeId))) return;
+        } else if (scopeList.length > 0) {
+            const whitelistMatch = scopeList.some(item => scopeItemMatches(item, scopeName, scopeId));
             if (scopeKnown && !whitelistMatch) return;
         }
 
@@ -1874,7 +1894,7 @@ const plugin = definePlugin({
             const target = buildScopeTargetFromGuild(props?.guild);
             if (!target) return;
             const listKey = interceptConfig.filter_mode === "blacklist" ? "blacklist" : "whitelist";
-            const itemExists = interceptConfig[listKey].some(item => scopeItemMatches(item, target.server_name || null, target.discord_id || null));
+            const itemExists = getSharedScopeList(interceptConfig).some(item => scopeItemMatches(item, target.server_name || null, target.discord_id || null));
             const anchor = findGroupChildrenByChildId("privacy", children);
             const menuItem = (
                 <Menu.MenuItem
@@ -1897,7 +1917,7 @@ const plugin = definePlugin({
             const target = buildScopeTargetFromChannel(props?.channel);
             if (!target) return;
             const listKey = interceptConfig.filter_mode === "blacklist" ? "blacklist" : "whitelist";
-            const itemExists = interceptConfig[listKey].some(item => scopeItemMatches(item, target.server_name || null, target.discord_id || null));
+            const itemExists = getSharedScopeList(interceptConfig).some(item => scopeItemMatches(item, target.server_name || null, target.discord_id || null));
             const anchor = findGroupChildrenByChildId(["mute-channel", "unmute-channel", "close-dm", "mark-read"], children);
             const menuItem = (
                 <Menu.MenuItem
