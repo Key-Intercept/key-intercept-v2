@@ -404,9 +404,9 @@ fn install_plugin_into_vencord(
     patch_vencord_csp(&vencord_dir, relay_server_url)?;
     ensure_pnpm_available()?;
     install_vencord_userplugin(source, &vencord_dir, plugin_folder, plugin_file_name)?;
-    run_command_in_dir("pnpm", &pnpm_install_args(), &vencord_dir)?;
-    run_command_in_dir("pnpm", &["build"], &vencord_dir)?;
-    if let Err(err) = run_command_in_dir("pnpm", &["inject"], &vencord_dir) {
+    run_node_tool_in_dir("pnpm", &pnpm_install_args(), &vencord_dir)?;
+    run_node_tool_in_dir("pnpm", &["build"], &vencord_dir)?;
+    if let Err(err) = run_node_tool_in_dir("pnpm", &["inject"], &vencord_dir) {
         println!("Warning: `pnpm inject` failed: {err}");
         println!("The plugin may still work after running `pnpm inject` manually.");
     }
@@ -573,20 +573,83 @@ fn sync_vencord_checkout(vencord_dir: &Path) -> Result<()> {
 }
 
 fn ensure_pnpm_available() -> Result<()> {
-    if command_exists("pnpm") {
+    if node_tool_exists("pnpm") {
         return Ok(());
     }
 
-    if !command_exists("npm") {
+    if !node_tool_exists("npm") {
         bail!("pnpm not found and npm is unavailable; install pnpm manually and rerun installer");
     }
 
-    run_command("npm", &["install", "-g", "pnpm"])
+    run_node_tool("npm", &["install", "-g", "pnpm"])
         .context("failed to install pnpm using npm install -g pnpm")
 }
 
-fn command_exists(command: &str) -> bool {
-    Command::new(command).arg("--version").status().is_ok()
+fn node_tool_exists(command: &str) -> bool {
+    #[cfg(windows)]
+    {
+        return Command::new("cmd")
+            .arg("/C")
+            .arg(command)
+            .arg("--version")
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+    }
+    #[cfg(not(windows))]
+    {
+        Command::new(command)
+            .arg("--version")
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+}
+
+fn run_node_tool(command: &str, args: &[&str]) -> Result<()> {
+    #[cfg(windows)]
+    {
+        let status = Command::new("cmd")
+            .arg("/C")
+            .arg(command)
+            .args(args)
+            .status()
+            .with_context(|| format!("failed to execute command `{command}`"))?;
+
+        if !status.success() {
+            bail!("command `{command}` failed with status {status}");
+        }
+        return Ok(());
+    }
+    #[cfg(not(windows))]
+    {
+        run_command(command, args)
+    }
+}
+
+fn run_node_tool_in_dir(command: &str, args: &[&str], dir: &Path) -> Result<()> {
+    #[cfg(windows)]
+    {
+        let status = Command::new("cmd")
+            .current_dir(dir)
+            .arg("/C")
+            .arg(command)
+            .args(args)
+            .status()
+            .with_context(|| format!("failed to execute command `{command}` in {}", dir.display()))?;
+
+        if !status.success() {
+            bail!(
+                "command `{command}` in {} failed with status {status}",
+                dir.display()
+            );
+        }
+        return Ok(());
+    }
+    #[cfg(not(windows))]
+    {
+        run_command_in_dir(command, args, dir)
+    }
 }
 
 fn install_vencord_userplugin(
