@@ -79,7 +79,16 @@ struct LocalSources {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    if let Err(err) = run().await {
+        eprintln!("Installation failed: {err:#}");
+        #[cfg(windows)]
+        show_windows_error_dialog(&format!("{err:#}"));
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<()> {
     let args = Args::parse();
     let owner_discord_id =
         resolve_owner_discord_id(args.owner_discord_id, args.relay_server_url.as_deref())?;
@@ -195,6 +204,21 @@ fn resolve_relay_server_url(
     cli_relay_server_url
         .or(wizard_relay_server_url)
         .or_else(|| Some(default_relay_server_url().to_string()))
+}
+
+#[cfg(windows)]
+fn show_windows_error_dialog(message: &str) {
+    let escaped = message.replace('\'', "''");
+    let script = format!(
+        "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('{escaped}','Key Intercept Installer Error',[System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null"
+    );
+    let _ = Command::new("powershell")
+        .arg("-NoProfile")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-Command")
+        .arg(script)
+        .status();
 }
 
 fn validate_owner_discord_id(owner_discord_id: &str) -> Result<()> {
