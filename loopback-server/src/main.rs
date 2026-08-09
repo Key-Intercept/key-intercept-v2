@@ -1,14 +1,11 @@
-mod schema;
 mod store;
+mod schema;
 
 use anyhow::Result;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::{
-        HeaderMap, Method, StatusCode,
-        header::{CONTENT_TYPE, HeaderName},
-    },
+    http::{HeaderMap, Method, StatusCode, header::{CONTENT_TYPE, HeaderName}},
     response::IntoResponse,
     routing::{delete, get},
 };
@@ -207,11 +204,12 @@ async fn put_config(
     };
 
     if let Err(err) = payload.config.validate() {
-        info!(
-            "PUT /config rejected for requester {}: {}",
-            requester_id, err
-        );
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: err })).into_response();
+        info!("PUT /config rejected for requester {}: {}", requester_id, err);
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse { error: err }),
+        )
+            .into_response();
     }
 
     match state
