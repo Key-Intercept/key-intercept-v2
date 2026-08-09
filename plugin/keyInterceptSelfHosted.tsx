@@ -1035,7 +1035,7 @@ function buildScopeTargetFromChannel(channel?: { guild_id?: string; id?: string;
         .filter((id: string) => id !== activeUser.id)
         .map((id: string) => UserStore.getUser(id)?.username)
         .filter(Boolean) as string[];
-    const server_name = normalizeScopeName(recipientNames.join(", ") || channel.name ?? "");
+    const server_name = normalizeScopeName(recipientNames.join(", ") || channel.name || "");
     const discord_id = normalizeScopeId(channel.id ?? null);
     if (!server_name && !discord_id) return null;
     return {
