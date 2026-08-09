@@ -2,12 +2,13 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::Parser;
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};
 use serde::Deserialize;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     env,
     env::consts::EXE_SUFFIX,
     fs,
     io::Cursor,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -30,14 +31,14 @@ struct Args {
     #[arg(long, default_value = "key-intercept-v2")]
     repo_name: String,
 
-    #[arg(long, default_value = "loopback-server-linux-x86_64")]
-    loopback_artifact: String,
+    #[arg(long)]
+    loopback_artifact: Option<String>,
 
     #[arg(long, default_value = "key-intercept-plugin")]
     plugin_artifact: String,
 
-    #[arg(long, default_value = "loopback-server")]
-    loopback_binary_name: String,
+    #[arg(long)]
+    loopback_binary_name: Option<String>,
 
     #[arg(long, default_value = "keyInterceptSelfHosted.tsx")]
     plugin_file_name: String,
@@ -80,6 +81,13 @@ struct LocalSources {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    let loopback_artifact = args
+        .loopback_artifact
+        .as_deref()
+        .unwrap_or(default_loopback_artifact_name());
+    let loopback_binary_name = args
+        .loopback_binary_name
+        .unwrap_or_else(default_loopback_binary_name);
     if let Some(mode) = args.plugin_install_mode.as_deref() {
         if mode != "vencord-custom" {
             bail!("--plugin-install-mode only supports 'vencord-custom'");
@@ -104,7 +112,7 @@ async fn main() -> Result<()> {
         let run_id = latest_successful_run(&client, &args.repo_owner, &args.repo_name).await?;
         let artifacts = list_artifacts(&client, &args.repo_owner, &args.repo_name, run_id).await?;
 
-        let loopback_artifact = find_artifact(&artifacts, &args.loopback_artifact)?;
+        let loopback_artifact = find_artifact(&artifacts, loopback_artifact)?;
         let plugin_artifact = find_artifact(&artifacts, &args.plugin_artifact)?;
 
         let loopback_dir = download_artifact(
@@ -122,7 +130,7 @@ async fn main() -> Result<()> {
         )
         .await?;
 
-        install_loopback_binary(&loopback_dir, &args.loopback_binary_name)?;
+        install_loopback_binary(&loopback_dir, &loopback_binary_name)?;
         let plugin_source = find_file_recursive(plugin_dir.path(), &args.plugin_file_name)?;
         install_plugin_into_vencord(
             &plugin_source,
@@ -132,8 +140,7 @@ async fn main() -> Result<()> {
         )?;
     }
 
-    write_systemd_service(&args.owner_discord_id, args.relay_server_url.as_deref())?;
-    enable_service()?;
+    configure_loopback_startup(&args.owner_discord_id, args.relay_server_url.as_deref())?;
 
     println!("Installation complete.");
     Ok(())
@@ -282,11 +289,11 @@ fn install_loopback_binary(extracted: &TempDir, binary_name: &str) -> Result<()>
 }
 
 fn install_loopback_binary_from_path(source: &Path) -> Result<()> {
-    let target_dir = home_dir()?.join(".local/bin");
+    let target_dir = loopback_install_dir()?;
     fs::create_dir_all(&target_dir)
         .with_context(|| format!("failed to create {}", target_dir.display()))?;
 
-    let target = target_dir.join("key-intercept-loopback");
+    let target = loopback_binary_target_path()?;
     fs::copy(&source, &target).with_context(|| {
         format!(
             "failed to copy loopback binary from {} to {}",
@@ -295,12 +302,7 @@ fn install_loopback_binary_from_path(source: &Path) -> Result<()> {
         )
     })?;
 
-    let mut perms = fs::metadata(&target)
-        .with_context(|| format!("failed to read {} metadata", target.display()))?
-        .permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&target, perms)
-        .with_context(|| format!("failed to mark {} executable", target.display()))?;
+    ensure_loopback_binary_executable(&target)?;
 
     Ok(())
 }
@@ -332,7 +334,11 @@ fn patch_vencord_csp(vencord_dir: &Path, relay_server_url: Option<&str>) -> Resu
     };
 
     let relay_origin = relay_origin_for_csp(relay_url)?;
-    let csp_path = vencord_dir.join("src").join("main").join("csp").join("index.ts");
+    let csp_path = vencord_dir
+        .join("src")
+        .join("main")
+        .join("csp")
+        .join("index.ts");
     let mut csp_source = fs::read_to_string(&csp_path)
         .with_context(|| format!("failed to read {}", csp_path.display()))?;
 
@@ -350,7 +356,8 @@ fn patch_vencord_csp(vencord_dir: &Path, relay_server_url: Option<&str>) -> Resu
         );
     }
     csp_source = csp_source.replacen(marker, &insert, 1);
-    fs::write(&csp_path, csp_source).with_context(|| format!("failed to write {}", csp_path.display()))?;
+    fs::write(&csp_path, csp_source)
+        .with_context(|| format!("failed to write {}", csp_path.display()))?;
     Ok(())
 }
 
@@ -502,7 +509,10 @@ fn install_vencord_userplugin(
     plugin_folder: &str,
     plugin_file_name: &str,
 ) -> Result<()> {
-    let destination_dir = vencord_dir.join("src").join("userplugins").join(plugin_folder);
+    let destination_dir = vencord_dir
+        .join("src")
+        .join("userplugins")
+        .join(plugin_folder);
     if destination_dir.exists() {
         fs::remove_dir_all(&destination_dir)
             .with_context(|| format!("failed to clear {}", destination_dir.display()))?;
@@ -536,6 +546,58 @@ fn plugin_entry_file_name(plugin_file_name: &str) -> Result<&'static str> {
     Ok(entry_file)
 }
 
+#[cfg(windows)]
+fn default_loopback_artifact_name() -> &'static str {
+    "loopback-server-windows-x86_64"
+}
+
+#[cfg(target_os = "macos")]
+fn default_loopback_artifact_name() -> &'static str {
+    "loopback-server-macos-x86_64"
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn default_loopback_artifact_name() -> &'static str {
+    "loopback-server-linux-x86_64"
+}
+
+fn default_loopback_binary_name() -> String {
+    format!("loopback-server{EXE_SUFFIX}")
+}
+
+#[cfg(windows)]
+fn loopback_install_dir() -> Result<PathBuf> {
+    Ok(dirs::data_local_dir()
+        .ok_or_else(|| anyhow!("could not determine local data directory"))?
+        .join("Programs")
+        .join("key-intercept"))
+}
+
+#[cfg(not(windows))]
+fn loopback_install_dir() -> Result<PathBuf> {
+    Ok(home_dir()?.join(".local/bin"))
+}
+
+fn loopback_binary_target_path() -> Result<PathBuf> {
+    Ok(loopback_install_dir()?.join(format!("key-intercept-loopback{EXE_SUFFIX}")))
+}
+
+#[cfg(unix)]
+fn ensure_loopback_binary_executable(target: &Path) -> Result<()> {
+    let mut perms = fs::metadata(target)
+        .with_context(|| format!("failed to read {} metadata", target.display()))?
+        .permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(target, perms)
+        .with_context(|| format!("failed to mark {} executable", target.display()))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_loopback_binary_executable(_target: &Path) -> Result<()> {
+    Ok(())
+}
+
 fn find_file_recursive(root: &Path, name: &str) -> Result<PathBuf> {
     for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
         if entry.file_type().is_file() && entry.file_name().to_string_lossy() == name {
@@ -546,7 +608,11 @@ fn find_file_recursive(root: &Path, name: &str) -> Result<PathBuf> {
     bail!("file '{name}' not found in artifact")
 }
 
-fn write_systemd_service(owner_discord_id: &str, relay_server_url: Option<&str>) -> Result<()> {
+#[cfg(unix)]
+fn configure_loopback_startup(
+    owner_discord_id: &str,
+    relay_server_url: Option<&str>,
+) -> Result<()> {
     let systemd_user = home_dir()?.join(".config/systemd/user");
     fs::create_dir_all(&systemd_user)
         .with_context(|| format!("failed to create {}", systemd_user.display()))?;
@@ -566,10 +632,6 @@ fn write_systemd_service(owner_discord_id: &str, relay_server_url: Option<&str>)
 
     fs::write(&service_file, unit)
         .with_context(|| format!("failed to write {}", service_file.display()))?;
-    Ok(())
-}
-
-fn enable_service() -> Result<()> {
     run_systemctl(["--user", "daemon-reload"])?;
     run_systemctl([
         "--user",
@@ -578,6 +640,54 @@ fn enable_service() -> Result<()> {
         "key-intercept-loopback.service",
     ])?;
     Ok(())
+}
+
+#[cfg(windows)]
+fn configure_loopback_startup(
+    owner_discord_id: &str,
+    relay_server_url: Option<&str>,
+) -> Result<()> {
+    let startup_dir = windows_startup_dir()?;
+    fs::create_dir_all(&startup_dir)
+        .with_context(|| format!("failed to create {}", startup_dir.display()))?;
+
+    let launcher_file = startup_dir.join("key-intercept-loopback.cmd");
+    let loopback_binary = loopback_binary_target_path()?;
+    let config_path = dirs::config_dir()
+        .ok_or_else(|| anyhow!("could not determine config directory"))?
+        .join("key-intercept")
+        .join("config.json");
+    let mut script = format!(
+        "@echo off\r\nset \"OWNER_DISCORD_ID={owner_discord_id}\"\r\nset \"LOOPBACK_PORT=35491\"\r\nset \"KEY_INTERCEPT_CONFIG_PATH={}\"\r\n",
+        config_path.display()
+    );
+    if let Some(relay) = relay_server_url {
+        script.push_str(&format!("set \"RELAY_SERVER_URL={relay}\"\r\n"));
+    }
+    script.push_str(&format!("start \"\" \"{}\"\r\n", loopback_binary.display()));
+
+    fs::write(&launcher_file, script)
+        .with_context(|| format!("failed to write {}", launcher_file.display()))?;
+
+    Command::new("cmd")
+        .arg("/C")
+        .arg(&launcher_file)
+        .spawn()
+        .with_context(|| format!("failed to start loopback using {}", launcher_file.display()))?;
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_startup_dir() -> Result<PathBuf> {
+    let app_data =
+        env::var_os("APPDATA").ok_or_else(|| anyhow!("APPDATA must be set on Windows"))?;
+    Ok(PathBuf::from(app_data)
+        .join("Microsoft")
+        .join("Windows")
+        .join("Start Menu")
+        .join("Programs")
+        .join("Startup"))
 }
 
 fn run_systemctl<const N: usize>(args: [&str; N]) -> Result<()> {
@@ -706,7 +816,11 @@ mod tests {
         let vencord_dir = tempdir().unwrap();
         std::fs::create_dir_all(vencord_dir.path().join("src").join("userplugins")).unwrap();
         let source = NamedTempFile::new().unwrap();
-        std::fs::write(source.path(), "export default definePlugin({ name: \"x\" });").unwrap();
+        std::fs::write(
+            source.path(),
+            "export default definePlugin({ name: \"x\" });",
+        )
+        .unwrap();
 
         install_vencord_userplugin(
             source.path(),
@@ -786,5 +900,4 @@ mod tests {
         remove_existing_path(&nested).unwrap();
         assert!(!nested.exists());
     }
-
 }

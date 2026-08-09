@@ -43,7 +43,9 @@ cargo run -p key-intercept-installer -- \
 Default relay URL: `https://82.165.196.147:45491`
 
 By default it expects two artifact names in that latest successful run:
-- `loopback-server-linux-x86_64`
+- `loopback-server-linux-x86_64` (Linux)
+- `loopback-server-macos-x86_64` (macOS)
+- `loopback-server-windows-x86_64` (Windows)
 - `key-intercept-plugin`
 
 You can override artifact names with:
@@ -51,9 +53,9 @@ You can override artifact names with:
 - `--plugin-artifact <name>`
 
 It installs:
-- loopback binary to `~/.local/bin/key-intercept-loopback`
+- loopback binary to `~/.local/bin/key-intercept-loopback` on Unix, or `%LOCALAPPDATA%/Programs/key-intercept/key-intercept-loopback.exe` on Windows
 - plugin file to `~/Vencord/src/userplugins/key-intercept/index.tsx` (removes and reclones `~/Vencord` automatically)
-- user systemd service `key-intercept-loopback.service`
+- startup service via user `systemd` unit on Unix, or `%APPDATA%/Microsoft/Windows/Start Menu/Programs/Startup/key-intercept-loopback.cmd` on Windows
 
 `--plugin-install-mode vencord-custom` is accepted for backward compatibility; custom Vencord installation is always used.
 
@@ -62,4 +64,4 @@ The relay server is intended for manual VPS deployment and is not included in in
 ## GitHub Actions workflows
 
 - `CI`: runs plugin and Rust tests on pull requests and pushes.
-- `Build and Release`: builds loopback/plugin artifacts plus installer packages for Linux/macOS/Windows and publishes a GitHub release asset set when a `v*` tag is pushed (or via manual dispatch with `release_tag`).
+- `Build and Release`: builds loopback/plugin artifacts plus installer packages for Linux/macOS/Windows (including a Windows `.msix`) and publishes a GitHub release asset set when a `v*` tag is pushed (or via manual dispatch with `release_tag`).
