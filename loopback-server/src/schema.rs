@@ -85,7 +85,9 @@ pub struct LocalConfig {
     pub config: Config,
     pub rules: Vec<Rule>,
     pub rules_groups: Vec<RuleGroup>,
+    #[serde(default)]
     pub whitelist: Vec<WhitelistItem>,
+    #[serde(default)]
     pub blacklist: Vec<WhitelistItem>,
     #[serde(default)]
     pub filter_mode: ScopeFilterMode,
@@ -190,4 +192,51 @@ fn default_group_timeout_end() -> String {
 
 fn default_true() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LocalConfig, ScopeFilterMode};
+
+    #[test]
+    fn missing_scope_lists_default_to_empty() {
+        let json = r#"{
+            "config": {
+                "rules_end": "9999-12-31T23:59:59.000Z",
+                "gag_end": "1970-01-01T00:00:00.000Z",
+                "pet_end": "1970-01-01T00:00:00.000Z",
+                "pet_amount": 0.0,
+                "pet_type": 0,
+                "bimbo_end": "1970-01-01T00:00:00.000Z",
+                "horny_end": "1970-01-01T00:00:00.000Z",
+                "bimbo_word_length": 12,
+                "drone_end": "1970-01-01T00:00:00.000Z",
+                "uwu_end": "1970-01-01T00:00:00.000Z",
+                "censored_end": "1970-01-01T00:00:00.000Z",
+                "censored_replacement": "*",
+                "debug": false
+            },
+            "rules": [],
+            "rules_groups": [],
+            "pet_words": [],
+            "censored_words": [],
+            "drone_config": {
+                "drone_health": 100,
+                "speech_header": "Acknowledged",
+                "speech_footer": "Compliance complete",
+                "action_header": "ACTION",
+                "action_footer": "ACTION COMPLETE",
+                "whisper_header": "WHISPER",
+                "whisper_footer": "WHISPER COMPLETE",
+                "loud_header": "LOUD",
+                "loud_footer": "LOUD COMPLETE",
+                "drone_term": "Drone"
+            }
+        }"#;
+
+        let parsed: LocalConfig = serde_json::from_str(json).expect("legacy config should parse");
+        assert!(parsed.whitelist.is_empty());
+        assert!(parsed.blacklist.is_empty());
+        assert!(matches!(parsed.filter_mode, ScopeFilterMode::Whitelist));
+    }
 }
