@@ -840,8 +840,9 @@ Write-Output $relay
         bail!("Windows installer wizard was cancelled");
     }
 
-    let mut lines = String::from_utf8(output.stdout)
-        .context("failed to parse Windows installer wizard output")?
+    let wizard_output = String::from_utf8(output.stdout)
+        .context("failed to parse Windows installer wizard output")?;
+    let mut lines = wizard_output
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty());
