@@ -199,6 +199,7 @@ const MessageStore = findByPropsLazy("getMessage", "getMessages");
 const MessageActions = findByPropsLazy("editMessage");
 const ChannelStore = findByPropsLazy("getChannel", "getDMFromUserId");
 const GuildStore = findByPropsLazy("getGuild", "getGuilds");
+const SelectedChannelStore = findByPropsLazy("getChannelId");
 
 function mergeLocalConfig(raw: unknown): LocalConfig {
     if (!raw || typeof raw !== "object") return cloneDefaultConfig();
@@ -1065,6 +1066,37 @@ function buildScopeTargetFromChannel(channel?: { guild_id?: string; id?: string;
     };
 }
 
+function getChannelFromContextProps(props: any): { guild_id?: string; id?: string; name?: string; recipients?: string[]; } | null {
+    const candidates = [
+        props?.channel,
+        props?.channel?.channel,
+        props?.conversation?.channel,
+        props?.thread?.channel
+    ];
+    for (const candidate of candidates) {
+        if (candidate && typeof candidate === "object") {
+            return candidate;
+        }
+    }
+    return null;
+}
+
+function buildScopeTargetFromContext(props: any): ScopeTarget | null {
+    const directTarget = buildScopeTargetFromChannel(getChannelFromContextProps(props) ?? undefined);
+    if (directTarget) return directTarget;
+    const selectedChannelId = SelectedChannelStore?.getChannelId?.();
+    if (!selectedChannelId) return null;
+    const selectedChannel = ChannelStore?.getChannel?.(selectedChannelId);
+    const selectedTarget = buildScopeTargetFromChannel(selectedChannel);
+    if (!selectedTarget) return null;
+    const contextUserId = typeof props?.user?.id === "string" ? props.user.id : null;
+    if (contextUserId) {
+        const recipients = Array.isArray(selectedChannel?.recipients) ? selectedChannel.recipients : [];
+        if (!recipients.includes(contextUserId)) return null;
+    }
+    return selectedTarget;
+}
+
 function ConfigPanel(props: any) {
     const activeUserId = currentUser().id;
     const profileUserId = getProfileUserId(props) ?? activeUserId;
@@ -1914,7 +1946,7 @@ const plugin = definePlugin({
             }
         },
         "channel-context": (children, props) => {
-            const target = buildScopeTargetFromChannel(props?.channel);
+            const target = buildScopeTargetFromContext(props);
             if (!target) return;
             const listKey = interceptConfig.filter_mode === "blacklist" ? "blacklist" : "whitelist";
             const itemExists = getSharedScopeList(interceptConfig).some(item => scopeItemMatches(item, target.server_name || null, target.discord_id || null));
@@ -1935,6 +1967,25 @@ const plugin = definePlugin({
             } else {
                 children.push(<Menu.MenuGroup>{menuItem}</Menu.MenuGroup>);
             }
+        },
+        "user-context": (children, props) => {
+            const target = buildScopeTargetFromContext(props);
+            if (!target) return;
+            const listKey = interceptConfig.filter_mode === "blacklist" ? "blacklist" : "whitelist";
+            const itemExists = getSharedScopeList(interceptConfig).some(item => scopeItemMatches(item, target.server_name || null, target.discord_id || null));
+            children.push(
+                <Menu.MenuGroup>
+                    <Menu.MenuItem
+                        id="key-intercept-scope-filter-user-dm"
+                        label={`${itemExists ? "Remove from" : "Add to"} ${listKey}: ${target.label}`}
+                        action={() => {
+                            updateCurrentScopeList(target).catch(err => {
+                                console.error(`${LOG_PREFIX} failed to update scope list`, err);
+                            });
+                        }}
+                    />
+                </Menu.MenuGroup>
+            );
         }
     },
     userProfileBadge: {

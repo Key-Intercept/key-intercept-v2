@@ -2,28 +2,70 @@ name: Build and Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
   workflow_dispatch:
-    inputs:
-      release_tag:
-        description: "Release tag (e.g. v1.0.0)"
-        required: true
-        type: string
 
 permissions:
   contents: write
 
 jobs:
+  determine-version:
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.version.outputs.release_tag }}
+      tag_created: ${{ steps.version.outputs.tag_created }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine release tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --tags --force
+
+          existing_tag="$(git tag --points-at HEAD 'v*' | sort -V | tail -n1 || true)"
+          if [[ -n "$existing_tag" ]]; then
+            release_tag="$existing_tag"
+            tag_created="false"
+          else
+            latest_tag="$(git tag -l 'v*' | sort -V | tail -n1 || true)"
+            if [[ "$latest_tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              major="${BASH_REMATCH[1]}"
+              minor="${BASH_REMATCH[2]}"
+              patch="$(( ${BASH_REMATCH[3]} + 1 ))"
+              release_tag="v${major}.${minor}.${patch}"
+            else
+              release_tag="v0.1.0"
+            fi
+            git tag "$release_tag"
+            tag_created="true"
+          fi
+
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "tag_created=$tag_created" >> "$GITHUB_OUTPUT"
+
+      - name: Push release tag
+        if: steps.version.outputs.tag_created == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git push origin "refs/tags/${RELEASE_TAG}"
+
   build-loopback-and-plugin:
     runs-on: ${{ matrix.os }}
+    needs: determine-version
     strategy:
       matrix:
         include:
           - os: ubuntu-latest
             loopback_artifact_suffix: linux
-          - os: macos-latest
-            loopback_artifact_suffix: macos
           - os: windows-latest
             loopback_artifact_suffix: windows
     steps:
@@ -36,14 +78,14 @@ jobs:
       - name: Build loopback server
         run: cargo build --release -p loopback-server
 
-      - name: Collect loopback artifact (unix)
-        if: runner.os != 'Windows'
+      - name: Collect loopback artifact (linux)
+        if: runner.os == 'Linux'
         run: |
           mkdir -p dist
           cp target/release/loopback-server dist/loopback-server
 
-      - name: Upload loopback artifact
-        if: runner.os != 'Windows'
+      - name: Upload loopback artifact (linux)
+        if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
           name: loopback-server-${{ matrix.loopback_artifact_suffix }}-x86_64
@@ -78,9 +120,10 @@ jobs:
 
   build-installer:
     runs-on: ${{ matrix.os }}
+    needs: determine-version
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -91,99 +134,43 @@ jobs:
       - name: Build installer
         run: cargo build --release -p key-intercept-installer
 
-      - name: Package installer (unix)
-        if: runner.os != 'Windows'
+      - name: Package installer (linux)
+        if: runner.os == 'Linux'
         run: |
           mkdir -p dist
-          cp target/release/key-intercept-installer dist/key-intercept-installer-${{ runner.os }}-x86_64
-          tar -C dist -czf dist/key-intercept-installer-${{ runner.os }}-x86_64.tar.gz key-intercept-installer-${{ runner.os }}-x86_64
+          cp target/release/key-intercept-installer dist/key-intercept-installer-linux-x86_64
+          tar -C dist -czf dist/key-intercept-installer-linux-x86_64.tar.gz key-intercept-installer-linux-x86_64
 
       - name: Package installer (windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          New-Item -ItemType Directory -Force -Path msix/Assets | Out-Null
-
-          Copy-Item target/release/key-intercept-installer.exe dist/key-intercept-installer-Windows-x86_64.exe
-          Compress-Archive -Path dist/key-intercept-installer-Windows-x86_64.exe -DestinationPath dist/key-intercept-installer-Windows-x86_64.zip
-
-          Add-Type -AssemblyName System.Drawing
-          $icon44 = New-Object System.Drawing.Bitmap 44,44
-          $icon44Graphics = [System.Drawing.Graphics]::FromImage($icon44)
-          $icon44Graphics.Clear([System.Drawing.Color]::FromArgb(0,120,212))
-          $icon44.Save("msix/Assets/Square44x44Logo.png", [System.Drawing.Imaging.ImageFormat]::Png)
-          $icon44Graphics.Dispose()
-          $icon44.Dispose()
-          $icon150 = New-Object System.Drawing.Bitmap 150,150
-          $icon150Graphics = [System.Drawing.Graphics]::FromImage($icon150)
-          $icon150Graphics.Clear([System.Drawing.Color]::FromArgb(0,120,212))
-          $icon150.Save("msix/Assets/Square150x150Logo.png", [System.Drawing.Imaging.ImageFormat]::Png)
-          $icon150Graphics.Dispose()
-          $icon150.Dispose()
-
-          Copy-Item target/release/key-intercept-installer.exe msix/key-intercept-installer.exe
-          $version = "1.0.$env:GITHUB_RUN_NUMBER.0"
-          @"
-          <?xml version="1.0" encoding="utf-8"?>
-          <Package
-            xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
-            xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
-            xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-            IgnorableNamespaces="uap rescap">
-            <Identity Name="KeyIntercept.Installer" Publisher="CN=KeyIntercept" Version="$version" />
-            <Properties>
-              <DisplayName>Key Intercept Installer</DisplayName>
-              <PublisherDisplayName>Key Intercept</PublisherDisplayName>
-              <Description>Installs and configures key-intercept loopback and plugin.</Description>
-              <Logo>Assets\Square44x44Logo.png</Logo>
-            </Properties>
-            <Resources>
-              <Resource Language="en-us" />
-            </Resources>
-            <Dependencies>
-              <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.22631.0" />
-            </Dependencies>
-            <Applications>
-              <Application Id="KeyInterceptInstaller" Executable="key-intercept-installer.exe" EntryPoint="Windows.FullTrustApplication">
-                <uap:VisualElements
-                  DisplayName="Key Intercept Installer"
-                  Description="Key Intercept Installer"
-                  BackgroundColor="transparent"
-                  Square44x44Logo="Assets\Square44x44Logo.png"
-                  Square150x150Logo="Assets\Square150x150Logo.png" />
-              </Application>
-            </Applications>
-            <Capabilities>
-              <rescap:Capability Name="runFullTrust" />
-            </Capabilities>
-          </Package>
-          "@ | Set-Content -Path msix/AppxManifest.xml -Encoding utf8
-          makeappx pack /d msix /p dist/key-intercept-installer-Windows-x86_64.msix /o
+          Copy-Item target/release/key-intercept-installer.exe dist/key-intercept-installer-windows-x86_64.exe
+          Compress-Archive -Path dist/key-intercept-installer-windows-x86_64.exe -DestinationPath dist/key-intercept-installer-windows-x86_64.zip
 
       - name: Upload installer package
         uses: actions/upload-artifact@v4
         with:
-          name: installer-package-${{ matrix.os }}
+          name: release-assets-${{ matrix.os }}
           path: |
             dist/*.tar.gz
             dist/*.zip
-            dist/*.msix
 
   publish-release:
     runs-on: ubuntu-latest
-    needs: [build-loopback-and-plugin, build-installer]
+    needs: [determine-version, build-loopback-and-plugin, build-installer]
     steps:
       - name: Download installer packages
         uses: actions/download-artifact@v4
         with:
-          pattern: installer-package-*
+          pattern: release-assets-*
           merge-multiple: true
           path: release-assets
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          tag_name: ${{ needs.determine-version.outputs.release_tag }}
           generate_release_notes: true
           files: release-assets/*
