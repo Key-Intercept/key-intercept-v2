@@ -134,8 +134,14 @@ async fn run() -> Result<()> {
         )?;
     } else {
         let client = build_client()?;
-        let run_id = latest_successful_run(&client, &args.repo_owner, &args.repo_name).await?;
-        let artifacts = list_artifacts(&client, &args.repo_owner, &args.repo_name, run_id).await?;
+        let required_artifacts = [loopback_artifact, args.plugin_artifact.as_str()];
+        let (run_id, artifacts) = latest_successful_run_with_artifacts(
+            &client,
+            &args.repo_owner,
+            &args.repo_name,
+            &required_artifacts,
+        )
+        .await?;
 
         let loopback_artifact = find_artifact(&artifacts, loopback_artifact)?;
         let plugin_artifact = find_artifact(&artifacts, &args.plugin_artifact)?;
@@ -270,29 +276,57 @@ fn build_client() -> Result<reqwest::Client> {
         .build()?)
 }
 
-async fn latest_successful_run(client: &reqwest::Client, owner: &str, repo: &str) -> Result<u64> {
-    let url = format!(
-        "https://api.github.com/repos/{owner}/{repo}/actions/runs?status=success&per_page=1"
-    );
+async fn latest_successful_run_with_artifacts(
+    client: &reqwest::Client,
+    owner: &str,
+    repo: &str,
+    required_artifacts: &[&str],
+) -> Result<(u64, Vec<Artifact>)> {
+    const RUN_PAGES_TO_SCAN: usize = 3;
+    const RUNS_PER_PAGE: usize = 30;
 
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .context("failed to request workflow runs")?
-        .error_for_status()
-        .context("workflow runs request failed")?;
+    for page in 1..=RUN_PAGES_TO_SCAN {
+        let url = format!(
+            "https://api.github.com/repos/{owner}/{repo}/actions/runs?status=success&per_page={RUNS_PER_PAGE}&page={page}"
+        );
 
-    let parsed = response
-        .json::<WorkflowRunsResponse>()
-        .await
-        .context("invalid workflow runs response")?;
+        let response = client
+            .get(url)
+            .send()
+            .await
+            .context("failed to request workflow runs")?
+            .error_for_status()
+            .context("workflow runs request failed")?;
 
-    parsed
-        .workflow_runs
-        .first()
-        .map(|run| run.id)
-        .ok_or_else(|| anyhow!("no successful workflow runs found"))
+        let parsed = response
+            .json::<WorkflowRunsResponse>()
+            .await
+            .context("invalid workflow runs response")?;
+
+        if parsed.workflow_runs.is_empty() {
+            break;
+        }
+
+        for run in parsed.workflow_runs {
+            let artifacts = list_artifacts(client, owner, repo, run.id).await?;
+            if has_required_artifacts(&artifacts, required_artifacts) {
+                return Ok((run.id, artifacts));
+            }
+        }
+    }
+
+    let required = required_artifacts.join(", ");
+    Err(anyhow!(
+        "no successful workflow runs found with required artifacts: {required}"
+    ))
+}
+
+fn has_required_artifacts(artifacts: &[Artifact], required_artifacts: &[&str]) -> bool {
+    required_artifacts.iter().all(|required_name| {
+        artifacts
+            .iter()
+            .any(|artifact| artifact.name == *required_name && !artifact.expired)
+    })
 }
 
 async fn list_artifacts(
@@ -957,19 +991,34 @@ fn configure_loopback_startup(
         .with_context(|| format!("failed to create {}", startup_dir.display()))?;
 
     let launcher_file = startup_dir.join("key-intercept-loopback.cmd");
+    let tray_script_file = loopback_install_dir()?.join("key-intercept-loopback-tray.ps1");
+    if let Some(parent) = tray_script_file.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
     let loopback_binary = loopback_binary_target_path()?;
     let config_path = dirs::config_dir()
         .ok_or_else(|| anyhow!("could not determine config directory"))?
         .join("key-intercept")
         .join("config.json");
-    let mut script = format!(
-        "@echo off\r\nset \"OWNER_DISCORD_ID={owner_discord_id}\"\r\nset \"LOOPBACK_PORT=35491\"\r\nset \"KEY_INTERCEPT_CONFIG_PATH={}\"\r\n",
-        config_path.display()
+
+    let tray_script = build_windows_tray_script(
+        owner_discord_id,
+        relay_server_url,
+        &loopback_binary,
+        &config_path,
     );
-    if let Some(relay) = relay_server_url {
-        script.push_str(&format!("set \"RELAY_SERVER_URL={relay}\"\r\n"));
-    }
-    script.push_str(&format!("start \"\" \"{}\"\r\n", loopback_binary.display()));
+    fs::write(&tray_script_file, tray_script).with_context(|| {
+        format!(
+            "failed to write tray script {}",
+            tray_script_file.display()
+        )
+    })?;
+
+    let script = format!(
+        "@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{}\"\r\n",
+        tray_script_file.display()
+    );
 
     fs::write(&launcher_file, script)
         .with_context(|| format!("failed to write {}", launcher_file.display()))?;
@@ -981,6 +1030,98 @@ fn configure_loopback_startup(
         .with_context(|| format!("failed to start loopback using {}", launcher_file.display()))?;
 
     Ok(())
+}
+
+#[cfg(windows)]
+fn to_powershell_single_quoted_literal(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+#[cfg(windows)]
+fn build_windows_tray_script(
+    owner_discord_id: &str,
+    relay_server_url: Option<&str>,
+    loopback_binary: &Path,
+    config_path: &Path,
+) -> String {
+    let loopback = to_powershell_single_quoted_literal(&loopback_binary.to_string_lossy());
+    let owner = to_powershell_single_quoted_literal(owner_discord_id);
+    let config = to_powershell_single_quoted_literal(&config_path.to_string_lossy());
+    let relay_assignment = relay_server_url
+        .filter(|value| !value.trim().is_empty())
+        .map(|relay| {
+            format!(
+                "$env:RELAY_SERVER_URL = '{}'",
+                to_powershell_single_quoted_literal(relay)
+            )
+        })
+        .unwrap_or_else(|| "Remove-Item Env:RELAY_SERVER_URL -ErrorAction SilentlyContinue".to_string());
+
+    format!(
+        r#"$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class Win32ShowWindow {{
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+}}
+"@
+
+$env:OWNER_DISCORD_ID = '{owner}'
+$env:LOOPBACK_PORT = '35491'
+$env:KEY_INTERCEPT_CONFIG_PATH = '{config}'
+{relay_assignment}
+
+$loopback = '{loopback}'
+$process = Start-Process -FilePath $loopback -PassThru
+for ($i = 0; $i -lt 80 -and $process.MainWindowHandle -eq 0; $i++) {{
+    Start-Sleep -Milliseconds 100
+    $process.Refresh()
+}}
+if ($process.MainWindowHandle -ne 0) {{
+    [Win32ShowWindow]::ShowWindowAsync($process.MainWindowHandle, 0) | Out-Null
+}}
+
+$icon = New-Object System.Windows.Forms.NotifyIcon
+$icon.Icon = [System.Drawing.SystemIcons]::Application
+$icon.Text = 'Key Intercept Loopback'
+$icon.Visible = $true
+
+$menu = New-Object System.Windows.Forms.ContextMenuStrip
+$showItem = $menu.Items.Add('Show loopback console')
+$exitItem = $menu.Items.Add('Exit')
+$icon.ContextMenuStrip = $menu
+
+$showWindow = {{
+    if ($process.HasExited) {{ return }}
+    $process.Refresh()
+    if ($process.MainWindowHandle -ne 0) {{
+        [Win32ShowWindow]::ShowWindowAsync($process.MainWindowHandle, 9) | Out-Null
+    }}
+}}
+
+$showItem.Add_Click($showWindow)
+$icon.Add_DoubleClick($showWindow)
+$exitItem.Add_Click({{
+    if (-not $process.HasExited) {{ $process.Kill() }}
+    $icon.Visible = $false
+    $icon.Dispose()
+    [System.Windows.Forms.Application]::Exit()
+}})
+
+$process.EnableRaisingEvents = $true
+$process.add_Exited({{
+    $icon.Visible = $false
+    $icon.Dispose()
+    [System.Windows.Forms.Application]::Exit()
+}})
+
+[System.Windows.Forms.Application]::Run()
+"#
+    )
 }
 
 #[cfg(windows)]
@@ -1185,6 +1326,48 @@ mod tests {
 
         let err = find_artifact(&artifacts, "loopback-server-linux-x86_64").unwrap_err();
         assert!(err.to_string().contains("not found or expired"));
+    }
+
+    #[test]
+    fn has_required_artifacts_accepts_complete_non_expired_set() {
+        let artifacts = vec![
+            Artifact {
+                id: 1,
+                name: "loopback-server-linux-x86_64".to_string(),
+                expired: false,
+            },
+            Artifact {
+                id: 2,
+                name: "key-intercept-plugin".to_string(),
+                expired: false,
+            },
+        ];
+
+        assert!(has_required_artifacts(
+            &artifacts,
+            &["loopback-server-linux-x86_64", "key-intercept-plugin"],
+        ));
+    }
+
+    #[test]
+    fn has_required_artifacts_rejects_missing_or_expired_entries() {
+        let artifacts = vec![
+            Artifact {
+                id: 1,
+                name: "loopback-server-linux-x86_64".to_string(),
+                expired: false,
+            },
+            Artifact {
+                id: 2,
+                name: "key-intercept-plugin".to_string(),
+                expired: true,
+            },
+        ];
+
+        assert!(!has_required_artifacts(
+            &artifacts,
+            &["loopback-server-linux-x86_64", "key-intercept-plugin"],
+        ));
     }
 
     #[test]

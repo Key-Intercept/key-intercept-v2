@@ -67,4 +67,4 @@ The relay server is intended for manual VPS deployment and is not included in in
 ## GitHub Actions workflows
 
 - `CI`: runs plugin and Rust tests on pull requests and pushes.
-- `Build and Release`: builds loopback/plugin artifacts plus installer packages for Linux/macOS/Windows (including a Windows `.msix`) and publishes a GitHub release asset set when a `v*` tag is pushed (or via manual dispatch with `release_tag`).
+- `Build and Release`: runs on pushes to `main`, auto-generates the next `vX.Y.Z` tag from the latest existing tag, builds loopback/plugin artifacts for installer downloads, builds installer packages for Linux/Windows, and publishes a GitHub release asset set.
