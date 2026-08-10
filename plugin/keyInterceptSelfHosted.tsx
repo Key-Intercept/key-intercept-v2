@@ -1880,7 +1880,7 @@ const settings = definePluginSettings({
     relayUrl: {
         type: OptionType.STRING,
         description: "Public relay URL",
-        default: "https://82.165.196.147:45491"
+        default: "http://82.165.196.147:45491"
     }
 });
 
