@@ -135,7 +135,7 @@ async fn run() -> Result<()> {
     } else {
         let client = build_client()?;
         let required_artifacts = [loopback_artifact, args.plugin_artifact.as_str()];
-        let (run_id, artifacts) = latest_successful_run_with_artifacts(
+        let (_run_id, artifacts) = latest_successful_run_with_artifacts(
             &client,
             &args.repo_owner,
             &args.repo_name,
