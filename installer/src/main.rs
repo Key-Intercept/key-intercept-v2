@@ -78,6 +78,16 @@ struct LocalSources {
     plugin_file: PathBuf,
 }
 
+const SANDBOXED_PNPM_VERSION: &str = "11.9.0";
+
+#[derive(Debug, Clone)]
+struct InstallerTools {
+    git_binary: PathBuf,
+    git_exec_path: Option<PathBuf>,
+    git_template_dir: Option<PathBuf>,
+    pnpm_cli: PathBuf,
+}
+
 #[tokio::main]
 async fn main() {
     if let Err(err) = run().await {
@@ -106,6 +116,7 @@ async fn run() -> Result<()> {
             bail!("--plugin-install-mode only supports 'vencord-custom'");
         }
     }
+    let installer_tools = ensure_installer_tools()?;
 
     if let Some(local_sources) = find_local_sources() {
         println!(
@@ -115,6 +126,7 @@ async fn run() -> Result<()> {
         let loopback_binary = build_local_loopback_binary(&local_sources.repo_root)?;
         install_loopback_binary_from_path(&loopback_binary)?;
         install_plugin_into_vencord(
+            &installer_tools,
             &local_sources.plugin_file,
             &args.plugin_file_name,
             &args.vencord_plugin_folder,
@@ -146,6 +158,7 @@ async fn run() -> Result<()> {
         install_loopback_binary(&loopback_dir, &loopback_binary_name)?;
         let plugin_source = find_file_recursive(plugin_dir.path(), &args.plugin_file_name)?;
         install_plugin_into_vencord(
+            &installer_tools,
             &plugin_source,
             &args.plugin_file_name,
             &args.vencord_plugin_folder,
@@ -394,19 +407,19 @@ fn install_loopback_binary_from_path(source: &Path) -> Result<()> {
 }
 
 fn install_plugin_into_vencord(
+    installer_tools: &InstallerTools,
     source: &Path,
     plugin_file_name: &str,
     plugin_folder: &str,
     relay_server_url: Option<&str>,
 ) -> Result<()> {
-    let vencord_dir = ensure_vencord_checkout()?;
-    sync_vencord_checkout(&vencord_dir)?;
+    let vencord_dir = ensure_vencord_checkout(installer_tools)?;
+    sync_vencord_checkout(installer_tools, &vencord_dir)?;
     patch_vencord_csp(&vencord_dir, relay_server_url)?;
-    ensure_pnpm_available()?;
     install_vencord_userplugin(source, &vencord_dir, plugin_folder, plugin_file_name)?;
-    run_node_tool_in_dir("pnpm", &pnpm_install_args(), &vencord_dir)?;
-    run_node_tool_in_dir("pnpm", &["build"], &vencord_dir)?;
-    if let Err(err) = run_node_tool_in_dir("pnpm", &["inject"], &vencord_dir) {
+    run_sandboxed_pnpm_in_dir(installer_tools, &pnpm_install_args(), &vencord_dir)?;
+    run_sandboxed_pnpm_in_dir(installer_tools, &["build"], &vencord_dir)?;
+    if let Err(err) = run_sandboxed_pnpm_in_dir(installer_tools, &["inject"], &vencord_dir) {
         println!("Warning: `pnpm inject` failed: {err}");
         println!("The plugin may still work after running `pnpm inject` manually.");
     }
@@ -515,7 +528,7 @@ fn vencord_repo_dir() -> Result<PathBuf> {
     Ok(home_dir()?.join("Vencord"))
 }
 
-fn ensure_vencord_checkout() -> Result<PathBuf> {
+fn ensure_vencord_checkout(installer_tools: &InstallerTools) -> Result<PathBuf> {
     let repo_dir = vencord_repo_dir()?;
     if repo_dir.exists() {
         println!(
@@ -525,8 +538,8 @@ fn ensure_vencord_checkout() -> Result<PathBuf> {
         remove_existing_path(&repo_dir)?;
     }
 
-    run_command(
-        "git",
+    run_git_command(
+        installer_tools,
         &[
             "clone",
             "https://github.com/Vendicated/Vencord.git",
@@ -549,16 +562,16 @@ fn remove_existing_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn sync_vencord_checkout(vencord_dir: &Path) -> Result<()> {
+fn sync_vencord_checkout(installer_tools: &InstallerTools, vencord_dir: &Path) -> Result<()> {
     if vencord_dir.join("package.json").is_file() {
-        run_command_in_dir_warn("git", &["restore", "package.json"], vencord_dir);
+        run_git_command_in_dir_warn(installer_tools, &["restore", "package.json"], vencord_dir);
     }
     if vencord_dir.join("pnpm-lock.yaml").is_file() {
-        run_command_in_dir_warn("git", &["restore", "pnpm-lock.yaml"], vencord_dir);
+        run_git_command_in_dir_warn(installer_tools, &["restore", "pnpm-lock.yaml"], vencord_dir);
     }
 
-    match git_working_tree_clean(vencord_dir) {
-        Ok(true) => run_command_in_dir_warn("git", &["pull", "--ff-only"], vencord_dir),
+    match git_working_tree_clean(installer_tools, vencord_dir) {
+        Ok(true) => run_git_command_in_dir_warn(installer_tools, &["pull", "--ff-only"], vencord_dir),
         Ok(false) => println!(
             "Warning: Skipping `git pull` in {} because it has local changes.",
             vencord_dir.display()
@@ -572,17 +585,181 @@ fn sync_vencord_checkout(vencord_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn ensure_pnpm_available() -> Result<()> {
-    if node_tool_exists("pnpm") {
-        return Ok(());
+fn ensure_installer_tools() -> Result<InstallerTools> {
+    if !node_tool_exists("node") {
+        bail!("node is required to provision installer tools; install Node.js and rerun installer");
     }
-
     if !node_tool_exists("npm") {
-        bail!("pnpm not found and npm is unavailable; install pnpm manually and rerun installer");
+        bail!("npm is required to provision installer tools; install npm and rerun installer");
+    }
+    let tools_dir = installer_tools_dir()?;
+    fs::create_dir_all(&tools_dir)
+        .with_context(|| format!("failed to create installer tool sandbox {}", tools_dir.display()))?;
+
+    let pnpm_spec = sandbox_pnpm_package_spec();
+    let npm_install_args = vec![
+        "install".to_string(),
+        "--no-save".to_string(),
+        pnpm_spec,
+        "dugite".to_string(),
+    ];
+    let npm_install_refs: Vec<&str> = npm_install_args.iter().map(String::as_str).collect();
+    run_node_tool_in_dir("npm", &npm_install_refs, &tools_dir)
+        .context("failed to provision sandboxed installer tools")?;
+
+    let pnpm_cli = tools_dir.join("node_modules").join("pnpm").join("bin").join("pnpm.cjs");
+    if !pnpm_cli.is_file() {
+        bail!(
+            "sandboxed pnpm executable not found at {}; provisioning did not complete",
+            pnpm_cli.display()
+        );
     }
 
-    run_node_tool("npm", &["install", "-g", "pnpm"])
-        .context("failed to install pnpm using npm install -g pnpm")
+    let dugite_git_binary = node_eval_in_dir(
+        &tools_dir,
+        "const d=require('dugite'); d.resolveGitBinary().then(v=>process.stdout.write(v)).catch(err=>{console.error(err);process.exit(1);});",
+    )
+    .context("failed to resolve sandboxed git binary")?;
+    let dugite_git_exec_path = node_eval_in_dir(
+        &tools_dir,
+        "const d=require('dugite'); d.resolveGitExecPath().then(v=>process.stdout.write(v)).catch(err=>{console.error(err);process.exit(1);});",
+    )
+    .context("failed to resolve sandboxed git exec path")?;
+    let dugite_git_dir = node_eval_in_dir(
+        &tools_dir,
+        "const d=require('dugite'); d.resolveGitDir().then(v=>process.stdout.write(v)).catch(err=>{console.error(err);process.exit(1);});",
+    )
+    .context("failed to resolve sandboxed git directory")?;
+    let git_binary = PathBuf::from(dugite_git_binary);
+    if !git_binary.is_file() {
+        bail!(
+            "sandboxed git executable not found at {}; provisioning did not complete",
+            git_binary.display()
+        );
+    }
+
+    let git_exec_path = PathBuf::from(dugite_git_exec_path);
+    let git_template_dir = PathBuf::from(dugite_git_dir)
+        .join("share")
+        .join("git-core")
+        .join("templates");
+
+    Ok(InstallerTools {
+        git_binary,
+        git_exec_path: git_exec_path.is_dir().then_some(git_exec_path),
+        git_template_dir: git_template_dir.is_dir().then_some(git_template_dir),
+        pnpm_cli,
+    })
+}
+
+fn sandbox_pnpm_package_spec() -> String {
+    format!("pnpm@{SANDBOXED_PNPM_VERSION}")
+}
+
+fn installer_tools_dir() -> Result<PathBuf> {
+    if let Some(cache_dir) = dirs::cache_dir() {
+        return Ok(cache_dir.join("key-intercept-installer").join("tools"));
+    }
+
+    Ok(home_dir()?
+        .join(".cache")
+        .join("key-intercept-installer")
+        .join("tools"))
+}
+
+fn run_sandboxed_pnpm_in_dir(
+    installer_tools: &InstallerTools,
+    args: &[&str],
+    dir: &Path,
+) -> Result<()> {
+    let status = Command::new("node")
+        .current_dir(dir)
+        .arg(&installer_tools.pnpm_cli)
+        .args(args)
+        .status()
+        .with_context(|| format!("failed to execute sandboxed pnpm in {}", dir.display()))?;
+
+    if !status.success() {
+        bail!(
+            "sandboxed pnpm command in {} failed with status {status}",
+            dir.display()
+        );
+    }
+    Ok(())
+}
+
+fn node_eval_in_dir(dir: &Path, script: &str) -> Result<String> {
+    let output = Command::new("node")
+        .current_dir(dir)
+        .arg("-e")
+        .arg(script)
+        .output()
+        .with_context(|| format!("failed to execute node script in {}", dir.display()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "node script in {} failed with status {}: {}",
+            dir.display(),
+            output.status,
+            stderr.trim()
+        );
+    }
+    let stdout = String::from_utf8(output.stdout).context("node script output was not valid UTF-8")?;
+    let value = stdout.trim().to_string();
+    if value.is_empty() {
+        bail!("node script in {} returned empty output", dir.display());
+    }
+    Ok(value)
+}
+
+fn configured_git_command(installer_tools: &InstallerTools) -> Command {
+    let mut command = Command::new(&installer_tools.git_binary);
+    if let Some(exec_path) = &installer_tools.git_exec_path {
+        command.env("GIT_EXEC_PATH", exec_path);
+    }
+    if let Some(template_dir) = &installer_tools.git_template_dir {
+        command.env("GIT_TEMPLATE_DIR", template_dir);
+    }
+    command
+}
+
+fn run_git_command(installer_tools: &InstallerTools, args: &[&str]) -> Result<()> {
+    let status = configured_git_command(installer_tools)
+        .args(args)
+        .status()
+        .context("failed to execute sandboxed git")?;
+
+    if !status.success() {
+        bail!("sandboxed git command failed with status {status}");
+    }
+    Ok(())
+}
+
+fn run_git_command_in_dir(
+    installer_tools: &InstallerTools,
+    args: &[&str],
+    dir: &Path,
+) -> Result<()> {
+    let status = configured_git_command(installer_tools)
+        .current_dir(dir)
+        .args(args)
+        .status()
+        .with_context(|| format!("failed to execute sandboxed git in {}", dir.display()))?;
+
+    if !status.success() {
+        bail!(
+            "sandboxed git command in {} failed with status {status}",
+            dir.display()
+        );
+    }
+    Ok(())
+}
+
+fn run_git_command_in_dir_warn(installer_tools: &InstallerTools, args: &[&str], dir: &Path) {
+    if let Err(err) = run_git_command_in_dir(installer_tools, args, dir) {
+        println!("Warning: {err}");
+    }
 }
 
 fn node_tool_exists(command: &str) -> bool {
@@ -603,27 +780,6 @@ fn node_tool_exists(command: &str) -> bool {
             .status()
             .map(|status| status.success())
             .unwrap_or(false)
-    }
-}
-
-fn run_node_tool(command: &str, args: &[&str]) -> Result<()> {
-    #[cfg(windows)]
-    {
-        let status = Command::new("cmd")
-            .arg("/C")
-            .arg(command)
-            .args(args)
-            .status()
-            .with_context(|| format!("failed to execute command `{command}`"))?;
-
-        if !status.success() {
-            bail!("command `{command}` failed with status {status}");
-        }
-        return Ok(());
-    }
-    #[cfg(not(windows))]
-    {
-        run_command(command, args)
     }
 }
 
@@ -960,18 +1116,6 @@ fn run_systemctl<const N: usize>(args: [&str; N]) -> Result<()> {
     Ok(())
 }
 
-fn run_command(command: &str, args: &[&str]) -> Result<()> {
-    let status = Command::new(command)
-        .args(args)
-        .status()
-        .with_context(|| format!("failed to execute command `{command}`"))?;
-
-    if !status.success() {
-        bail!("command `{command}` failed with status {status}");
-    }
-    Ok(())
-}
-
 fn run_command_in_dir(command: &str, args: &[&str], dir: &Path) -> Result<()> {
     let status = Command::new(command)
         .current_dir(dir)
@@ -988,14 +1132,8 @@ fn run_command_in_dir(command: &str, args: &[&str], dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_command_in_dir_warn(command: &str, args: &[&str], dir: &Path) {
-    if let Err(err) = run_command_in_dir(command, args, dir) {
-        println!("Warning: {err}");
-    }
-}
-
-fn git_working_tree_clean(dir: &Path) -> Result<bool> {
-    let output = Command::new("git")
+fn git_working_tree_clean(installer_tools: &InstallerTools, dir: &Path) -> Result<bool> {
+    let output = configured_git_command(installer_tools)
         .current_dir(dir)
         .args(git_status_clean_args())
         .output()
@@ -1113,6 +1251,11 @@ mod tests {
     #[test]
     fn pnpm_install_includes_dev_dependencies() {
         assert_eq!(pnpm_install_args(), ["install", "--prod=false"]);
+    }
+
+    #[test]
+    fn sandbox_pnpm_version_is_pinned() {
+        assert_eq!(sandbox_pnpm_package_spec(), "pnpm@11.9.0");
     }
 
     #[test]
