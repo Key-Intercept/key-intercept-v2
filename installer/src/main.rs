@@ -34,7 +34,7 @@ struct Args {
     #[arg(long)]
     loopback_artifact: Option<String>,
 
-    #[arg(long, default_value = "key-intercept-plugin")]
+    #[arg(long, default_value = "key-intercept-plugin.zip")]
     plugin_artifact: String,
 
     #[arg(long)]
@@ -51,25 +51,14 @@ struct Args {
 }
 
 #[derive(Debug, Deserialize)]
-struct WorkflowRunsResponse {
-    workflow_runs: Vec<WorkflowRun>,
+struct ReleaseResponse {
+    assets: Vec<ReleaseAsset>,
 }
 
 #[derive(Debug, Deserialize)]
-struct WorkflowRun {
-    id: u64,
-}
-
-#[derive(Debug, Deserialize)]
-struct ArtifactsResponse {
-    artifacts: Vec<Artifact>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Artifact {
-    id: u64,
+struct ReleaseAsset {
     name: String,
-    expired: bool,
+    browser_download_url: String,
 }
 
 #[derive(Debug, Clone)]
@@ -134,24 +123,18 @@ async fn run() -> Result<()> {
         )?;
     } else {
         let client = build_client()?;
-        let run_id = latest_successful_run(&client, &args.repo_owner, &args.repo_name).await?;
-        let artifacts = list_artifacts(&client, &args.repo_owner, &args.repo_name, run_id).await?;
+        let release = latest_release(&client, &args.repo_owner, &args.repo_name).await?;
+        let loopback_artifact = find_release_asset(&release.assets, loopback_artifact)?;
+        let plugin_artifact = find_release_asset(&release.assets, &args.plugin_artifact)?;
 
-        let loopback_artifact = find_artifact(&artifacts, loopback_artifact)?;
-        let plugin_artifact = find_artifact(&artifacts, &args.plugin_artifact)?;
-
-        let loopback_dir = download_artifact(
+        let loopback_dir = download_release_asset(
             &client,
-            &args.repo_owner,
-            &args.repo_name,
-            loopback_artifact.id,
+            loopback_artifact,
         )
         .await?;
-        let plugin_dir = download_artifact(
+        let plugin_dir = download_release_asset(
             &client,
-            &args.repo_owner,
-            &args.repo_name,
-            plugin_artifact.id,
+            plugin_artifact,
         )
         .await?;
 
@@ -270,85 +253,52 @@ fn build_client() -> Result<reqwest::Client> {
         .build()?)
 }
 
-async fn latest_successful_run(client: &reqwest::Client, owner: &str, repo: &str) -> Result<u64> {
-    let url = format!(
-        "https://api.github.com/repos/{owner}/{repo}/actions/runs?status=success&per_page=1"
-    );
+async fn latest_release(client: &reqwest::Client, owner: &str, repo: &str) -> Result<ReleaseResponse> {
+    let url = format!("https://api.github.com/repos/{owner}/{repo}/releases/latest");
 
     let response = client
         .get(url)
         .send()
         .await
-        .context("failed to request workflow runs")?
+        .context("failed to request latest release")?
         .error_for_status()
-        .context("workflow runs request failed")?;
+        .context("latest release request failed")?;
 
-    let parsed = response
-        .json::<WorkflowRunsResponse>()
+    response
+        .json::<ReleaseResponse>()
         .await
-        .context("invalid workflow runs response")?;
-
-    parsed
-        .workflow_runs
-        .first()
-        .map(|run| run.id)
-        .ok_or_else(|| anyhow!("no successful workflow runs found"))
+        .context("invalid latest release response")
 }
 
-async fn list_artifacts(
-    client: &reqwest::Client,
-    owner: &str,
-    repo: &str,
-    run_id: u64,
-) -> Result<Vec<Artifact>> {
-    let url =
-        format!("https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts");
-
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .context("failed to request workflow artifacts")?
-        .error_for_status()
-        .context("workflow artifacts request failed")?;
-
-    let parsed = response
-        .json::<ArtifactsResponse>()
-        .await
-        .context("invalid workflow artifacts response")?;
-
-    Ok(parsed.artifacts)
-}
-
-fn find_artifact<'a>(artifacts: &'a [Artifact], name: &str) -> Result<&'a Artifact> {
-    artifacts
+fn find_release_asset<'a>(assets: &'a [ReleaseAsset], name: &str) -> Result<&'a ReleaseAsset> {
+    assets
         .iter()
-        .find(|artifact| artifact.name == name && !artifact.expired)
-        .ok_or_else(|| anyhow!("artifact '{name}' not found or expired"))
+        .find(|asset| asset.name == name)
+        .ok_or_else(|| anyhow!("release asset '{name}' not found"))
 }
 
-async fn download_artifact(
+async fn download_release_asset(
     client: &reqwest::Client,
-    owner: &str,
-    repo: &str,
-    artifact_id: u64,
+    asset: &ReleaseAsset,
 ) -> Result<TempDir> {
-    let url =
-        format!("https://api.github.com/repos/{owner}/{repo}/actions/artifacts/{artifact_id}/zip");
-
     let bytes = client
-        .get(url)
+        .get(&asset.browser_download_url)
         .send()
         .await
-        .context("failed to download artifact")?
+        .context("failed to download release asset")?
         .error_for_status()
-        .context("artifact download failed")?
+        .context("release asset download failed")?
         .bytes()
         .await
-        .context("failed to read artifact body")?;
+        .context("failed to read release asset body")?;
 
     let dir = TempDir::new().context("failed to create temporary extraction dir")?;
-    unzip_to_dir(&bytes, dir.path())?;
+    if asset.name.ends_with(".zip") {
+        unzip_to_dir(&bytes, dir.path())?;
+    } else {
+        fs::write(dir.path().join(&asset.name), &bytes)
+            .with_context(|| format!("failed to write downloaded asset {}", asset.name))?;
+    }
     Ok(dir)
 }
 
@@ -853,17 +803,17 @@ fn plugin_entry_file_name(plugin_file_name: &str) -> Result<&'static str> {
 
 #[cfg(windows)]
 fn default_loopback_artifact_name() -> &'static str {
-    "loopback-server-windows-x86_64"
+    "loopback-server-windows-x86_64.zip"
 }
 
 #[cfg(target_os = "macos")]
 fn default_loopback_artifact_name() -> &'static str {
-    "loopback-server-macos-x86_64"
+    "loopback-server-macos-x86_64.zip"
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn default_loopback_artifact_name() -> &'static str {
-    "loopback-server-linux-x86_64"
+    "loopback-server-linux-x86_64.zip"
 }
 
 fn default_loopback_binary_name() -> String {
@@ -958,20 +908,107 @@ fn configure_loopback_startup(
 
     let launcher_file = startup_dir.join("key-intercept-loopback.cmd");
     let loopback_binary = loopback_binary_target_path()?;
+    let loopback_dir = loopback_install_dir()?;
+    fs::create_dir_all(&loopback_dir)
+        .with_context(|| format!("failed to create {}", loopback_dir.display()))?;
+    let tray_script_file = loopback_dir.join("key-intercept-loopback-tray.ps1");
     let config_path = dirs::config_dir()
         .ok_or_else(|| anyhow!("could not determine config directory"))?
         .join("key-intercept")
         .join("config.json");
-    let mut script = format!(
-        "@echo off\r\nset \"OWNER_DISCORD_ID={owner_discord_id}\"\r\nset \"LOOPBACK_PORT=35491\"\r\nset \"KEY_INTERCEPT_CONFIG_PATH={}\"\r\n",
-        config_path.display()
-    );
-    if let Some(relay) = relay_server_url {
-        script.push_str(&format!("set \"RELAY_SERVER_URL={relay}\"\r\n"));
-    }
-    script.push_str(&format!("start \"\" \"{}\"\r\n", loopback_binary.display()));
+    let escaped_owner_discord_id = escape_powershell_single_quoted(owner_discord_id);
+    let escaped_relay_server_url = escape_powershell_single_quoted(relay_server_url.unwrap_or(""));
+    let escaped_loopback_binary = escape_powershell_single_quoted(&loopback_binary.display().to_string());
+    let escaped_config_path = escape_powershell_single_quoted(&config_path.display().to_string());
+    let tray_script = format!(
+        r#"$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
 
-    fs::write(&launcher_file, script)
+$ownerDiscordId = '{escaped_owner_discord_id}'
+$relayServerUrl = '{escaped_relay_server_url}'
+$loopbackBinary = '{escaped_loopback_binary}'
+$configPath = '{escaped_config_path}'
+$logDirectory = Split-Path -Parent $configPath
+if (-not (Test-Path -LiteralPath $logDirectory)) {{
+    New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
+}}
+$logPath = Join-Path $logDirectory 'loopback-console.log'
+
+function Start-LoopbackHidden {{
+    $envCommand = "set OWNER_DISCORD_ID=$ownerDiscordId && set LOOPBACK_PORT=35491 && set KEY_INTERCEPT_CONFIG_PATH=""$configPath"""
+    if ($relayServerUrl) {{
+        $envCommand += " && set RELAY_SERVER_URL=$relayServerUrl"
+    }}
+    $envCommand += " && ""$loopbackBinary"" 1>>""$logPath"" 2>&1"
+    Start-Process -FilePath 'cmd.exe' -ArgumentList "/c $envCommand" -WindowStyle Hidden -PassThru
+}}
+
+$script:loopbackProcess = Start-LoopbackHidden
+
+$notifyIcon = New-Object System.Windows.Forms.NotifyIcon
+$notifyIcon.Icon = [System.Drawing.SystemIcons]::Application
+$notifyIcon.Visible = $true
+$notifyIcon.Text = 'Key Intercept Loopback'
+
+$contextMenu = New-Object System.Windows.Forms.ContextMenuStrip
+$openConsoleItem = $contextMenu.Items.Add('Open loopback console')
+$openConsoleItem.add_Click({{
+    Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+        '-NoExit',
+        '-Command',
+        "Get-Content -LiteralPath ""$logPath"" -Tail 200 -Wait"
+    ) | Out-Null
+}})
+
+$restartItem = $contextMenu.Items.Add('Restart hidden loopback')
+$restartItem.add_Click({{
+    if ($script:loopbackProcess -and -not $script:loopbackProcess.HasExited) {{
+        $script:loopbackProcess.Kill()
+        $script:loopbackProcess.WaitForExit()
+    }}
+    $script:loopbackProcess = Start-LoopbackHidden
+}})
+
+$exitItem = $contextMenu.Items.Add('Exit tray app')
+$exitItem.add_Click({{
+    if ($script:loopbackProcess -and -not $script:loopbackProcess.HasExited) {{
+        $script:loopbackProcess.Kill()
+        $script:loopbackProcess.WaitForExit()
+    }}
+    $notifyIcon.Visible = $false
+    [System.Windows.Forms.Application]::Exit()
+}})
+
+$notifyIcon.ContextMenuStrip = $contextMenu
+$notifyIcon.add_DoubleClick({{
+    Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+        '-NoExit',
+        '-Command',
+        "Get-Content -LiteralPath ""$logPath"" -Tail 200 -Wait"
+    ) | Out-Null
+}})
+
+$watchdog = New-Object System.Windows.Forms.Timer
+$watchdog.Interval = 5000
+$watchdog.add_Tick({{
+    if (-not $script:loopbackProcess -or $script:loopbackProcess.HasExited) {{
+        $script:loopbackProcess = Start-LoopbackHidden
+    }}
+}})
+$watchdog.Start()
+
+[System.Windows.Forms.Application]::Run()
+"#
+    );
+    fs::write(&tray_script_file, tray_script)
+        .with_context(|| format!("failed to write {}", tray_script_file.display()))?;
+
+    let launcher_script = format!(
+        "@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{}\"\r\n",
+        tray_script_file.display()
+    );
+    fs::write(&launcher_file, launcher_script)
         .with_context(|| format!("failed to write {}", launcher_file.display()))?;
 
     Command::new("cmd")
@@ -981,6 +1018,11 @@ fn configure_loopback_startup(
         .with_context(|| format!("failed to start loopback using {}", launcher_file.display()))?;
 
     Ok(())
+}
+
+#[cfg(windows)]
+fn escape_powershell_single_quoted(value: &str) -> String {
+    value.replace('\'', "''")
 }
 
 #[cfg(windows)]
@@ -1157,34 +1199,31 @@ mod tests {
     use zip::{ZipWriter, write::FileOptions};
 
     #[test]
-    fn find_artifact_skips_expired_entries() {
-        let artifacts = vec![
-            Artifact {
-                id: 1,
-                name: "key-intercept-plugin".to_string(),
-                expired: true,
+    fn find_release_asset_returns_matching_name() {
+        let assets = vec![
+            ReleaseAsset {
+                name: "key-intercept-plugin.zip".to_string(),
+                browser_download_url: "https://example.invalid/plugin.zip".to_string(),
             },
-            Artifact {
-                id: 2,
-                name: "key-intercept-plugin".to_string(),
-                expired: false,
+            ReleaseAsset {
+                name: "loopback-server-linux-x86_64.zip".to_string(),
+                browser_download_url: "https://example.invalid/loopback.zip".to_string(),
             },
         ];
 
-        let found = find_artifact(&artifacts, "key-intercept-plugin").unwrap();
-        assert_eq!(found.id, 2);
+        let found = find_release_asset(&assets, "key-intercept-plugin.zip").unwrap();
+        assert_eq!(found.browser_download_url, "https://example.invalid/plugin.zip");
     }
 
     #[test]
-    fn find_artifact_returns_error_when_missing() {
-        let artifacts = vec![Artifact {
-            id: 1,
-            name: "loopback-server-linux-x86_64".to_string(),
-            expired: true,
+    fn find_release_asset_returns_error_when_missing() {
+        let assets = vec![ReleaseAsset {
+            name: "loopback-server-linux-x86_64.zip".to_string(),
+            browser_download_url: "https://example.invalid/loopback.zip".to_string(),
         }];
 
-        let err = find_artifact(&artifacts, "loopback-server-linux-x86_64").unwrap_err();
-        assert!(err.to_string().contains("not found or expired"));
+        let err = find_release_asset(&assets, "key-intercept-plugin.zip").unwrap_err();
+        assert!(err.to_string().contains("not found"));
     }
 
     #[test]

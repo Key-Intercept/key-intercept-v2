@@ -31,7 +31,7 @@ npm --prefix plugin test
 Use:
 
 When run from this repository (or any subdirectory inside it), the installer builds `loopback-server` from local source and uses the local plugin file.  
-When local sources are not detected, it downloads pre-built artifacts from the latest successful GitHub Actions run, installs them locally, and configures startup.
+When local sources are not detected, it downloads pre-built assets from the latest GitHub release, installs them locally, and configures startup.
 
 ```bash
 cargo run -p key-intercept-installer -- \
@@ -45,11 +45,11 @@ On Linux/macOS, `--owner-discord-id` remains required and installer usage is CLI
 
 Default relay URL: `https://82.165.196.147:45491`
 
-By default it expects two artifact names in that latest successful run:
-- `loopback-server-linux-x86_64` (Linux)
-- `loopback-server-macos-x86_64` (macOS)
-- `loopback-server-windows-x86_64` (Windows)
-- `key-intercept-plugin`
+By default it expects these release asset names:
+- `loopback-server-linux-x86_64.zip` (Linux)
+- `loopback-server-macos-x86_64.zip` (macOS)
+- `loopback-server-windows-x86_64.zip` (Windows)
+- `key-intercept-plugin.zip`
 
 You can override artifact names with:
 - `--loopback-artifact <name>`
@@ -58,7 +58,7 @@ You can override artifact names with:
 It installs:
 - loopback binary to `~/.local/bin/key-intercept-loopback` on Unix, or `%LOCALAPPDATA%/Programs/key-intercept/key-intercept-loopback.exe` on Windows
 - plugin file to `~/Vencord/src/userplugins/key-intercept/index.tsx` (removes and reclones `~/Vencord` automatically)
-- startup service via user `systemd` unit on Unix, or `%APPDATA%/Microsoft/Windows/Start Menu/Programs/Startup/key-intercept-loopback.cmd` on Windows
+- startup service via user `systemd` unit on Unix, or `%APPDATA%/Microsoft/Windows/Start Menu/Programs/Startup/key-intercept-loopback.cmd` on Windows (hidden loopback process with a tray icon that can reopen a live console log window)
 
 `--plugin-install-mode vencord-custom` is accepted for backward compatibility; custom Vencord installation is always used.
 
@@ -67,4 +67,4 @@ The relay server is intended for manual VPS deployment and is not included in in
 ## GitHub Actions workflows
 
 - `CI`: runs plugin and Rust tests on pull requests and pushes.
-- `Build and Release`: builds loopback/plugin artifacts plus installer packages for Linux/macOS/Windows (including a Windows `.msix`) and publishes a GitHub release asset set when a `v*` tag is pushed (or via manual dispatch with `release_tag`).
+- `Build and Release`: runs on pushes to `main`, auto-generates the next `vMAJOR.MINOR.PATCH` tag from the previous tag, builds loopback/plugin release assets and installer packages for Linux/Windows (including a Windows `.msix`), and publishes them to GitHub Releases.

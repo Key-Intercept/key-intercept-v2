@@ -1065,6 +1065,27 @@ function buildScopeTargetFromChannel(channel?: { guild_id?: string; id?: string;
     };
 }
 
+function buildScopeTargetFromUser(user?: { username?: string; id?: string; }): ScopeTarget | null {
+    if (!user) return null;
+    const server_name = normalizeScopeName(user.username ?? null);
+    const discord_id = normalizeScopeId(user.id ?? null);
+    if (!server_name && !discord_id) return null;
+    return {
+        server_name,
+        discord_id,
+        label: server_name || discord_id
+    };
+}
+
+function buildScopeTargetFromContextChannel(props: any): ScopeTarget | null {
+    const directChannel = props?.channel ?? props?.channel?.channel ?? null;
+    const fromDirect = buildScopeTargetFromChannel(directChannel);
+    if (fromDirect) return fromDirect;
+    const channelId = props?.channelId ?? props?.channel?.id ?? props?.id;
+    if (typeof channelId !== "string") return null;
+    return buildScopeTargetFromChannel(ChannelStore?.getChannel?.(channelId));
+}
+
 function ConfigPanel(props: any) {
     const activeUserId = currentUser().id;
     const profileUserId = getProfileUserId(props) ?? activeUserId;
@@ -1914,7 +1935,7 @@ const plugin = definePlugin({
             }
         },
         "channel-context": (children, props) => {
-            const target = buildScopeTargetFromChannel(props?.channel);
+            const target = buildScopeTargetFromContextChannel(props);
             if (!target) return;
             const listKey = interceptConfig.filter_mode === "blacklist" ? "blacklist" : "whitelist";
             const itemExists = getSharedScopeList(interceptConfig).some(item => scopeItemMatches(item, target.server_name || null, target.discord_id || null));
@@ -1922,6 +1943,29 @@ const plugin = definePlugin({
             const menuItem = (
                 <Menu.MenuItem
                     id="key-intercept-scope-filter-dm"
+                    label={`${itemExists ? "Remove from" : "Add to"} ${listKey}: ${target.label}`}
+                    action={() => {
+                        updateCurrentScopeList(target).catch(err => {
+                            console.error(`${LOG_PREFIX} failed to update scope list`, err);
+                        });
+                    }}
+                />
+            );
+            if (anchor) {
+                anchor.push(menuItem);
+            } else {
+                children.push(<Menu.MenuGroup>{menuItem}</Menu.MenuGroup>);
+            }
+        },
+        "user-context": (children, props) => {
+            const target = buildScopeTargetFromUser(props?.user);
+            if (!target) return;
+            const listKey = interceptConfig.filter_mode === "blacklist" ? "blacklist" : "whitelist";
+            const itemExists = getSharedScopeList(interceptConfig).some(item => scopeItemMatches(item, target.server_name || null, target.discord_id || null));
+            const anchor = findGroupChildrenByChildId(["call", "message-user", "remove-friend", "block"], children);
+            const menuItem = (
+                <Menu.MenuItem
+                    id="key-intercept-scope-filter-user"
                     label={`${itemExists ? "Remove from" : "Add to"} ${listKey}: ${target.label}`}
                     action={() => {
                         updateCurrentScopeList(target).catch(err => {
