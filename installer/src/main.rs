@@ -242,7 +242,7 @@ fn validate_owner_discord_id(owner_discord_id: &str) -> Result<()> {
 }
 
 fn default_relay_server_url() -> &'static str {
-    "https://82.165.196.147:35491"
+    "https://82.165.196.147:45491"
 }
 
 fn build_client() -> Result<reqwest::Client> {
