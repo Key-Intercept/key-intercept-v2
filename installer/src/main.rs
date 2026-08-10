@@ -1014,7 +1014,7 @@ $ownerLabel = New-Object System.Windows.Forms.Label
 $ownerLabel.Left = 12
 $ownerLabel.Top = 20
 $ownerLabel.Width = 440
-$ownerLabel.Text = "Owner Discord ID"
+$ownerLabel.Text = "Your Discord ID"
 $form.Controls.Add($ownerLabel)
 
 $ownerInput = New-Object System.Windows.Forms.TextBox
@@ -1027,7 +1027,7 @@ $relayLabel = New-Object System.Windows.Forms.Label
 $relayLabel.Left = 12
 $relayLabel.Top = 76
 $relayLabel.Width = 440
-$relayLabel.Text = "Relay server URL"
+$relayLabel.Text = "Relay server URL (don't change unless you know what you're doing)"
 $form.Controls.Add($relayLabel)
 
 $relayInput = New-Object System.Windows.Forms.TextBox
