@@ -617,17 +617,17 @@ fn ensure_installer_tools() -> Result<InstallerTools> {
 
     let dugite_git_binary = node_eval_in_dir(
         &tools_dir,
-        "const d=require('dugite'); d.resolveGitBinary().then(v=>process.stdout.write(v)).catch(err=>{console.error(err);process.exit(1);});",
+        "const d=require('dugite'); Promise.resolve(d.resolveGitBinary()).then(v=>process.stdout.write(String(v))).catch(err=>{console.error(err);process.exit(1);});",
     )
     .context("failed to resolve sandboxed git binary")?;
     let dugite_git_exec_path = node_eval_in_dir(
         &tools_dir,
-        "const d=require('dugite'); d.resolveGitExecPath().then(v=>process.stdout.write(v)).catch(err=>{console.error(err);process.exit(1);});",
+        "const d=require('dugite'); Promise.resolve(d.resolveGitExecPath()).then(v=>process.stdout.write(String(v))).catch(err=>{console.error(err);process.exit(1);});",
     )
     .context("failed to resolve sandboxed git exec path")?;
     let dugite_git_dir = node_eval_in_dir(
         &tools_dir,
-        "const d=require('dugite'); d.resolveGitDir().then(v=>process.stdout.write(v)).catch(err=>{console.error(err);process.exit(1);});",
+        "const d=require('dugite'); Promise.resolve(d.resolveGitDir()).then(v=>process.stdout.write(String(v))).catch(err=>{console.error(err);process.exit(1);});",
     )
     .context("failed to resolve sandboxed git directory")?;
     let git_binary = PathBuf::from(dugite_git_binary);
