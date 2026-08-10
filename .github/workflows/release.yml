@@ -16,7 +16,16 @@ permissions:
 
 jobs:
   build-loopback-and-plugin:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            loopback_artifact_suffix: linux
+          - os: macos-latest
+            loopback_artifact_suffix: macos
+          - os: windows-latest
+            loopback_artifact_suffix: windows
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,19 +36,41 @@ jobs:
       - name: Build loopback server
         run: cargo build --release -p loopback-server
 
-      - name: Collect loopback and plugin artifacts
+      - name: Collect loopback artifact (unix)
+        if: runner.os != 'Windows'
         run: |
           mkdir -p dist
           cp target/release/loopback-server dist/loopback-server
-          cp plugin/keyInterceptSelfHosted.tsx dist/keyInterceptSelfHosted.tsx
 
       - name: Upload loopback artifact
+        if: runner.os != 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: loopback-server-linux-x86_64
+          name: loopback-server-${{ matrix.loopback_artifact_suffix }}-x86_64
           path: dist/loopback-server
 
+      - name: Collect loopback artifact (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/loopback-server.exe dist/loopback-server.exe
+
+      - name: Upload loopback artifact (windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: loopback-server-${{ matrix.loopback_artifact_suffix }}-x86_64
+          path: dist/loopback-server.exe
+
+      - name: Collect plugin artifact
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist
+          cp plugin/keyInterceptSelfHosted.tsx dist/keyInterceptSelfHosted.tsx
+
       - name: Upload plugin artifact
+        if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
           name: key-intercept-plugin
@@ -72,8 +103,63 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
+          New-Item -ItemType Directory -Force -Path msix/Assets | Out-Null
+
           Copy-Item target/release/key-intercept-installer.exe dist/key-intercept-installer-Windows-x86_64.exe
           Compress-Archive -Path dist/key-intercept-installer-Windows-x86_64.exe -DestinationPath dist/key-intercept-installer-Windows-x86_64.zip
+
+          Add-Type -AssemblyName System.Drawing
+          $icon44 = New-Object System.Drawing.Bitmap 44,44
+          $icon44Graphics = [System.Drawing.Graphics]::FromImage($icon44)
+          $icon44Graphics.Clear([System.Drawing.Color]::FromArgb(0,120,212))
+          $icon44.Save("msix/Assets/Square44x44Logo.png", [System.Drawing.Imaging.ImageFormat]::Png)
+          $icon44Graphics.Dispose()
+          $icon44.Dispose()
+          $icon150 = New-Object System.Drawing.Bitmap 150,150
+          $icon150Graphics = [System.Drawing.Graphics]::FromImage($icon150)
+          $icon150Graphics.Clear([System.Drawing.Color]::FromArgb(0,120,212))
+          $icon150.Save("msix/Assets/Square150x150Logo.png", [System.Drawing.Imaging.ImageFormat]::Png)
+          $icon150Graphics.Dispose()
+          $icon150.Dispose()
+
+          Copy-Item target/release/key-intercept-installer.exe msix/key-intercept-installer.exe
+          $version = "1.0.$env:GITHUB_RUN_NUMBER.0"
+          @"
+          <?xml version="1.0" encoding="utf-8"?>
+          <Package
+            xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+            xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+            xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+            IgnorableNamespaces="uap rescap">
+            <Identity Name="KeyIntercept.Installer" Publisher="CN=KeyIntercept" Version="$version" />
+            <Properties>
+              <DisplayName>Key Intercept Installer</DisplayName>
+              <PublisherDisplayName>Key Intercept</PublisherDisplayName>
+              <Description>Installs and configures key-intercept loopback and plugin.</Description>
+              <Logo>Assets\Square44x44Logo.png</Logo>
+            </Properties>
+            <Resources>
+              <Resource Language="en-us" />
+            </Resources>
+            <Dependencies>
+              <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.22631.0" />
+            </Dependencies>
+            <Applications>
+              <Application Id="KeyInterceptInstaller" Executable="key-intercept-installer.exe" EntryPoint="Windows.FullTrustApplication">
+                <uap:VisualElements
+                  DisplayName="Key Intercept Installer"
+                  Description="Key Intercept Installer"
+                  BackgroundColor="transparent"
+                  Square44x44Logo="Assets\Square44x44Logo.png"
+                  Square150x150Logo="Assets\Square150x150Logo.png" />
+              </Application>
+            </Applications>
+            <Capabilities>
+              <rescap:Capability Name="runFullTrust" />
+            </Capabilities>
+          </Package>
+          "@ | Set-Content -Path msix/AppxManifest.xml -Encoding utf8
+          makeappx pack /d msix /p dist/key-intercept-installer-Windows-x86_64.msix /o
 
       - name: Upload installer package
         uses: actions/upload-artifact@v4
@@ -82,6 +168,7 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.msix
 
   publish-release:
     runs-on: ubuntu-latest
