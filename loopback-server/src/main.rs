@@ -11,7 +11,7 @@ use axum::{
 };
 use schema::{LocalConfig, is_discord_id};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, net::SocketAddr, path::PathBuf, time::Duration};
+use std::{collections::HashMap, error::Error, net::SocketAddr, path::PathBuf, time::Duration};
 use store::ConfigStore;
 use tokio::time::sleep;
 use tower_http::cors::CorsLayer;
@@ -129,10 +129,54 @@ async fn register_loop(
         };
 
         if let Err(err) = client.post(&register_url).json(&payload).send().await {
-            error!("failed to register with relay: {err}");
+            error!(
+                "failed to register with relay: {}",
+                format_reqwest_error(&err)
+            );
         }
 
         sleep(Duration::from_secs(30)).await;
+    }
+
+    fn format_reqwest_error(err: &reqwest::Error) -> String {
+        let mut details = vec![err.to_string()];
+
+        if let Some(status) = err.status() {
+            details.push(format!("status={status}"));
+        }
+        if let Some(url) = err.url() {
+            details.push(format!("url={url}"));
+        }
+        if err.is_timeout() {
+            details.push("timeout=true".to_string());
+        }
+        if err.is_connect() {
+            details.push("connect=true".to_string());
+        }
+        if err.is_request() {
+            details.push("request=true".to_string());
+        }
+        if err.is_body() {
+            details.push("body=true".to_string());
+        }
+        if err.is_decode() {
+            details.push("decode=true".to_string());
+        }
+        if err.is_redirect() {
+            details.push("redirect=true".to_string());
+        }
+
+        let mut sources = Vec::new();
+        let mut source = err.source();
+        while let Some(cause) = source {
+            sources.push(cause.to_string());
+            source = cause.source();
+        }
+        if !sources.is_empty() {
+            details.push(format!("causes=[{}]", sources.join(" | ")));
+        }
+
+        details.join("; ")
     }
 }
 
