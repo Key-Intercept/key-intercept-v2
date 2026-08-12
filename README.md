@@ -58,7 +58,7 @@ You can override artifact names with:
 It installs:
 - loopback binary to `~/.local/bin/key-intercept-loopback` on Unix, or `%LOCALAPPDATA%/Programs/key-intercept/key-intercept-loopback.exe` on Windows
 - plugin file to `~/Vencord/src/userplugins/key-intercept/index.tsx` (removes and reclones `~/Vencord` automatically)
-- startup service via user `systemd` unit on Unix, or `%APPDATA%/Microsoft/Windows/Start Menu/Programs/Startup/key-intercept-loopback.cmd` on Windows
+- startup service via user `systemd` unit on Unix, or `%APPDATA%/Microsoft/Windows/Start Menu/Programs/Startup/key-intercept-loopback.vbs` on Windows
 
 `--plugin-install-mode vencord-custom` is accepted for backward compatibility; custom Vencord installation is always used.
 

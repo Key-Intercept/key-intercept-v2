@@ -990,7 +990,7 @@ fn configure_loopback_startup(
     fs::create_dir_all(&startup_dir)
         .with_context(|| format!("failed to create {}", startup_dir.display()))?;
 
-    let launcher_file = startup_dir.join("key-intercept-loopback.cmd");
+    let launcher_file = startup_dir.join("key-intercept-loopback.vbs");
     let tray_script_file = loopback_install_dir()?.join("key-intercept-loopback-tray.ps1");
     if let Some(parent) = tray_script_file.parent() {
         fs::create_dir_all(parent)
@@ -1015,16 +1015,20 @@ fn configure_loopback_startup(
         )
     })?;
 
-    let script = format!(
-        "@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{}\"\r\n",
+    let powershell_command = format!(
+        "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{}\"",
         tray_script_file.display()
+    );
+    let script = format!(
+        "Set shell = CreateObject(\"WScript.Shell\")\r\nshell.Run \"{}\", 0, False\r\n",
+        powershell_command.replace('"', "\"\"")
     );
 
     fs::write(&launcher_file, script)
         .with_context(|| format!("failed to write {}", launcher_file.display()))?;
 
-    Command::new("cmd")
-        .arg("/C")
+    Command::new("wscript")
+        .arg("//B")
         .arg(&launcher_file)
         .spawn()
         .with_context(|| format!("failed to start loopback using {}", launcher_file.display()))?;
@@ -1061,14 +1065,6 @@ fn build_windows_tray_script(
         r#"$ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public static class Win32ShowWindow {{
-    [DllImport("user32.dll")]
-    public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
-}}
-"@
 
 $env:OWNER_DISCORD_ID = '{owner}'
 $env:LOOPBACK_PORT = '35491'
@@ -1076,14 +1072,7 @@ $env:KEY_INTERCEPT_CONFIG_PATH = '{config}'
 {relay_assignment}
 
 $loopback = '{loopback}'
-$process = Start-Process -FilePath $loopback -PassThru
-for ($i = 0; $i -lt 80 -and $process.MainWindowHandle -eq 0; $i++) {{
-    Start-Sleep -Milliseconds 100
-    $process.Refresh()
-}}
-if ($process.MainWindowHandle -ne 0) {{
-    [Win32ShowWindow]::ShowWindowAsync($process.MainWindowHandle, 0) | Out-Null
-}}
+$process = Start-Process -FilePath $loopback -WindowStyle Hidden -PassThru
 
 $icon = New-Object System.Windows.Forms.NotifyIcon
 $icon.Icon = [System.Drawing.SystemIcons]::Application
@@ -1091,20 +1080,9 @@ $icon.Text = 'Key Intercept Loopback'
 $icon.Visible = $true
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
-$showItem = $menu.Items.Add('Show loopback console')
 $exitItem = $menu.Items.Add('Exit')
 $icon.ContextMenuStrip = $menu
 
-$showWindow = {{
-    if ($process.HasExited) {{ return }}
-    $process.Refresh()
-    if ($process.MainWindowHandle -ne 0) {{
-        [Win32ShowWindow]::ShowWindowAsync($process.MainWindowHandle, 9) | Out-Null
-    }}
-}}
-
-$showItem.Add_Click($showWindow)
-$icon.Add_DoubleClick($showWindow)
 $exitItem.Add_Click({{
     if (-not $process.HasExited) {{ $process.Kill() }}
     $icon.Visible = $false
