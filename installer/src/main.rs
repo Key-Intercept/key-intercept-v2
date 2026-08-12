@@ -1076,7 +1076,7 @@ $env:KEY_INTERCEPT_CONFIG_PATH = '{config}'
 {relay_assignment}
 
 $loopback = '{loopback}'
-$process = Start-Process -FilePath $loopback -PassThru
+$process = Start-Process -FilePath $loopback -WindowStyle Hidden -PassThru
 for ($i = 0; $i -lt 80 -and $process.MainWindowHandle -eq 0; $i++) {{
     Start-Sleep -Milliseconds 100
     $process.Refresh()
