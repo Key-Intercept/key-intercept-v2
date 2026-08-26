@@ -2,7 +2,7 @@
 
 Self-hosted refactor split into three components:
 
-1. **Vencord plugin** (`/plugin/keyInterceptSelfHosted.tsx`)
+1. **Kettu plugin** (`/plugin/keyInterceptSelfHosted.tsx`)
    - Restores the original key-intercept message transform pipeline (rules, gag, pet, bimbo, horny, uwu, censored, drone).
    - Supports hybrid loopback transport:
      - `desktop_http`: reads/writes schema-shaped local config from the localhost loopback service.
@@ -41,7 +41,8 @@ When local sources are not detected, it downloads pre-built artifacts from the l
 ```bash
 cargo run -p key-intercept-installer -- \
   --owner-discord-id <OWNER_DISCORD_ID> \
-  [--plugin-install-mode vencord-custom] \
+  [--plugin-install-mode kettu-source|vencord-custom] \
+  [--kettu-plugin-source-url <KETTU_PLUGIN_SOURCE_URL>] \
   [--relay-server-url <RELAY_SERVER_URL>]
 ```
 
@@ -62,10 +63,11 @@ You can override artifact names with:
 
 It installs:
 - loopback binary to `~/.local/bin/key-intercept-loopback` on Unix, or `%LOCALAPPDATA%/Programs/key-intercept/key-intercept-loopback.exe` on Windows
-- plugin file to `~/Vencord/src/userplugins/key-intercept/index.tsx` (removes and reclones `~/Vencord` automatically)
 - startup service via user `systemd` unit on Unix, or `%APPDATA%/Microsoft/Windows/Start Menu/Programs/Startup/key-intercept-loopback.cmd` on Windows
 
-`--plugin-install-mode vencord-custom` is accepted for backward compatibility; custom Vencord installation is always used.
+Plugin install mode defaults to `kettu-source` and prints Kettu source install instructions (Profile > Settings > Plugins > + > Source URL).
+
+Legacy `--plugin-install-mode vencord-custom` is still supported for custom Vencord installation and will install plugin file to `~/Vencord/src/userplugins/key-intercept/index.tsx`.
 
 The relay server is intended for manual VPS deployment and is not included in installer automation.
 
