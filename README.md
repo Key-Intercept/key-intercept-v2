@@ -4,7 +4,10 @@ Self-hosted refactor split into three components:
 
 1. **Vencord plugin** (`/plugin/keyInterceptSelfHosted.tsx`)
    - Restores the original key-intercept message transform pipeline (rules, gag, pet, bimbo, horny, uwu, censored, drone).
-   - Reads/writes schema-shaped local config from the loopback service.
+   - Supports hybrid loopback transport:
+     - `desktop_http`: reads/writes schema-shaped local config from the localhost loopback service.
+     - `in_app_mobile`: uses in-app persistent storage and relay-backed sync queue.
+     - `auto` (default): picks mobile in-app mode on mobile runtimes, localhost mode otherwise.
    - Exposes profile-embedded UI for config editing + allowed-editor ACL management.
    - Sends remote update commands through the relay server.
 
@@ -17,6 +20,8 @@ Self-hosted refactor split into three components:
 3. **Relay server (Rust)** (`/relay-server`)
    - Runs on VPS and tracks online users.
    - Forwards config fetch/update requests to registered loopback nodes.
+   - Stores mobile snapshot state and queues remote updates for mobile owners while the app is closed.
+   - Exposes `/users/:owner_id/mobile/snapshot` and `/users/:owner_id/mobile/sync` for mobile state upload/sync.
 
 ## Build and test
 

@@ -7,6 +7,7 @@ import { Menu, React, UserStore } from "@webpack/common";
 const LOOPBACK = "http://127.0.0.1:35491";
 const DISCORD_SECURE_ORIGINS = new Set(["https://discord.com", "https://ptb.discord.com", "https://canary.discord.com"]);
 const LOG_PREFIX = "[key-intercept]";
+const MOBILE_STATE_KEY = "key-intercept/mobile-loopback-state/v1";
 
 type Config = {
     rules_end: string;
@@ -72,6 +73,32 @@ type LocalConfig = {
     pet_words: string[];
     censored_words: string[];
     drone_config: DroneConfig;
+};
+
+type LoopbackTransportMode = "auto" | "desktop_http" | "in_app_mobile";
+type ActiveLoopbackTransport = "desktop_http" | "in_app_mobile";
+
+type MobilePersistedState = {
+    owner_discord_id: string;
+    config: LocalConfig;
+    allowed_editors: string[];
+    revision: number;
+    last_writer_id: string;
+};
+
+type MobileSyncOperation = {
+    revision: number;
+    editor_id: string;
+    config: LocalConfig;
+};
+
+type MobileSyncPayload = {
+    owner_id: string;
+    revision: number;
+    last_writer_id: string;
+    config: LocalConfig;
+    allowed_editors: string[];
+    operations: MobileSyncOperation[];
 };
 
 const farFuture = "9999-12-31T23:59:59.000Z";
@@ -160,6 +187,8 @@ function cloneDefaultConfig(): LocalConfig {
 }
 
 let interceptConfig: LocalConfig = cloneDefaultConfig();
+let activeLoopbackTransport: ActiveLoopbackTransport = "desktop_http";
+const fallbackMobileStateByOwner = new Map<string, MobilePersistedState>();
 
 function currentUser() {
     return UserStore.getCurrentUser();
@@ -299,43 +328,26 @@ function configLogSummary(config: LocalConfig) {
 
 async function readLocalConfig(): Promise<LocalConfig> {
     const userId = currentUser().id;
-    console.info(`${LOG_PREFIX} readLocalConfig:start`, { userId });
-    const response = await fetch(`${LOOPBACK}/config`, {
-        cache: "no-store",
-        headers: {
-            "x-discord-user-id": userId
-        }
-    });
-    if (!response.ok) {
-        console.error(`${LOG_PREFIX} readLocalConfig:failed`, { userId, status: response.status });
-        throw new Error(`Failed reading local config: ${response.status}`);
-    }
-    const payload = mergeLocalConfig(await response.json());
+    const payload = activeLoopbackTransport === "desktop_http"
+        ? await readDesktopLoopbackConfig(userId)
+        : readInAppLoopbackConfig(userId);
     interceptConfig = payload;
-    console.info(`${LOG_PREFIX} readLocalConfig:success`, { userId, summary: configLogSummary(payload) });
     return payload;
 }
 
 async function saveLocalConfig(userId: string, config: LocalConfig) {
-    console.info(`${LOG_PREFIX} saveLocalConfig:start`, { userId, summary: configLogSummary(config) });
-    const response = await fetch(`${LOOPBACK}/config`, {
-        method: "PUT",
-        headers: {
-            "content-type": "application/json",
-            "x-discord-user-id": userId
-        },
-        body: JSON.stringify({ config })
-    });
-
-    if (!response.ok) {
-        console.error(`${LOG_PREFIX} saveLocalConfig:failed`, { userId, status: response.status });
-        throw new Error(`Failed saving local config: ${response.status}`);
+    if (activeLoopbackTransport === "desktop_http") {
+        await saveDesktopLoopbackConfig(userId, config);
+    } else {
+        await saveInAppLoopbackConfig(userId, config);
     }
     interceptConfig = mergeLocalConfig(config);
-    console.info(`${LOG_PREFIX} saveLocalConfig:success`, { userId, summary: configLogSummary(interceptConfig) });
 }
 
-async function getAllowedEditors() {
+async function getAllowedEditors(requesterId: string) {
+    if (activeLoopbackTransport === "in_app_mobile") {
+        return { allowed_editors: readMobileState(requesterId).allowed_editors.slice().sort() };
+    }
     const response = await fetch(`${LOOPBACK}/allowed-editors`, {
         cache: "no-store"
     });
@@ -344,6 +356,11 @@ async function getAllowedEditors() {
 }
 
 async function addAllowedEditor(requesterId: string, editorId: string) {
+    if (activeLoopbackTransport === "in_app_mobile") {
+        addInAppAllowedEditor(requesterId, editorId);
+        await uploadMobileSnapshot(settings.store.relayUrl, requesterId);
+        return;
+    }
     const response = await fetch(`${LOOPBACK}/allowed-editors`, {
         method: "POST",
         headers: {
@@ -357,6 +374,11 @@ async function addAllowedEditor(requesterId: string, editorId: string) {
 }
 
 async function removeAllowedEditor(requesterId: string, editorId: string) {
+    if (activeLoopbackTransport === "in_app_mobile") {
+        removeInAppAllowedEditor(requesterId, editorId);
+        await uploadMobileSnapshot(settings.store.relayUrl, requesterId);
+        return;
+    }
     const response = await fetch(`${LOOPBACK}/allowed-editors/${encodeURIComponent(editorId)}`, {
         method: "DELETE",
         headers: {
@@ -367,8 +389,165 @@ async function removeAllowedEditor(requesterId: string, editorId: string) {
     if (!response.ok) throw new Error(`Failed removing editor: ${response.status}`);
 }
 
+async function readDesktopLoopbackConfig(userId: string): Promise<LocalConfig> {
+    const response = await fetch(`${LOOPBACK}/config`, {
+        cache: "no-store",
+        headers: {
+            "x-discord-user-id": userId
+        }
+    });
+    if (!response.ok) throw new Error(`Failed reading local config: ${response.status}`);
+    return mergeLocalConfig(await response.json());
+}
+
+async function saveDesktopLoopbackConfig(userId: string, config: LocalConfig) {
+    const response = await fetch(`${LOOPBACK}/config`, {
+        method: "PUT",
+        headers: {
+            "content-type": "application/json",
+            "x-discord-user-id": userId
+        },
+        body: JSON.stringify({ config })
+    });
+    if (!response.ok) throw new Error(`Failed saving local config: ${response.status}`);
+}
+
+function isDiscordId(value: string): boolean {
+    return /^\d+$/.test(value);
+}
+
+function getStorageBackend() {
+    try {
+        if (typeof window !== "undefined" && window.localStorage) return window.localStorage;
+    } catch {
+        // ignore
+    }
+    return null;
+}
+
+function readMobileState(ownerId: string): MobilePersistedState {
+    const key = `${MOBILE_STATE_KEY}:${ownerId}`;
+    const storage = getStorageBackend();
+    const fallback = fallbackMobileStateByOwner.get(ownerId);
+    if (!storage) {
+        return fallback ?? {
+            owner_discord_id: ownerId,
+            config: cloneDefaultConfig(),
+            allowed_editors: [],
+            revision: 0,
+            last_writer_id: ownerId
+        };
+    }
+
+    const raw = storage.getItem(key);
+    if (!raw) {
+        const fresh: MobilePersistedState = {
+            owner_discord_id: ownerId,
+            config: cloneDefaultConfig(),
+            allowed_editors: [],
+            revision: 0,
+            last_writer_id: ownerId
+        };
+        storage.setItem(key, JSON.stringify(fresh));
+        return fresh;
+    }
+
+    try {
+        const parsed = JSON.parse(raw) as Partial<MobilePersistedState>;
+        const normalized: MobilePersistedState = {
+            owner_discord_id: typeof parsed.owner_discord_id === "string" ? parsed.owner_discord_id : ownerId,
+            config: mergeLocalConfig(parsed.config),
+            allowed_editors: Array.isArray(parsed.allowed_editors)
+                ? parsed.allowed_editors.filter((id): id is string => typeof id === "string" && isDiscordId(id))
+                : [],
+            revision: Number.isFinite(parsed.revision) ? Math.max(0, Math.floor(parsed.revision as number)) : 0,
+            last_writer_id: typeof parsed.last_writer_id === "string" && isDiscordId(parsed.last_writer_id)
+                ? parsed.last_writer_id
+                : ownerId
+        };
+        return normalized;
+    } catch {
+        return {
+            owner_discord_id: ownerId,
+            config: cloneDefaultConfig(),
+            allowed_editors: [],
+            revision: 0,
+            last_writer_id: ownerId
+        };
+    }
+}
+
+function writeMobileState(state: MobilePersistedState) {
+    const normalized: MobilePersistedState = {
+        owner_discord_id: state.owner_discord_id,
+        config: mergeLocalConfig(state.config),
+        allowed_editors: state.allowed_editors.filter(isDiscordId),
+        revision: Math.max(0, Math.floor(state.revision)),
+        last_writer_id: isDiscordId(state.last_writer_id) ? state.last_writer_id : state.owner_discord_id
+    };
+    fallbackMobileStateByOwner.set(normalized.owner_discord_id, normalized);
+    const storage = getStorageBackend();
+    if (storage) {
+        storage.setItem(`${MOBILE_STATE_KEY}:${normalized.owner_discord_id}`, JSON.stringify(normalized));
+    }
+}
+
+function readInAppLoopbackConfig(ownerId: string): LocalConfig {
+    return mergeLocalConfig(readMobileState(ownerId).config);
+}
+
+async function saveInAppLoopbackConfig(ownerId: string, config: LocalConfig) {
+    const state = readMobileState(ownerId);
+    const normalizedConfig = mergeLocalConfig(config);
+    writeMobileState({
+        ...state,
+        config: normalizedConfig,
+        revision: state.revision + 1,
+        last_writer_id: ownerId
+    });
+    await uploadMobileSnapshot(settings.store.relayUrl, ownerId);
+}
+
+function addInAppAllowedEditor(ownerId: string, editorId: string) {
+    if (!isDiscordId(editorId)) throw new Error("editor_id must be numeric");
+    const state = readMobileState(ownerId);
+    const nextEditors = new Set(state.allowed_editors);
+    nextEditors.add(editorId);
+    writeMobileState({
+        ...state,
+        allowed_editors: [...nextEditors],
+        revision: state.revision + 1,
+        last_writer_id: ownerId
+    });
+}
+
+function removeInAppAllowedEditor(ownerId: string, editorId: string) {
+    const state = readMobileState(ownerId);
+    const nextEditors = state.allowed_editors.filter(id => id !== editorId);
+    writeMobileState({
+        ...state,
+        allowed_editors: nextEditors,
+        revision: state.revision + 1,
+        last_writer_id: ownerId
+    });
+}
+
 function isLoopbackHostname(hostname: string): boolean {
     return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
+}
+
+function isMobileRuntime(): boolean {
+    if (typeof navigator === "undefined") return false;
+    return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent ?? "");
+}
+
+async function configureLoopbackTransport() {
+    const configured = settings.store.loopbackTransportMode as LoopbackTransportMode;
+    if (configured === "desktop_http" || configured === "in_app_mobile") {
+        activeLoopbackTransport = configured;
+        return;
+    }
+    activeLoopbackTransport = isMobileRuntime() ? "in_app_mobile" : "desktop_http";
 }
 
 function relayBaseUrl(relayUrl: string): string {
@@ -467,6 +646,53 @@ async function denyAccessRequest(relayUrl: string, ownerId: string, requesterId:
         { method: "DELETE" }
     );
     if (!response.ok) throw new Error(`Failed denying access request: ${response.status}`);
+}
+
+async function uploadMobileSnapshot(relayUrl: string, ownerId: string) {
+    if (!relayUrl?.trim()) return;
+    const state = readMobileState(ownerId);
+    const response = await fetch(`${relayBaseUrl(relayUrl)}/users/${ownerId}/mobile/snapshot`, {
+        method: "POST",
+        headers: {
+            "content-type": "application/json"
+        },
+        body: JSON.stringify({
+            owner_id: ownerId,
+            revision: state.revision,
+            last_writer_id: state.last_writer_id,
+            config: state.config,
+            allowed_editors: state.allowed_editors
+        })
+    });
+    if (!response.ok && response.status !== 404) {
+        throw new Error(`Mobile snapshot sync failed: ${response.status}`);
+    }
+}
+
+async function syncInAppLoopback(relayUrl: string, ownerId: string) {
+    if (!relayUrl?.trim()) return;
+    const local = readMobileState(ownerId);
+    const response = await fetch(
+        `${relayBaseUrl(relayUrl)}/users/${ownerId}/mobile/sync?requester_id=${encodeURIComponent(ownerId)}&after_revision=${local.revision}`,
+        { cache: "no-store" }
+    );
+    if (response.status === 404) {
+        await uploadMobileSnapshot(relayUrl, ownerId);
+        return;
+    }
+    if (!response.ok) throw new Error(`Mobile relay sync failed: ${response.status}`);
+    const payload = await response.json() as MobileSyncPayload;
+    const relayRevision = Number.isFinite(payload.revision) ? payload.revision : local.revision;
+    if (relayRevision <= local.revision) return;
+    writeMobileState({
+        owner_discord_id: ownerId,
+        config: mergeLocalConfig(payload.config),
+        allowed_editors: Array.isArray(payload.allowed_editors) ? payload.allowed_editors.filter(isDiscordId) : local.allowed_editors,
+        revision: relayRevision,
+        last_writer_id: typeof payload.last_writer_id === "string" && isDiscordId(payload.last_writer_id)
+            ? payload.last_writer_id
+            : ownerId
+    });
 }
 
 function toLines(values: string[]): string {
@@ -1173,9 +1399,12 @@ function ConfigPanel(props: any) {
         console.info(`${LOG_PREFIX} refresh:start`, { activeUserId, profileUserId, isOwnProfile });
         try {
             if (isOwnProfile) {
+                if (activeLoopbackTransport === "in_app_mobile") {
+                    await syncInAppLoopback(settings.store.relayUrl, activeUserId).catch(() => {});
+                }
                 const [config, editors, requests] = await Promise.all([
                     readLocalConfig(),
-                    getAllowedEditors(),
+                    getAllowedEditors(activeUserId),
                     getAccessRequests(settings.store.relayUrl, activeUserId).catch(() => ({ requests: [] }))
                 ]);
                 updateFromConfig(config);
@@ -1881,6 +2110,11 @@ const settings = definePluginSettings({
         type: OptionType.STRING,
         description: "Public relay URL",
         default: "http://82.165.196.147:45491"
+    },
+    loopbackTransportMode: {
+        type: OptionType.STRING,
+        description: "Loopback transport mode: auto, desktop_http, or in_app_mobile",
+        default: "auto"
     }
 });
 
@@ -1891,6 +2125,12 @@ const plugin = definePlugin({
     settings,
     async start() {
         try {
+            await configureLoopbackTransport();
+            const userId = currentUser().id;
+            if (activeLoopbackTransport === "in_app_mobile") {
+                await syncInAppLoopback(settings.store.relayUrl, userId).catch(() => {});
+                await uploadMobileSnapshot(settings.store.relayUrl, userId).catch(() => {});
+            }
             await readLocalConfig();
         } catch (err) {
             console.error("key-intercept failed to load local config", err);
