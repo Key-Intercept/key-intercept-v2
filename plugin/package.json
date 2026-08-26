@@ -1,7 +1,7 @@
 {
   "name": "key-intercept-selfhosted-plugin",
   "version": "0.1.0",
-  "description": "Vencord plugin that reads local config and remotely edits allowed users via relay",
+  "description": "Kettu plugin that reads local config and remotely edits allowed users via relay",
   "main": "keyInterceptSelfHosted.tsx",
   "type": "module",
   "scripts": {

@@ -26,3 +26,6 @@ jobs:
 
       - name: Run plugin tests
         run: npm --prefix plugin test
+
+      - name: Build Kettu plugin
+        run: npm --prefix kettu-plugin run build

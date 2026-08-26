@@ -20,6 +20,7 @@ use tracing::info;
 #[derive(Clone)]
 struct AppState {
     peers: Arc<RwLock<HashMap<String, RegisteredPeer>>>,
+    mobile_states: Arc<RwLock<HashMap<String, MobileState>>>,
     pending_access_requests: Arc<RwLock<HashMap<String, HashSet<String>>>>,
     client: reqwest::Client,
 }
@@ -36,6 +37,22 @@ struct RegisterRequest {
 struct RegisteredPeer {
     base_url: String,
     shared_token: Option<String>,
+}
+
+#[derive(Clone)]
+struct MobileOperation {
+    revision: u64,
+    editor_id: String,
+    config: Value,
+}
+
+#[derive(Clone)]
+struct MobileState {
+    revision: u64,
+    last_writer_id: String,
+    config: Value,
+    allowed_editors: HashSet<String>,
+    operations: Vec<MobileOperation>,
 }
 
 #[derive(Deserialize)]
@@ -63,6 +80,23 @@ struct AccessRequestApprovalPayload {
     owner_id: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MobileSnapshotPayload {
+    owner_id: String,
+    revision: u64,
+    last_writer_id: Option<String>,
+    config: Value,
+    allowed_editors: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MobileSyncQuery {
+    requester_id: String,
+    after_revision: Option<u64>,
+}
+
 #[derive(Serialize)]
 struct UsersResponse {
     online_users: Vec<String>,
@@ -76,6 +110,23 @@ struct AccessRequestsResponse {
 #[derive(Serialize)]
 struct ErrorResponse {
     error: String,
+}
+
+#[derive(Serialize)]
+struct MobileOperationResponse {
+    revision: u64,
+    editor_id: String,
+    config: Value,
+}
+
+#[derive(Serialize)]
+struct MobileSyncResponse {
+    owner_id: String,
+    revision: u64,
+    last_writer_id: String,
+    config: Value,
+    allowed_editors: Vec<String>,
+    operations: Vec<MobileOperationResponse>,
 }
 
 #[tokio::main]
@@ -111,9 +162,15 @@ async fn main() -> Result<()> {
             "/users/:owner_id/access-requests/:requester_id/approve",
             post(approve_access_request),
         )
+        .route(
+            "/users/:owner_id/mobile/snapshot",
+            post(upsert_mobile_snapshot),
+        )
+        .route("/users/:owner_id/mobile/sync", get(get_mobile_sync))
         .layer(discord_cors_layer())
         .with_state(AppState {
             peers: Arc::new(RwLock::new(HashMap::new())),
+            mobile_states: Arc::new(RwLock::new(HashMap::new())),
             pending_access_requests: Arc::new(RwLock::new(HashMap::new())),
             client: reqwest::Client::new(),
         });
@@ -165,7 +222,15 @@ async fn register_peer(
 }
 
 async fn list_users(State(state): State<AppState>) -> impl IntoResponse {
-    let mut users = state.peers.read().await.keys().cloned().collect::<Vec<_>>();
+    let peers = state.peers.read().await;
+    let mobiles = state.mobile_states.read().await;
+    let mut users = peers
+        .keys()
+        .chain(mobiles.keys())
+        .cloned()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
     users.sort();
     Json(UsersResponse {
         online_users: users,
@@ -177,6 +242,19 @@ async fn get_remote_config(
     Path(owner_id): Path<String>,
     Query(query): Query<ConfigReadQuery>,
 ) -> impl IntoResponse {
+    if let Some(mobile) = state.mobile_states.read().await.get(&owner_id).cloned() {
+        if query.requester_id != owner_id && !mobile.allowed_editors.contains(&query.requester_id) {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "requester is not allowed to read config".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        return Json(mobile.config).into_response();
+    }
+
     let Some(peer) = state.peers.read().await.get(&owner_id).cloned() else {
         return (
             StatusCode::NOT_FOUND,
@@ -243,6 +321,35 @@ async fn put_remote_config(
     if let Err(err) = validate_config_shape(&payload.config) {
         return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: err })).into_response();
     }
+
+    let mut mobile_states = state.mobile_states.write().await;
+    if let Some(mobile) = mobile_states.get_mut(&owner_id) {
+        if payload.editor_id != owner_id && !mobile.allowed_editors.contains(&payload.editor_id) {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "editor is not allowed to update config".to_string(),
+                }),
+            )
+                .into_response();
+        }
+
+        let next_revision = mobile.revision.saturating_add(1);
+        mobile.revision = next_revision;
+        mobile.last_writer_id = payload.editor_id.clone();
+        mobile.config = payload.config.clone();
+        mobile.operations.push(MobileOperation {
+            revision: next_revision,
+            editor_id: payload.editor_id,
+            config: payload.config,
+        });
+        if mobile.operations.len() > 512 {
+            let drain_count = mobile.operations.len().saturating_sub(512);
+            mobile.operations.drain(0..drain_count);
+        }
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    drop(mobile_states);
 
     let Some(peer) = state.peers.read().await.get(&owner_id).cloned() else {
         return (
@@ -316,7 +423,9 @@ async fn create_access_request(
             .into_response();
     }
 
-    if !state.peers.read().await.contains_key(&owner_id) {
+    let has_owner = state.peers.read().await.contains_key(&owner_id)
+        || state.mobile_states.read().await.contains_key(&owner_id);
+    if !has_owner {
         return (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -400,6 +509,18 @@ async fn approve_access_request(
             }),
         )
             .into_response();
+    }
+
+    if let Some(mobile) = state.mobile_states.write().await.get_mut(&owner_id) {
+        mobile.allowed_editors.insert(requester_id.clone());
+        let mut pending = state.pending_access_requests.write().await;
+        if let Some(entry) = pending.get_mut(&owner_id) {
+            entry.remove(&requester_id);
+            if entry.is_empty() {
+                pending.remove(&owner_id);
+            }
+        }
+        return StatusCode::NO_CONTENT.into_response();
     }
 
     let Some(peer) = state.peers.read().await.get(&owner_id).cloned() else {
@@ -492,6 +613,145 @@ async fn deny_access_request(
     }
 
     StatusCode::NO_CONTENT.into_response()
+}
+
+async fn upsert_mobile_snapshot(
+    State(state): State<AppState>,
+    Path(owner_id): Path<String>,
+    Json(payload): Json<MobileSnapshotPayload>,
+) -> impl IntoResponse {
+    if !is_discord_id(&owner_id)
+        || !is_discord_id(&payload.owner_id)
+        || payload
+            .last_writer_id
+            .as_deref()
+            .is_some_and(|id| !is_discord_id(id))
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "owner_id and last_writer_id must be numeric".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    if owner_id != payload.owner_id {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "owner_id path/body mismatch".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    if let Err(err) = validate_config_shape(&payload.config) {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: err })).into_response();
+    }
+    if payload.allowed_editors.iter().any(|id| !is_discord_id(id)) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "allowed_editors must be numeric Discord IDs".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let mut mobile_states = state.mobile_states.write().await;
+    if let Some(existing) = mobile_states.get_mut(&owner_id) {
+        if payload.revision < existing.revision {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorResponse {
+                    error: format!(
+                        "snapshot revision {} is older than current {}",
+                        payload.revision, existing.revision
+                    ),
+                }),
+            )
+                .into_response();
+        }
+        let new_revision = payload.revision;
+        existing.revision = new_revision;
+        existing.last_writer_id = payload
+            .last_writer_id
+            .unwrap_or_else(|| payload.owner_id.clone());
+        existing.config = payload.config;
+        existing.allowed_editors = payload.allowed_editors.into_iter().collect();
+        existing
+            .operations
+            .retain(|operation| operation.revision > new_revision);
+    } else {
+        mobile_states.insert(
+            owner_id,
+            MobileState {
+                revision: payload.revision,
+                last_writer_id: payload
+                    .last_writer_id
+                    .unwrap_or_else(|| payload.owner_id.clone()),
+                config: payload.config,
+                allowed_editors: payload.allowed_editors.into_iter().collect(),
+                operations: Vec::new(),
+            },
+        );
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
+async fn get_mobile_sync(
+    State(state): State<AppState>,
+    Path(owner_id): Path<String>,
+    Query(query): Query<MobileSyncQuery>,
+) -> impl IntoResponse {
+    if !is_discord_id(&owner_id) || !is_discord_id(&query.requester_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "owner_id and requester_id must be numeric".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    if owner_id != query.requester_id {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "only owner can sync mobile state".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    let Some(mobile) = state.mobile_states.read().await.get(&owner_id).cloned() else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "target user is offline or unknown".to_string(),
+            }),
+        )
+            .into_response();
+    };
+    let after_revision = query.after_revision.unwrap_or(0);
+    let mut allowed_editors = mobile.allowed_editors.into_iter().collect::<Vec<_>>();
+    allowed_editors.sort();
+    let operations = mobile
+        .operations
+        .into_iter()
+        .filter(|operation| operation.revision > after_revision)
+        .map(|operation| MobileOperationResponse {
+            revision: operation.revision,
+            editor_id: operation.editor_id,
+            config: operation.config,
+        })
+        .collect::<Vec<_>>();
+    Json(MobileSyncResponse {
+        owner_id,
+        revision: mobile.revision,
+        last_writer_id: mobile.last_writer_id,
+        config: mobile.config,
+        allowed_editors,
+        operations,
+    })
+    .into_response()
 }
 
 fn is_discord_id(value: &str) -> bool {
@@ -625,9 +885,49 @@ mod tests {
     fn test_state() -> AppState {
         AppState {
             peers: Arc::new(RwLock::new(HashMap::new())),
+            mobile_states: Arc::new(RwLock::new(HashMap::new())),
             pending_access_requests: Arc::new(RwLock::new(HashMap::new())),
             client: reqwest::Client::new(),
         }
+    }
+
+    fn sample_config() -> Value {
+        json!({
+            "config": {
+                "rules_end": "9999-12-31T23:59:59.000Z",
+                "gag_end": "1970-01-01T00:00:00.000Z",
+                "pet_end": "1970-01-01T00:00:00.000Z",
+                "pet_amount": 0.0,
+                "pet_type": 0,
+                "bimbo_end": "1970-01-01T00:00:00.000Z",
+                "horny_end": "1970-01-01T00:00:00.000Z",
+                "bimbo_word_length": 12,
+                "drone_end": "1970-01-01T00:00:00.000Z",
+                "uwu_end": "1970-01-01T00:00:00.000Z",
+                "censored_end": "1970-01-01T00:00:00.000Z",
+                "censored_replacement": "*",
+                "debug": false
+            },
+            "rules": [],
+            "rules_groups": [],
+            "whitelist": [],
+            "blacklist": [],
+            "filter_mode": "whitelist",
+            "pet_words": [],
+            "censored_words": [],
+            "drone_config": {
+                "drone_health": 100,
+                "speech_header": "Acknowledged",
+                "speech_footer": "Compliance complete",
+                "action_header": "ACTION",
+                "action_footer": "ACTION COMPLETE",
+                "whisper_header": "WHISPER",
+                "whisper_footer": "WHISPER COMPLETE",
+                "loud_header": "LOUD",
+                "loud_footer": "LOUD COMPLETE",
+                "drone_term": "Drone"
+            }
+        })
     }
 
     #[tokio::test]
@@ -673,42 +973,7 @@ mod tests {
             Path("missing".to_string()),
             Json(RemoteUpdatePayload {
                 editor_id: "123".to_string(),
-                config: json!({
-                    "config": {
-                        "rules_end": "9999-12-31T23:59:59.000Z",
-                        "gag_end": "1970-01-01T00:00:00.000Z",
-                        "pet_end": "1970-01-01T00:00:00.000Z",
-                        "pet_amount": 0.0,
-                        "pet_type": 0,
-                        "bimbo_end": "1970-01-01T00:00:00.000Z",
-                        "horny_end": "1970-01-01T00:00:00.000Z",
-                        "bimbo_word_length": 12,
-                        "drone_end": "1970-01-01T00:00:00.000Z",
-                        "uwu_end": "1970-01-01T00:00:00.000Z",
-                        "censored_end": "1970-01-01T00:00:00.000Z",
-                        "censored_replacement": "*",
-                        "debug": false
-                    },
-                    "rules": [],
-                    "rules_groups": [],
-                    "whitelist": [],
-                    "blacklist": [],
-                    "filter_mode": "whitelist",
-                    "pet_words": [],
-                    "censored_words": [],
-                    "drone_config": {
-                        "drone_health": 100,
-                        "speech_header": "Acknowledged",
-                        "speech_footer": "Compliance complete",
-                        "action_header": "ACTION",
-                        "action_footer": "ACTION COMPLETE",
-                        "whisper_header": "WHISPER",
-                        "whisper_footer": "WHISPER COMPLETE",
-                        "loud_header": "LOUD",
-                        "loud_footer": "LOUD COMPLETE",
-                        "drone_term": "Drone"
-                    }
-                }),
+                config: sample_config(),
             }),
         )
         .await
@@ -758,5 +1023,48 @@ mod tests {
         });
 
         assert!(validate_config_shape(&value).is_err());
+    }
+
+    #[tokio::test]
+    async fn mobile_snapshot_then_remote_update_increments_revision() {
+        let state = test_state();
+        let snapshot_response = upsert_mobile_snapshot(
+            State(state.clone()),
+            Path("123".to_string()),
+            Json(MobileSnapshotPayload {
+                owner_id: "123".to_string(),
+                revision: 2,
+                last_writer_id: Some("123".to_string()),
+                config: sample_config(),
+                allowed_editors: vec!["456".to_string()],
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(snapshot_response.status(), StatusCode::NO_CONTENT);
+
+        let update_response = put_remote_config(
+            State(state.clone()),
+            Path("123".to_string()),
+            Json(RemoteUpdatePayload {
+                editor_id: "456".to_string(),
+                config: sample_config(),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(update_response.status(), StatusCode::NO_CONTENT);
+
+        let sync_response = get_mobile_sync(
+            State(state),
+            Path("123".to_string()),
+            Query(MobileSyncQuery {
+                requester_id: "123".to_string(),
+                after_revision: Some(2),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(sync_response.status(), StatusCode::OK);
     }
 }

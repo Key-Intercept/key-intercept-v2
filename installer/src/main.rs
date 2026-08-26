@@ -34,7 +34,7 @@ struct Args {
     #[arg(long)]
     loopback_artifact: Option<String>,
 
-    #[arg(long, default_value = "key-intercept-plugin")]
+    #[arg(long, default_value = "key-intercept-vencord-plugin")]
     plugin_artifact: String,
 
     #[arg(long)]
@@ -46,8 +46,11 @@ struct Args {
     #[arg(long, default_value = "key-intercept")]
     vencord_plugin_folder: String,
 
-    #[arg(long)]
-    plugin_install_mode: Option<String>,
+    #[arg(long, default_value = "kettu-source")]
+    plugin_install_mode: String,
+
+    #[arg(long, default_value = "https://key-intercept.github.io/key-intercept-v2/")]
+    kettu_plugin_source_url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -100,6 +103,20 @@ async fn main() {
 
 async fn run() -> Result<()> {
     let args = Args::parse();
+    let plugin_install_mode = args.plugin_install_mode.trim().to_string();
+    let install_into_vencord = match plugin_install_mode.as_str() {
+        "kettu-source" => false,
+        "vencord-custom" => true,
+        other => {
+            bail!(
+                "--plugin-install-mode only supports 'kettu-source' or legacy 'vencord-custom' (got '{other}')"
+            )
+        }
+    };
+    let kettu_plugin_source_url = args.kettu_plugin_source_url.trim().to_string();
+    reqwest::Url::parse(&kettu_plugin_source_url)
+        .with_context(|| format!("invalid --kettu-plugin-source-url: {kettu_plugin_source_url}"))?;
+
     let owner_discord_id =
         resolve_owner_discord_id(args.owner_discord_id, args.relay_server_url.as_deref())?;
     let relay_server_url =
@@ -111,12 +128,11 @@ async fn run() -> Result<()> {
     let loopback_binary_name = args
         .loopback_binary_name
         .unwrap_or_else(default_loopback_binary_name);
-    if let Some(mode) = args.plugin_install_mode.as_deref() {
-        if mode != "vencord-custom" {
-            bail!("--plugin-install-mode only supports 'vencord-custom'");
-        }
-    }
-    let installer_tools = ensure_installer_tools()?;
+    let installer_tools = if install_into_vencord {
+        Some(ensure_installer_tools()?)
+    } else {
+        None
+    };
 
     if let Some(local_sources) = find_local_sources() {
         println!(
@@ -125,26 +141,33 @@ async fn run() -> Result<()> {
         );
         let loopback_binary = build_local_loopback_binary(&local_sources.repo_root)?;
         install_loopback_binary_from_path(&loopback_binary)?;
-        install_plugin_into_vencord(
-            &installer_tools,
-            &local_sources.plugin_file,
-            &args.plugin_file_name,
-            &args.vencord_plugin_folder,
-            relay_server_url.as_deref(),
-        )?;
+        if install_into_vencord {
+            install_plugin_into_vencord(
+                installer_tools
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("missing installer tools for vencord install"))?,
+                &local_sources.plugin_file,
+                &args.plugin_file_name,
+                &args.vencord_plugin_folder,
+                relay_server_url.as_deref(),
+            )?;
+        }
     } else {
         let client = build_client()?;
-        let required_artifacts = [loopback_artifact, args.plugin_artifact.as_str()];
+        let required_artifacts = if install_into_vencord {
+            vec![loopback_artifact, args.plugin_artifact.as_str()]
+        } else {
+            vec![loopback_artifact]
+        };
         let (_run_id, artifacts) = latest_successful_run_with_artifacts(
             &client,
             &args.repo_owner,
             &args.repo_name,
-            &required_artifacts,
+            required_artifacts.as_slice(),
         )
         .await?;
 
         let loopback_artifact = find_artifact(&artifacts, loopback_artifact)?;
-        let plugin_artifact = find_artifact(&artifacts, &args.plugin_artifact)?;
 
         let loopback_dir = download_artifact(
             &client,
@@ -153,23 +176,28 @@ async fn run() -> Result<()> {
             loopback_artifact.id,
         )
         .await?;
-        let plugin_dir = download_artifact(
-            &client,
-            &args.repo_owner,
-            &args.repo_name,
-            plugin_artifact.id,
-        )
-        .await?;
 
         install_loopback_binary(&loopback_dir, &loopback_binary_name)?;
-        let plugin_source = find_file_recursive(plugin_dir.path(), &args.plugin_file_name)?;
-        install_plugin_into_vencord(
-            &installer_tools,
-            &plugin_source,
-            &args.plugin_file_name,
-            &args.vencord_plugin_folder,
-            relay_server_url.as_deref(),
-        )?;
+        if install_into_vencord {
+            let plugin_artifact = find_artifact(&artifacts, &args.plugin_artifact)?;
+            let plugin_dir = download_artifact(
+                &client,
+                &args.repo_owner,
+                &args.repo_name,
+                plugin_artifact.id,
+            )
+            .await?;
+            let plugin_source = find_file_recursive(plugin_dir.path(), &args.plugin_file_name)?;
+            install_plugin_into_vencord(
+                installer_tools
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("missing installer tools for vencord install"))?,
+                &plugin_source,
+                &args.plugin_file_name,
+                &args.vencord_plugin_folder,
+                relay_server_url.as_deref(),
+            )?;
+        }
     }
 
     configure_loopback_startup(
@@ -177,8 +205,19 @@ async fn run() -> Result<()> {
         relay_server_url.as_deref(),
     )?;
 
+    if !install_into_vencord {
+        print_kettu_install_instructions(&kettu_plugin_source_url);
+    }
+
     println!("Installation complete.");
     Ok(())
+}
+
+fn print_kettu_install_instructions(source_url: &str) {
+    println!("Kettu plugin install mode selected.");
+    println!("Install or update plugin from this source in Kettu:");
+    println!("  {source_url}");
+    println!("Kettu path: Profile > Settings > Plugins > + > Source URL");
 }
 
 #[derive(Debug)]
@@ -1302,17 +1341,17 @@ mod tests {
         let artifacts = vec![
             Artifact {
                 id: 1,
-                name: "key-intercept-plugin".to_string(),
+                name: "key-intercept-vencord-plugin".to_string(),
                 expired: true,
             },
             Artifact {
                 id: 2,
-                name: "key-intercept-plugin".to_string(),
+                name: "key-intercept-vencord-plugin".to_string(),
                 expired: false,
             },
         ];
 
-        let found = find_artifact(&artifacts, "key-intercept-plugin").unwrap();
+        let found = find_artifact(&artifacts, "key-intercept-vencord-plugin").unwrap();
         assert_eq!(found.id, 2);
     }
 
@@ -1338,14 +1377,14 @@ mod tests {
             },
             Artifact {
                 id: 2,
-                name: "key-intercept-plugin".to_string(),
+                name: "key-intercept-vencord-plugin".to_string(),
                 expired: false,
             },
         ];
 
         assert!(has_required_artifacts(
             &artifacts,
-            &["loopback-server-linux-x86_64", "key-intercept-plugin"],
+            &["loopback-server-linux-x86_64", "key-intercept-vencord-plugin"],
         ));
     }
 
@@ -1359,14 +1398,14 @@ mod tests {
             },
             Artifact {
                 id: 2,
-                name: "key-intercept-plugin".to_string(),
+                name: "key-intercept-vencord-plugin".to_string(),
                 expired: true,
             },
         ];
 
         assert!(!has_required_artifacts(
             &artifacts,
-            &["loopback-server-linux-x86_64", "key-intercept-plugin"],
+            &["loopback-server-linux-x86_64", "key-intercept-vencord-plugin"],
         ));
     }
 

@@ -1,0 +1,11 @@
+{
+  "name": "key-intercept-kettu-plugin",
+  "version": "1.0.0",
+  "description": "Kettu (iOS/Android) plugin using local loopback-style state with relay sync",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "license": "MIT"
+}
