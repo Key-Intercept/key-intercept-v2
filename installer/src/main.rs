@@ -34,7 +34,7 @@ struct Args {
     #[arg(long)]
     loopback_artifact: Option<String>,
 
-    #[arg(long, default_value = "key-intercept-plugin")]
+    #[arg(long, default_value = "key-intercept-vencord-plugin")]
     plugin_artifact: String,
 
     #[arg(long)]
@@ -49,7 +49,7 @@ struct Args {
     #[arg(long, default_value = "kettu-source")]
     plugin_install_mode: String,
 
-    #[arg(long, default_value = "https://key-intercept.github.io/key-intercept-kettu/")]
+    #[arg(long, default_value = "https://key-intercept.github.io/key-intercept-v2/")]
     kettu_plugin_source_url: String,
 }
 
@@ -1341,17 +1341,17 @@ mod tests {
         let artifacts = vec![
             Artifact {
                 id: 1,
-                name: "key-intercept-plugin".to_string(),
+                name: "key-intercept-vencord-plugin".to_string(),
                 expired: true,
             },
             Artifact {
                 id: 2,
-                name: "key-intercept-plugin".to_string(),
+                name: "key-intercept-vencord-plugin".to_string(),
                 expired: false,
             },
         ];
 
-        let found = find_artifact(&artifacts, "key-intercept-plugin").unwrap();
+        let found = find_artifact(&artifacts, "key-intercept-vencord-plugin").unwrap();
         assert_eq!(found.id, 2);
     }
 
@@ -1377,14 +1377,14 @@ mod tests {
             },
             Artifact {
                 id: 2,
-                name: "key-intercept-plugin".to_string(),
+                name: "key-intercept-vencord-plugin".to_string(),
                 expired: false,
             },
         ];
 
         assert!(has_required_artifacts(
             &artifacts,
-            &["loopback-server-linux-x86_64", "key-intercept-plugin"],
+            &["loopback-server-linux-x86_64", "key-intercept-vencord-plugin"],
         ));
     }
 
@@ -1398,14 +1398,14 @@ mod tests {
             },
             Artifact {
                 id: 2,
-                name: "key-intercept-plugin".to_string(),
+                name: "key-intercept-vencord-plugin".to_string(),
                 expired: true,
             },
         ];
 
         assert!(!has_required_artifacts(
             &artifacts,
-            &["loopback-server-linux-x86_64", "key-intercept-plugin"],
+            &["loopback-server-linux-x86_64", "key-intercept-vencord-plugin"],
         ));
     }
 
