@@ -1,0 +1,15 @@
+{
+  "name": "key intercept",
+  "description": "Key Intercept for Kettu (mobile) using loopback relay sync",
+  "authors": [
+    {
+      "name": "supersliser",
+      "id": "277137325342064640"
+    }
+  ],
+  "main": "src/index.js",
+  "hash": "",
+  "vendetta": {
+    "icon": "ic_message_edit"
+  }
+}

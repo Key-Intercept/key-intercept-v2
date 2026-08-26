@@ -2,7 +2,7 @@
 
 Self-hosted refactor split into three components:
 
-1. **Vencord plugin (desktop)** (`/plugin/keyInterceptSelfHosted.tsx`)
+1. **Vencord plugin (PC/Linux only)** (`/plugin/keyInterceptSelfHosted.tsx`)
    - Restores the original key-intercept message transform pipeline (rules, gag, pet, bimbo, horny, uwu, censored, drone).
    - Supports hybrid loopback transport:
      - `desktop_http`: reads/writes schema-shaped local config from the localhost loopback service.
@@ -11,13 +11,17 @@ Self-hosted refactor split into three components:
    - Exposes profile-embedded UI for config editing + allowed-editor ACL management.
    - Sends remote update commands through the relay server.
 
-2. **Loopback server (Rust)** (`/loopback-server`)
+2. **Kettu plugin (iOS/Android only)** (`/kettu-plugin`)
+   - Built as GitHub Pages source files (`manifest.json` + `index.js`) for Kettu plugin installs.
+   - Uses loopback-style local mobile state + relay sync (`/mobile/snapshot`, `/mobile/sync`) instead of legacy Supabase.
+
+3. **Loopback server (Rust)** (`/loopback-server`)
    - Stores config locally at `~/.config/key-intercept/config.json`.
    - Tracks allowed editor Discord IDs.
    - Enforces ACLs when config is read/updated.
    - Optionally self-registers with relay via `RELAY_SERVER_URL`.
 
-3. **Relay server (Rust)** (`/relay-server`)
+4. **Relay server (Rust)** (`/relay-server`)
    - Runs on VPS and tracks online users.
    - Forwards config fetch/update requests to registered loopback nodes.
    - Stores mobile snapshot state and queues remote updates for mobile owners while the app is closed.
@@ -29,6 +33,7 @@ Self-hosted refactor split into three components:
 cargo test -p loopback-server -p relay-server -p key-intercept-installer
 cargo check -p loopback-server -p relay-server -p key-intercept-installer
 npm --prefix plugin test
+npm --prefix kettu-plugin run build
 ```
 
 ## Installer (Rust, plugin + loopback)
@@ -76,5 +81,5 @@ The relay server is intended for manual VPS deployment and is not included in in
 
 - `CI`: runs plugin and Rust tests on pull requests and pushes.
 - `Build and Release`: runs on pushes to `main`, auto-generates the next `vX.Y.Z` tag from the latest existing tag, and keeps plugin systems separated:
-  - Builds and publishes **Kettu Android/iOS plugin files** to GitHub Pages (for Kettu source installs).
-  - Publishes **Vencord desktop plugin + loopback binaries + installer packages** to GitHub Releases (for manual desktop/Linux/Windows installer flows).
+  - Builds and publishes **Kettu iOS/Android plugin files** from `/kettu-plugin` to GitHub Pages (for Kettu source installs).
+  - Publishes **Vencord PC/Linux plugin + loopback binaries + installer packages** to GitHub Releases (for manual desktop/Linux/Windows installer flows).
