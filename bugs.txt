@@ -1,0 +1,9 @@
+- no ability to add dms to whitelist
+- pushes not adding to releases
+- need to do readme
+- need to clear branches
+x change installer text to be users discord id rather than owner-id
+x auto install npm/pnpm
+x make sure version is the correct version for pnpm (v11.9.0)
+- hide loopback console for windows
+x Aug 10 18:09:50 BACON-ARCH key-intercept-loopback[1407054]: 2026-08-10T17:09:50.945937Z ERROR loopback_server: failed to register with relay: error sending request for url (https://82.165.196.147:35491/register)
