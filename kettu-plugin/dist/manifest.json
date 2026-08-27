@@ -1,1 +1,15 @@
-{"name":"key intercept","description":"Key Intercept for Kettu (mobile) using loopback relay sync","authors":[{"name":"supersliser","id":"277137325342064640"}],"main":"index.js","hash":"2e606ee1baa618366988d46fefde793e3d9403c65f9691a7f68d10584a841e24","vendetta":{"icon":"ic_message_edit"}}
+{
+  "name": "key intercept",
+  "description": "Key Intercept for Kettu (mobile) using loopback relay sync",
+  "authors": [
+    {
+      "name": "supersliser",
+      "id": "277137325342064640"
+    }
+  ],
+  "main": "index.js",
+  "hash": "C4EC57856F25DACDCA61AED6833DFE24F787F4B1DAD6175407D61699C27D4D1B",
+  "vendetta": {
+    "icon": "ic_message_edit"
+  }
+}

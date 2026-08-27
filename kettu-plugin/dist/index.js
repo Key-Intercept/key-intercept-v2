@@ -1,4 +1,4 @@
-const LOG_PREFIX = "[key-intercept/kettu]";
+(function(vendetta){const LOG_PREFIX = "[key-intercept/kettu]";
 const MOBILE_STATE_KEY = "key-intercept/mobile-loopback-state/v1";
 const RELAY_URL_STORAGE_KEY = "key-intercept/relay-url";
 const DEFAULT_RELAY_URL = "http://82.165.196.147:45491";
@@ -750,7 +750,4 @@ const plugin = {
         }
     }
 };
-
-export const onLoad = plugin.onLoad;
-export const onUnload = plugin.onUnload;
-export default plugin;
+return plugin;})(vendetta)
