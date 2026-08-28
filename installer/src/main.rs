@@ -46,7 +46,7 @@ struct Args {
     #[arg(long, default_value = "key-intercept")]
     vencord_plugin_folder: String,
 
-    #[arg(long, default_value = "kettu-source")]
+    #[arg(long, default_value = "vencord-custom")]
     plugin_install_mode: String,
 
     #[arg(long, default_value = "https://key-intercept.github.io/key-intercept-v2/")]
@@ -109,7 +109,7 @@ async fn run() -> Result<()> {
         "vencord-custom" => true,
         other => {
             bail!(
-                "--plugin-install-mode only supports 'kettu-source' or legacy 'vencord-custom' (got '{other}')"
+                "--plugin-install-mode only supports 'kettu-source' or 'vencord-custom' (got '{other}')"
             )
         }
     };

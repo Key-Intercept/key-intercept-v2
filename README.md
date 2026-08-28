@@ -70,10 +70,10 @@ It installs:
 - loopback binary to `~/.local/bin/key-intercept-loopback` on Unix, or `%LOCALAPPDATA%/Programs/key-intercept/key-intercept-loopback.exe` on Windows
 - startup service via user `systemd` unit on Unix, or `%APPDATA%/Microsoft/Windows/Start Menu/Programs/Startup/key-intercept-loopback.cmd` on Windows
 
-Plugin install mode defaults to `kettu-source` and prints Kettu source install instructions (Profile > Settings > Plugins > + > Source URL).  
-Default Kettu source URL is `https://key-intercept.github.io/key-intercept-v2/` (GitHub Pages deployment from this repository workflow).
+Plugin install mode defaults to `vencord-custom` for desktop installs and installs the plugin file to `~/Vencord/src/userplugins/key-intercept/index.tsx`.
 
-Legacy `--plugin-install-mode vencord-custom` is still supported for custom Vencord installation and will install plugin file to `~/Vencord/src/userplugins/key-intercept/index.tsx`.
+`--plugin-install-mode kettu-source` remains available for mobile Kettu source installs and prints Kettu source install instructions (Profile > Settings > Plugins > + > Source URL).  
+Default Kettu source URL is `https://key-intercept.github.io/key-intercept-v2/` (GitHub Pages deployment from this repository workflow).
 
 The relay server is intended for manual VPS deployment and is not included in installer automation.
 
