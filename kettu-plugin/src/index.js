@@ -69,66 +69,64 @@ function parseNumericInput(raw, fallback, options = {}) {
     return output;
 }
 
-class NormalizedString {
-    constructor(str) {
-        this.str = str;
-        this.nfkdStr = "";
-        this.indices = [];
+function NormalizedString(str) {
+    this.str = str;
+    this.nfkdStr = "";
+    this.indices = [];
+    this.rebuild();
+}
+
+NormalizedString.prototype.replace = function (regex, fn) {
+    const regexWithIndices = new RegExp(regex, "gid");
+    let match;
+    while ((match = regexWithIndices.exec(this.nfkdStr)) != null) {
+        const [postStart, postEnd] = match.indices[0];
+        const [preStart, preEnd] = this.convert(postStart, postEnd);
+        this.str = this.str.substring(0, preStart) + fn(match[0]) + this.str.substring(preEnd);
         this.rebuild();
     }
+    return this.str;
+};
 
-    replace(regex, fn) {
-        const regexWithIndices = new RegExp(regex, "gid");
-        let match;
-        while ((match = regexWithIndices.exec(this.nfkdStr)) != null) {
-            const [postStart, postEnd] = match.indices[0];
-            const [preStart, preEnd] = this.convert(postStart, postEnd);
-            this.str = this.str.substring(0, preStart) + fn(match[0]) + this.str.substring(preEnd);
-            this.rebuild();
-        }
-        return this.str;
-    }
+NormalizedString.prototype.rebuild = function () {
+    this.nfkdStr = "";
+    this.indices = [];
 
-    rebuild() {
-        this.nfkdStr = "";
-        this.indices = [];
+    for (let i = 0; i < this.str.length; i++) {
+        let char = this.str[i];
+        let preEnd = i + 1;
+        const charCode = char.charCodeAt(0);
 
-        for (let i = 0; i < this.str.length; i++) {
-            let char = this.str[i];
-            let preEnd = i + 1;
-            const charCode = char.charCodeAt(0);
-
-            if (charCode >= 0xd800 && charCode <= 0xdfff) {
-                char = this.str.substring(i, i + 2);
-                preEnd = i + 2;
-                i++;
-            }
-
-            const normalized = char.normalize("NFKD");
-            const postStart = this.nfkdStr.length;
-            const postEnd = postStart + normalized.length;
-
-            this.indices.push({ pre: [preEnd - char.length, preEnd], post: [postStart, postEnd] });
-            this.nfkdStr += normalized;
-        }
-    }
-
-    convert(postStart, postEnd) {
-        let preStart = -1;
-        let preEnd = -1;
-
-        for (const index of this.indices) {
-            if (preStart === -1 && index.post[0] <= postStart && index.post[1] > postStart) {
-                preStart = index.pre[0];
-            }
-            if (preEnd === -1 && index.post[0] < postEnd && index.post[1] >= postEnd) {
-                preEnd = index.pre[1];
-            }
+        if (charCode >= 0xd800 && charCode <= 0xdfff) {
+            char = this.str.substring(i, i + 2);
+            preEnd = i + 2;
+            i++;
         }
 
-        return [preStart, preEnd];
+        const normalized = char.normalize("NFKD");
+        const postStart = this.nfkdStr.length;
+        const postEnd = postStart + normalized.length;
+
+        this.indices.push({ pre: [preEnd - char.length, preEnd], post: [postStart, postEnd] });
+        this.nfkdStr += normalized;
     }
-}
+};
+
+NormalizedString.prototype.convert = function (postStart, postEnd) {
+    let preStart = -1;
+    let preEnd = -1;
+
+    for (const index of this.indices) {
+        if (preStart === -1 && index.post[0] <= postStart && index.post[1] > postStart) {
+            preStart = index.pre[0];
+        }
+        if (preEnd === -1 && index.post[0] < postEnd && index.post[1] >= postEnd) {
+            preEnd = index.pre[1];
+        }
+    }
+
+    return [preStart, preEnd];
+};
 
 function mergeScopeFilterItems(value) {
     return Array.isArray(value)
