@@ -1136,6 +1136,7 @@ const plugin = {
             unpatchSendMessage = null;
         }
     },
+    settings: ConfigPanel,
     userProfileBadge: {
         id: "key-intercept-controls",
         key: "key-intercept-controls",
