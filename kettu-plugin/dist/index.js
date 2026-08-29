@@ -55,6 +55,8 @@ const defaultLocalConfig = {
 let interceptConfig = cloneDefaultConfig();
 let unpatchSendMessage = null;
 let findByProps = null;
+let ReactRef = null;
+let ReactNativeRef = null;
 
 function cloneDefaultConfig() {
     return JSON.parse(JSON.stringify(defaultLocalConfig));
@@ -336,6 +338,130 @@ function syncInAppLoopback(relayUrl, ownerId) {
             });
         });
     });
+}
+
+function currentUser() {
+    const UserStore = findByProps?.("getCurrentUser", "getUser");
+    return UserStore?.getCurrentUser?.() ?? { id: "" };
+}
+
+function validateDiscordId(value) {
+    return typeof value === "string" && /^\d+$/.test(value);
+}
+
+function readLocalConfig(ownerId) {
+    return mergeLocalConfig(readMobileState(ownerId).config);
+}
+
+function saveLocalConfig(ownerId, config, editorId = ownerId) {
+    const previous = readMobileState(ownerId);
+    const mergedConfig = mergeLocalConfig(config);
+    const nextState = writeMobileState({
+        owner_discord_id: ownerId,
+        config: mergedConfig,
+        allowed_editors: previous.allowed_editors,
+        revision: previous.revision + 1,
+        last_writer_id: editorId
+    });
+    interceptConfig = mergedConfig;
+    return uploadMobileSnapshot(currentRelayUrl(), ownerId).then(() => nextState);
+}
+
+function pushRemoteConfig(relayUrl, editorId, targetUserId, config) {
+    return fetch(`${relayBaseUrl(relayUrl)}/users/${targetUserId}/config`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+            editor_id: editorId,
+            config: mergeLocalConfig(config)
+        })
+    }).then(response => {
+        if (!response.ok) throw new Error(`Relay update failed: ${response.status}`);
+    });
+}
+
+function readRemoteConfig(relayUrl, requesterId, targetUserId) {
+    return fetch(
+        `${relayBaseUrl(relayUrl)}/users/${targetUserId}/config?requester_id=${encodeURIComponent(requesterId)}`,
+        { cache: "no-store" }
+    ).then(response => {
+        if (!response.ok) throw new Error(`Relay config read failed: ${response.status}`);
+        return response.json();
+    }).then(payload => mergeLocalConfig(payload?.config ?? payload));
+}
+
+function requestRemoteAccess(relayUrl, requesterId, targetUserId) {
+    return fetch(`${relayBaseUrl(relayUrl)}/users/${targetUserId}/access-requests`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ requester_id: requesterId })
+    }).then(response => {
+        if (!response.ok) throw new Error(`Relay access request failed: ${response.status}`);
+    });
+}
+
+function getAccessRequests(relayUrl, ownerId) {
+    return fetch(
+        `${relayBaseUrl(relayUrl)}/users/${ownerId}/access-requests?requester_id=${encodeURIComponent(ownerId)}`,
+        { cache: "no-store" }
+    ).then(response => {
+        if (!response.ok) throw new Error(`Failed loading access requests: ${response.status}`);
+        return response.json();
+    }).then(payload => ({
+        requests: Array.isArray(payload?.requests) ? payload.requests.filter(validateDiscordId) : []
+    }));
+}
+
+function approveAccessRequest(relayUrl, ownerId, requesterId) {
+    return fetch(
+        `${relayBaseUrl(relayUrl)}/users/${ownerId}/access-requests/${encodeURIComponent(requesterId)}/approve`,
+        {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ owner_id: ownerId })
+        }
+    ).then(response => {
+        if (!response.ok) throw new Error(`Failed approving access request: ${response.status}`);
+    });
+}
+
+function denyAccessRequest(relayUrl, ownerId, requesterId) {
+    return fetch(
+        `${relayBaseUrl(relayUrl)}/users/${ownerId}/access-requests/${encodeURIComponent(requesterId)}?requester_id=${encodeURIComponent(ownerId)}`,
+        { method: "DELETE" }
+    ).then(response => {
+        if (!response.ok) throw new Error(`Failed denying access request: ${response.status}`);
+    });
+}
+
+function getAllowedEditors(ownerId) {
+    const state = readMobileState(ownerId);
+    return {
+        allowed_editors: Array.isArray(state.allowed_editors) ? state.allowed_editors.filter(validateDiscordId) : []
+    };
+}
+
+function addAllowedEditor(ownerId, editorId) {
+    if (!validateDiscordId(editorId)) throw new Error("Editor ID must be a numeric Discord ID");
+    const state = readMobileState(ownerId);
+    if (state.allowed_editors.includes(editorId)) return Promise.resolve();
+    return writeMobileState({
+        ...state,
+        allowed_editors: [...state.allowed_editors, editorId],
+        revision: state.revision + 1,
+        last_writer_id: ownerId
+    }) && uploadMobileSnapshot(currentRelayUrl(), ownerId);
+}
+
+function removeAllowedEditor(ownerId, editorId) {
+    const state = readMobileState(ownerId);
+    if (!state.allowed_editors.includes(editorId)) return Promise.resolve();
+    return writeMobileState({
+        ...state,
+        allowed_editors: state.allowed_editors.filter(value => value !== editorId),
+        revision: state.revision + 1,
+        last_writer_id: ownerId
+    }) && uploadMobileSnapshot(currentRelayUrl(), ownerId);
 }
 
 function getPreviousMessage(channelId) {
@@ -734,9 +860,269 @@ function patchSendMessage() {
     });
 }
 
+function getProfileUserId(props) {
+    const candidates = [
+        props?.user?.id,
+        props?.profileUserId,
+        props?.userId,
+        props?.profile?.userId,
+        props?.displayProfile?.userId
+    ];
+    return candidates.find(value => typeof value === "string" && value.length > 0) ?? null;
+}
+
+function getReactTools() {
+    const React = ReactRef ?? globalThis?.vendetta?.metro?.common?.React ?? null;
+    const ReactNative = ReactNativeRef ?? globalThis?.vendetta?.metro?.common?.ReactNative ?? null;
+    return { React, ReactNative };
+}
+
+function ConfigPanel(props) {
+    const { React, ReactNative } = getReactTools();
+    if (!React || !ReactNative) return null;
+    const { ScrollView, View, Text, TextInput, Pressable } = ReactNative;
+    if (!ScrollView || !View || !Text || !TextInput || !Pressable) return null;
+    const h = React.createElement;
+    const activeUserId = currentUser().id;
+    const profileUserId = getProfileUserId(props) ?? activeUserId;
+    const isOwnProfile = profileUserId === activeUserId;
+
+    const [relayUrl, setRelayUrl] = React.useState(currentRelayUrl());
+    const [status, setStatus] = React.useState("");
+    const [configText, setConfigText] = React.useState(JSON.stringify(interceptConfig, null, 2));
+    const [newEditorId, setNewEditorId] = React.useState("");
+    const [allowedEditors, setAllowedEditors] = React.useState([]);
+    const [pendingRequests, setPendingRequests] = React.useState([]);
+    const [canViewRemote, setCanViewRemote] = React.useState(isOwnProfile);
+
+    const refresh = React.useCallback(() => {
+        if (!activeUserId) return Promise.resolve();
+        const nextRelayUrl = currentRelayUrl();
+        setRelayUrl(nextRelayUrl);
+        if (isOwnProfile) {
+            return syncInAppLoopback(nextRelayUrl, activeUserId).catch(() => {}).then(() => {
+                const local = readLocalConfig(activeUserId);
+                interceptConfig = local;
+                setConfigText(JSON.stringify(local, null, 2));
+                setAllowedEditors(getAllowedEditors(activeUserId).allowed_editors);
+                return getAccessRequests(nextRelayUrl, activeUserId).catch(() => ({ requests: [] }));
+            }).then(access => {
+                setPendingRequests(access.requests);
+                setCanViewRemote(true);
+                setStatus("Loaded local profile config");
+            }).catch(err => {
+                setStatus(String(err));
+            });
+        }
+        return readRemoteConfig(nextRelayUrl, activeUserId, profileUserId).then(remote => {
+            setConfigText(JSON.stringify(remote, null, 2));
+            setCanViewRemote(true);
+            setStatus(`Loaded ${profileUserId}'s profile config`);
+        }).catch(err => {
+            setCanViewRemote(false);
+            setStatus(String(err));
+        });
+    }, [activeUserId, isOwnProfile, profileUserId]);
+
+    React.useEffect(() => {
+        refresh();
+    }, [refresh]);
+
+    const saveRelayUrl = React.useCallback(() => {
+        const next = relayUrl.trim();
+        const storage = getStorageBackend();
+        if (!next) {
+            setStatus("Relay URL cannot be empty");
+            return;
+        }
+        storage?.setItem(RELAY_URL_STORAGE_KEY, next);
+        setStatus("Saved relay URL");
+    }, [relayUrl]);
+
+    const saveConfigFromText = React.useCallback(() => {
+        if (!activeUserId) return Promise.resolve();
+        let parsed;
+        try {
+            parsed = JSON.parse(configText);
+        } catch {
+            setStatus("Config JSON is invalid");
+            return Promise.resolve();
+        }
+        const merged = mergeLocalConfig(parsed);
+        if (isOwnProfile) {
+            return saveLocalConfig(activeUserId, merged, activeUserId).then(() => {
+                setConfigText(JSON.stringify(merged, null, 2));
+                setStatus("Saved local profile config");
+            }).catch(err => setStatus(String(err)));
+        }
+        return pushRemoteConfig(currentRelayUrl(), activeUserId, profileUserId, merged).then(() => {
+            setConfigText(JSON.stringify(merged, null, 2));
+            setStatus(`Saved ${profileUserId}'s profile config`);
+        }).catch(err => setStatus(String(err)));
+    }, [activeUserId, configText, isOwnProfile, profileUserId]);
+
+    const button = (label, onPress, danger = false) => h(
+        Pressable,
+        {
+            key: label,
+            onPress,
+            style: {
+                paddingVertical: 10,
+                paddingHorizontal: 12,
+                borderRadius: 8,
+                backgroundColor: danger ? "#da373c" : "#5865f2",
+                marginTop: 6
+            }
+        },
+        h(Text, { style: { color: "#ffffff", fontWeight: "600" } }, label)
+    );
+
+    const editorRows = allowedEditors.map(editor => h(
+        View,
+        {
+            key: `editor-${editor}`,
+            style: {
+                marginTop: 8,
+                padding: 8,
+                borderRadius: 8,
+                borderWidth: 1,
+                borderColor: "#3f4147"
+            }
+        },
+        h(Text, { style: { color: "#f2f3f5", marginBottom: 6 } }, editor),
+        button(`Remove ${editor}`, () => removeAllowedEditor(activeUserId, editor).then(refresh), true)
+    ));
+
+    const requestRows = pendingRequests.map(requesterId => h(
+        View,
+        {
+            key: `request-${requesterId}`,
+            style: {
+                marginTop: 8,
+                padding: 8,
+                borderRadius: 8,
+                borderWidth: 1,
+                borderColor: "#3f4147"
+            }
+        },
+        h(Text, { style: { color: "#f2f3f5" } }, requesterId),
+        button(`Approve ${requesterId}`, () => approveAccessRequest(currentRelayUrl(), activeUserId, requesterId).then(refresh)),
+        button(`Deny ${requesterId}`, () => denyAccessRequest(currentRelayUrl(), activeUserId, requesterId).then(refresh), true)
+    ));
+
+    return h(
+        ScrollView,
+        {
+            style: { maxHeight: 620, width: "100%" },
+            contentContainerStyle: {
+                backgroundColor: "#313338",
+                borderRadius: 12,
+                padding: 12
+            }
+        },
+        h(Text, { style: { color: "#f2f3f5", fontSize: 16, fontWeight: "700" } }, "key-intercept control center"),
+        h(Text, { style: { color: "#b5bac1", marginTop: 4 } }, isOwnProfile ? "Your profile configuration" : `Viewing profile ${profileUserId}`),
+
+        isOwnProfile ? h(
+            View,
+            { style: { marginTop: 12 } },
+            h(Text, { style: { color: "#f2f3f5", marginBottom: 6 } }, "Relay URL"),
+            h(TextInput, {
+                value: relayUrl,
+                onChangeText: setRelayUrl,
+                autoCapitalize: "none",
+                autoCorrect: false,
+                style: {
+                    color: "#f2f3f5",
+                    borderWidth: 1,
+                    borderColor: "#3f4147",
+                    borderRadius: 8,
+                    paddingHorizontal: 10,
+                    paddingVertical: 8
+                }
+            }),
+            button("Save Relay URL", saveRelayUrl)
+        ) : null,
+
+        !isOwnProfile && !canViewRemote ? h(
+            View,
+            { style: { marginTop: 12 } },
+            h(Text, { style: { color: "#f2f3f5" } }, "You do not currently have permission to view this profile config."),
+            button("Request Access via Relay", () => requestRemoteAccess(currentRelayUrl(), activeUserId, profileUserId).then(() => {
+                setStatus(`Requested config access from ${profileUserId}`);
+            }).catch(err => setStatus(String(err))))
+        ) : null,
+
+        (isOwnProfile || canViewRemote) ? h(
+            View,
+            { style: { marginTop: 12 } },
+            h(Text, { style: { color: "#f2f3f5", marginBottom: 6 } }, "Config JSON"),
+            h(TextInput, {
+                value: configText,
+                onChangeText: setConfigText,
+                multiline: true,
+                textAlignVertical: "top",
+                autoCapitalize: "none",
+                autoCorrect: false,
+                style: {
+                    color: "#f2f3f5",
+                    borderWidth: 1,
+                    borderColor: "#3f4147",
+                    borderRadius: 8,
+                    paddingHorizontal: 10,
+                    paddingVertical: 8,
+                    minHeight: 220
+                }
+            }),
+            button("Save Config", saveConfigFromText),
+            button("Reload", refresh)
+        ) : null,
+
+        isOwnProfile ? h(
+            View,
+            { style: { marginTop: 12 } },
+            h(Text, { style: { color: "#f2f3f5", fontWeight: "700" } }, "Allowed Editors"),
+            h(TextInput, {
+                value: newEditorId,
+                onChangeText: setNewEditorId,
+                placeholder: "Discord ID",
+                placeholderTextColor: "#80848e",
+                keyboardType: "numeric",
+                style: {
+                    color: "#f2f3f5",
+                    borderWidth: 1,
+                    borderColor: "#3f4147",
+                    borderRadius: 8,
+                    paddingHorizontal: 10,
+                    paddingVertical: 8,
+                    marginTop: 6
+                }
+            }),
+            button("Add Editor", () => addAllowedEditor(activeUserId, newEditorId.trim()).then(() => {
+                setNewEditorId("");
+                return refresh();
+            }).catch(err => setStatus(String(err)))),
+            ...editorRows
+        ) : null,
+
+        isOwnProfile ? h(
+            View,
+            { style: { marginTop: 12 } },
+            h(Text, { style: { color: "#f2f3f5", fontWeight: "700" } }, "Pending Requests"),
+            requestRows.length
+                ? requestRows
+                : h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, "No pending requests")
+        ) : null,
+
+        h(Text, { style: { color: "#b5bac1", marginTop: 12 } }, status)
+    );
+}
+
 const plugin = {
     onLoad: () => {
         findByProps = globalThis?.vendetta?.metro?.findByProps ?? null;
+        ReactRef = globalThis?.vendetta?.metro?.common?.React ?? null;
+        ReactNativeRef = globalThis?.vendetta?.metro?.common?.ReactNative ?? null;
         if (!findByProps) {
             throw new Error("Vendetta modules unavailable");
         }
@@ -749,6 +1135,12 @@ const plugin = {
             unpatchSendMessage();
             unpatchSendMessage = null;
         }
+    },
+    userProfileBadge: {
+        id: "key-intercept-controls",
+        key: "key-intercept-controls",
+        description: "key-intercept controls",
+        component: ConfigPanel
     }
 };
 return plugin;})(vendetta)
