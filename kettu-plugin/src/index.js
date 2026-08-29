@@ -292,9 +292,9 @@ function writeMobileState(state) {
     return normalized;
 }
 
-async function uploadMobileSnapshot(relayUrl, ownerId) {
+function uploadMobileSnapshot(relayUrl, ownerId) {
     const state = readMobileState(ownerId);
-    const response = await fetch(`${relayBaseUrl(relayUrl)}/users/${ownerId}/mobile/snapshot`, {
+    return fetch(`${relayBaseUrl(relayUrl)}/users/${ownerId}/mobile/snapshot`, {
         method: "POST",
         headers: {
             "content-type": "application/json"
@@ -306,33 +306,35 @@ async function uploadMobileSnapshot(relayUrl, ownerId) {
             config: state.config,
             allowed_editors: state.allowed_editors
         })
+    }).then(response => {
+        if (!response.ok && response.status !== 404) {
+            throw new Error(`Mobile snapshot sync failed: ${response.status}`);
+        }
     });
-    if (!response.ok && response.status !== 404) {
-        throw new Error(`Mobile snapshot sync failed: ${response.status}`);
-    }
 }
 
-async function syncInAppLoopback(relayUrl, ownerId) {
+function syncInAppLoopback(relayUrl, ownerId) {
     const local = readMobileState(ownerId);
-    const response = await fetch(
+    return fetch(
         `${relayBaseUrl(relayUrl)}/users/${ownerId}/mobile/sync?requester_id=${encodeURIComponent(ownerId)}&after_revision=${local.revision}`,
         { cache: "no-store" }
-    );
-    if (response.status === 404) {
-        await uploadMobileSnapshot(relayUrl, ownerId);
-        return;
-    }
-    if (!response.ok) throw new Error(`Mobile relay sync failed: ${response.status}`);
-    const payload = await response.json();
-    const relayRevision = Number.isFinite(payload.revision) ? payload.revision : local.revision;
-    if (relayRevision <= local.revision) return;
+    ).then(response => {
+        if (response.status === 404) {
+            return uploadMobileSnapshot(relayUrl, ownerId);
+        }
+        if (!response.ok) throw new Error(`Mobile relay sync failed: ${response.status}`);
+        return response.json().then(payload => {
+            const relayRevision = Number.isFinite(payload.revision) ? payload.revision : local.revision;
+            if (relayRevision <= local.revision) return;
 
-    writeMobileState({
-        owner_discord_id: ownerId,
-        config: mergeLocalConfig(payload.config),
-        allowed_editors: Array.isArray(payload.allowed_editors) ? payload.allowed_editors : local.allowed_editors,
-        revision: relayRevision,
-        last_writer_id: typeof payload.last_writer_id === "string" ? payload.last_writer_id : ownerId
+            writeMobileState({
+                owner_discord_id: ownerId,
+                config: mergeLocalConfig(payload.config),
+                allowed_editors: Array.isArray(payload.allowed_editors) ? payload.allowed_editors : local.allowed_editors,
+                revision: relayRevision,
+                last_writer_id: typeof payload.last_writer_id === "string" ? payload.last_writer_id : ownerId
+            });
+        });
     });
 }
 
@@ -699,17 +701,16 @@ function shouldApplyToScope(channelId) {
     return true;
 }
 
-async function bootstrapConfig() {
+function bootstrapConfig() {
     const UserStore = findByProps?.("getCurrentUser", "getUser");
     const currentUser = UserStore?.getCurrentUser?.();
-    if (!currentUser?.id) return;
-    try {
-        await syncInAppLoopback(currentRelayUrl(), currentUser.id);
+    if (!currentUser?.id) return Promise.resolve();
+    return syncInAppLoopback(currentRelayUrl(), currentUser.id).then(() => {
         interceptConfig = mergeLocalConfig(readMobileState(currentUser.id).config);
         console.log(`${LOG_PREFIX} config ready`);
-    } catch (err) {
+    }).catch(err => {
         console.log(`${LOG_PREFIX} config sync failed`, err);
-    }
+    });
 }
 
 function patchSendMessage() {
@@ -734,13 +735,14 @@ function patchSendMessage() {
 }
 
 const plugin = {
-    onLoad: async () => {
+    onLoad: () => {
         findByProps = globalThis?.vendetta?.metro?.findByProps ?? null;
         if (!findByProps) {
             throw new Error("Vendetta modules unavailable");
         }
-        await bootstrapConfig();
-        patchSendMessage();
+        return bootstrapConfig().then(() => {
+            patchSendMessage();
+        });
     },
     onUnload: () => {
         if (unpatchSendMessage) {
