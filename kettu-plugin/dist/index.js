@@ -77,10 +77,11 @@ function NormalizedString(str) {
 }
 
 NormalizedString.prototype.replace = function (regex, fn) {
-    const regexWithIndices = new RegExp(regex, "gid");
+    const regexWithIndices = new RegExp(regex, "gi");
     let match;
     while ((match = regexWithIndices.exec(this.nfkdStr)) != null) {
-        const [postStart, postEnd] = match.indices[0];
+        const postStart = match.index;
+        const postEnd = postStart + match[0].length;
         const [preStart, preEnd] = this.convert(postStart, postEnd);
         this.str = this.str.substring(0, preStart) + fn(match[0]) + this.str.substring(preEnd);
         this.rebuild();
