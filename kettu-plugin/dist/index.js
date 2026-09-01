@@ -103,6 +103,18 @@ function fromLines(value) {
         .filter(Boolean);
 }
 
+function buildConfigSnapshot(config, censoredWordsText) {
+    const merged = mergeLocalConfig({
+        ...config,
+        pet_words: getPetWordsForType(config?.config?.pet_type, config?.pet_words),
+        censored_words: fromLines(censoredWordsText)
+    });
+    return {
+        merged,
+        snapshot: JSON.stringify(merged)
+    };
+}
+
 function createTimeoutAdjustmentDefaults() {
     return modeTimeoutFields.reduce((acc, field) => {
         acc[field.key] = "1";
@@ -446,7 +458,11 @@ function readRemoteConfig(relayUrl, requesterId, targetUserId) {
         `${relayBaseUrl(relayUrl)}/users/${targetUserId}/config?requester_id=${encodeURIComponent(requesterId)}`,
         { cache: "no-store" }
     ).then(response => {
-        if (!response.ok) throw new Error(`Relay config read failed: ${response.status}`);
+        if (!response.ok) {
+            const err = new Error(`Relay config read failed: ${response.status}`);
+            err.status = response.status;
+            throw err;
+        }
         return response.json();
     }).then(payload => mergeLocalConfig(payload?.config ?? payload));
 }
@@ -924,12 +940,32 @@ function patchSendMessage() {
 function getProfileUserId(props) {
     const candidates = [
         props?.user?.id,
+        props?.user?.user?.id,
         props?.profileUserId,
         props?.userId,
+        props?.profile?.id,
+        props?.profile?.user?.id,
         props?.profile?.userId,
-        props?.displayProfile?.userId
+        props?.displayProfile?.userId,
+        props?.account?.id
     ];
     return candidates.find(value => typeof value === "string" && value.length > 0) ?? null;
+}
+
+function getProfilePanelOpenInfo(props) {
+    const openStateCandidates = [
+        props?.isOpen,
+        props?.open,
+        props?.isActive,
+        props?.active,
+        props?.isVisible,
+        props?.visible
+    ];
+    const explicitState = openStateCandidates.find(value => typeof value === "boolean");
+    return {
+        isOpen: explicitState ?? true,
+        hasExplicitState: explicitState !== undefined
+    };
 }
 
 function getReactTools() {
@@ -947,6 +983,9 @@ function ConfigPanel(props) {
     const activeUserId = currentUser().id;
     const profileUserId = getProfileUserId(props) ?? activeUserId;
     const isOwnProfile = profileUserId === activeUserId;
+    const panelOpenInfo = getProfilePanelOpenInfo(props);
+    const isPanelOpen = panelOpenInfo.isOpen;
+    const hasExplicitPanelOpenState = panelOpenInfo.hasExplicitState;
 
     const [relayUrl, setRelayUrl] = React.useState(currentRelayUrl());
     const [status, setStatus] = React.useState("");
@@ -960,45 +999,67 @@ function ConfigPanel(props) {
     const [groupTimeoutAdjustments, setGroupTimeoutAdjustments] = React.useState({});
     const [isRulesEditorOpen, setIsRulesEditorOpen] = React.useState(false);
     const [nowMs, setNowMs] = React.useState(() => Date.now());
+    const skipAutosaveRef = React.useRef(true);
+    const lastSavedSnapshotRef = React.useRef("");
+    const saveQueueRef = React.useRef(Promise.resolve());
+    const refreshInFlightRef = React.useRef(false);
 
     const updateFromConfig = React.useCallback(config => {
         const merged = mergeLocalConfig(config);
         interceptConfig = merged;
+        skipAutosaveRef.current = true;
         setEditableConfig(merged);
         setCensoredWordsText(toLines(merged.censored_words));
+        lastSavedSnapshotRef.current = JSON.stringify(merged);
     }, []);
 
-    const refresh = React.useCallback(() => {
-        if (!activeUserId) return Promise.resolve();
+    const refresh = React.useCallback(async () => {
+        if (refreshInFlightRef.current || !isPanelOpen || !activeUserId) return;
+        refreshInFlightRef.current = true;
         const nextRelayUrl = currentRelayUrl();
         setRelayUrl(nextRelayUrl);
-        if (isOwnProfile) {
-            return syncInAppLoopback(nextRelayUrl, activeUserId).catch(() => {}).then(() => {
+        try {
+            if (isOwnProfile) {
+                await syncInAppLoopback(nextRelayUrl, activeUserId).catch(() => {});
                 const local = readLocalConfig(activeUserId);
                 updateFromConfig(local);
                 setAllowedEditors(getAllowedEditors(activeUserId).allowed_editors.sort());
-                return getAccessRequests(nextRelayUrl, activeUserId).catch(() => ({ requests: [] }));
-            }).then(access => {
+                const access = await getAccessRequests(nextRelayUrl, activeUserId).catch(() => ({ requests: [] }));
                 setPendingRequests(access.requests.sort());
                 setCanViewRemote(true);
                 setStatus("Loaded local profile config");
-            }).catch(err => {
-                setStatus(String(err));
-            });
-        }
-        return readRemoteConfig(nextRelayUrl, activeUserId, profileUserId).then(remote => {
+                return;
+            }
+
+            const remote = await readRemoteConfig(nextRelayUrl, activeUserId, profileUserId);
             updateFromConfig(remote);
             setCanViewRemote(true);
             setStatus(`Loaded ${profileUserId}'s profile config`);
-        }).catch(err => {
+        } catch (err) {
             setCanViewRemote(false);
-            setStatus(String(err));
-        });
-    }, [activeUserId, isOwnProfile, profileUserId, updateFromConfig]);
+            if (err?.status === 403) {
+                setStatus(`No access to ${profileUserId}'s config. Request permission below.`);
+            } else {
+                setStatus(String(err));
+            }
+        } finally {
+            refreshInFlightRef.current = false;
+        }
+    }, [activeUserId, isOwnProfile, isPanelOpen, profileUserId, updateFromConfig]);
 
     React.useEffect(() => {
-        refresh();
-    }, [refresh]);
+        refresh().catch(err => setStatus(String(err)));
+    }, [refresh, isPanelOpen]);
+
+    React.useEffect(() => {
+        if (!isPanelOpen || hasExplicitPanelOpenState) return;
+        const handle = setInterval(() => {
+            const { snapshot } = buildConfigSnapshot(editableConfig, censoredWordsText);
+            if (snapshot !== lastSavedSnapshotRef.current) return;
+            refresh().catch(err => setStatus(String(err)));
+        }, 1500);
+        return () => clearInterval(handle);
+    }, [censoredWordsText, editableConfig, hasExplicitPanelOpenState, isPanelOpen, refresh]);
 
     React.useEffect(() => {
         const handle = setInterval(() => setNowMs(Date.now()), 1000);
@@ -1016,24 +1077,34 @@ function ConfigPanel(props) {
         setStatus("Saved relay URL");
     }, [relayUrl]);
 
-    const saveStructuredConfig = React.useCallback(() => {
+    const saveStructuredConfig = React.useCallback(baseConfig => {
         if (!activeUserId) return Promise.resolve();
-        const merged = mergeLocalConfig({
-            ...editableConfig,
-            pet_words: getPetWordsForType(editableConfig.config.pet_type, editableConfig.pet_words),
-            censored_words: fromLines(censoredWordsText)
-        });
+        const { merged } = buildConfigSnapshot(baseConfig, censoredWordsText);
         if (isOwnProfile) {
             return saveLocalConfig(activeUserId, merged, activeUserId).then(() => {
-                updateFromConfig(merged);
-                setStatus("Saved local profile config");
-            }).catch(err => setStatus(String(err)));
+                lastSavedSnapshotRef.current = JSON.stringify(merged);
+                setStatus("Auto-saved local profile config");
+            }).catch(err => setStatus(`Auto-save failed: ${String(err)}`));
         }
         return pushRemoteConfig(currentRelayUrl(), activeUserId, profileUserId, merged).then(() => {
-            updateFromConfig(merged);
-            setStatus(`Saved ${profileUserId}'s profile config`);
-        }).catch(err => setStatus(String(err)));
-    }, [activeUserId, censoredWordsText, editableConfig, isOwnProfile, profileUserId, updateFromConfig]);
+            lastSavedSnapshotRef.current = JSON.stringify(merged);
+            setStatus(`Auto-saved ${profileUserId}'s profile config`);
+        }).catch(err => setStatus(`Auto-save failed: ${String(err)}`));
+    }, [activeUserId, censoredWordsText, isOwnProfile, profileUserId]);
+
+    React.useEffect(() => {
+        if (!(isOwnProfile || canViewRemote) || !isPanelOpen) return;
+        if (skipAutosaveRef.current) {
+            skipAutosaveRef.current = false;
+            return;
+        }
+        const { merged, snapshot } = buildConfigSnapshot(editableConfig, censoredWordsText);
+        if (snapshot === lastSavedSnapshotRef.current) return;
+        setStatus("Auto-saving...");
+        saveQueueRef.current = saveQueueRef.current
+            .catch(() => {})
+            .then(() => saveStructuredConfig(merged));
+    }, [canViewRemote, censoredWordsText, editableConfig, isOwnProfile, isPanelOpen, saveStructuredConfig]);
 
     const setTimeoutValue = React.useCallback((field, nextIso) => {
         setEditableConfig(prev => ({
@@ -1395,6 +1466,7 @@ function ConfigPanel(props) {
         },
         h(Text, { style: { color: "#f2f3f5", fontSize: 16, fontWeight: "700" } }, "key-intercept control center"),
         h(Text, { style: { color: "#b5bac1", marginTop: 4 } }, isOwnProfile ? "Your profile configuration" : `Viewing profile ${profileUserId}`),
+        h(Text, { style: { color: "#b5bac1", marginTop: 4 } }, "Open this panel from any user profile to view or edit that user's config."),
 
         isOwnProfile ? section("relay-url", "Relay", h(
             View,
@@ -1415,8 +1487,8 @@ function ConfigPanel(props) {
             null,
             h(Text, { style: { color: "#f2f3f5", marginTop: 6 } }, "You do not currently have permission to view this profile config."),
             button("Request Access via Relay", () => requestRemoteAccess(currentRelayUrl(), activeUserId, profileUserId).then(() => {
-                setStatus(`Requested config access from ${profileUserId}`);
-            }).catch(err => setStatus(String(err))))
+                setStatus(`Access request sent to ${profileUserId}`);
+            }).catch(err => setStatus(`Access request failed: ${String(err)}`)))
         )) : null,
 
         (isOwnProfile || canViewRemote) ? section("gag", "Gag", renderTimeoutControls("gag_end", "Gag timeout")) : null,
@@ -1610,11 +1682,13 @@ function ConfigPanel(props) {
 
         (isOwnProfile || canViewRemote) ? rulesEditor : null,
 
-        (isOwnProfile || canViewRemote) ? section("save-controls", "Save", h(
+        (isOwnProfile || canViewRemote) ? section("sync-controls", "Sync", h(
             View,
-            { style: { flexDirection: "row", flexWrap: "wrap", marginTop: 6 } },
-            button("Save Config", saveStructuredConfig, { noTopMargin: true, key: "save-config" }),
-            button("Reload", refresh, { noTopMargin: true, key: "reload-config" })
+            null,
+            h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, "Changes auto-save as you edit."),
+            h(View, { style: { flexDirection: "row", flexWrap: "wrap", marginTop: 6 } },
+                button("Reload", () => refresh().catch(err => setStatus(String(err))), { noTopMargin: true, key: "reload-config" })
+            )
         )) : null,
 
         isOwnProfile ? section("allowed-editors", "Allowed Editors", h(
