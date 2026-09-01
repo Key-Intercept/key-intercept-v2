@@ -14,6 +14,7 @@ Self-hosted refactor split into three components:
 2. **Kettu plugin (iOS/Android only)** (`/kettu-plugin`)
    - Built as GitHub Pages source files (`manifest.json` + `index.js`) for Kettu plugin installs.
    - Uses loopback-style local mobile state + relay sync (`/mobile/snapshot`, `/mobile/sync`) instead of legacy Supabase.
+   - Includes profile hook diagnostics + fallback targeting workflow documented in `/home/runner/work/key-intercept-v2/key-intercept-v2/kettu-plugin/MOBILE_PROFILE_HOOKING.md`.
 
 3. **Loopback server (Rust)** (`/loopback-server`)
    - Stores config locally at `~/.config/key-intercept/config.json`.
