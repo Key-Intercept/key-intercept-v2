@@ -4,6 +4,27 @@ const RELAY_URL_STORAGE_KEY = "key-intercept/relay-url";
 const DEFAULT_RELAY_URL = "http://82.165.196.147:45491";
 const farFuture = "9999-12-31T23:59:59.000Z";
 const epoch = "1970-01-01T00:00:00.000Z";
+const permanentTimestamp = new Date(farFuture).getTime();
+
+const modeTimeoutFields = [
+    { key: "gag_end", label: "Gag timeout" },
+    { key: "pet_end", label: "Pet timeout" },
+    { key: "bimbo_end", label: "Bimbo timeout" },
+    { key: "horny_end", label: "Horny timeout" },
+    { key: "drone_end", label: "Drone timeout" },
+    { key: "uwu_end", label: "UWU timeout" },
+    { key: "censored_end", label: "Censored timeout" }
+];
+
+const petTypeOptions = [
+    { value: 1, label: "puppy" },
+    { value: 2, label: "kitty" },
+    { value: 3, label: "cow" },
+    { value: 4, label: "fox" },
+    { value: 5, label: "birb" },
+    { value: 6, label: "bee" },
+    { value: 7, label: "bun" }
+];
 
 const petWordsByType = {
     1: ["woof", "ruff", "wruff", "arf"],
@@ -69,6 +90,46 @@ function parseNumericInput(raw, fallback, options = {}) {
     if (options.min !== undefined) output = Math.max(options.min, output);
     if (options.max !== undefined) output = Math.min(options.max, output);
     return output;
+}
+
+function toLines(values) {
+    return values.join("\n");
+}
+
+function fromLines(value) {
+    return String(value || "")
+        .split("\n")
+        .map(v => v.trim())
+        .filter(Boolean);
+}
+
+function createTimeoutAdjustmentDefaults() {
+    return modeTimeoutFields.reduce((acc, field) => {
+        acc[field.key] = "1";
+        return acc;
+    }, {});
+}
+
+function formatCountdown(msRemaining) {
+    if (msRemaining <= 0) return "Expired";
+    const totalSeconds = Math.floor(msRemaining / 1000);
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.floor((totalSeconds % 86400) / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    const parts = [];
+    if (days > 0) parts.push(`${days}d`);
+    if (hours > 0 || days > 0) parts.push(`${hours}h`);
+    if (minutes > 0 || hours > 0 || days > 0) parts.push(`${minutes}m`);
+    parts.push(`${seconds}s`);
+    return parts.join(" ");
+}
+
+function formatTimeoutStatus(endIso, nowMs) {
+    const endMs = Date.parse(endIso);
+    if (!Number.isFinite(endMs)) return "Invalid timestamp";
+    if (endMs >= permanentTimestamp - 1000) return "Permanent";
+    return formatCountdown(endMs - nowMs);
 }
 
 function NormalizedString(str) {
@@ -889,11 +950,23 @@ function ConfigPanel(props) {
 
     const [relayUrl, setRelayUrl] = React.useState(currentRelayUrl());
     const [status, setStatus] = React.useState("");
-    const [configText, setConfigText] = React.useState(JSON.stringify(interceptConfig, null, 2));
     const [newEditorId, setNewEditorId] = React.useState("");
     const [allowedEditors, setAllowedEditors] = React.useState([]);
     const [pendingRequests, setPendingRequests] = React.useState([]);
     const [canViewRemote, setCanViewRemote] = React.useState(isOwnProfile);
+    const [editableConfig, setEditableConfig] = React.useState(() => mergeLocalConfig(interceptConfig));
+    const [censoredWordsText, setCensoredWordsText] = React.useState(() => toLines(interceptConfig.censored_words));
+    const [timeoutAdjustments, setTimeoutAdjustments] = React.useState(() => createTimeoutAdjustmentDefaults());
+    const [groupTimeoutAdjustments, setGroupTimeoutAdjustments] = React.useState({});
+    const [isRulesEditorOpen, setIsRulesEditorOpen] = React.useState(false);
+    const [nowMs, setNowMs] = React.useState(() => Date.now());
+
+    const updateFromConfig = React.useCallback(config => {
+        const merged = mergeLocalConfig(config);
+        interceptConfig = merged;
+        setEditableConfig(merged);
+        setCensoredWordsText(toLines(merged.censored_words));
+    }, []);
 
     const refresh = React.useCallback(() => {
         if (!activeUserId) return Promise.resolve();
@@ -902,12 +975,11 @@ function ConfigPanel(props) {
         if (isOwnProfile) {
             return syncInAppLoopback(nextRelayUrl, activeUserId).catch(() => {}).then(() => {
                 const local = readLocalConfig(activeUserId);
-                interceptConfig = local;
-                setConfigText(JSON.stringify(local, null, 2));
-                setAllowedEditors(getAllowedEditors(activeUserId).allowed_editors);
+                updateFromConfig(local);
+                setAllowedEditors(getAllowedEditors(activeUserId).allowed_editors.sort());
                 return getAccessRequests(nextRelayUrl, activeUserId).catch(() => ({ requests: [] }));
             }).then(access => {
-                setPendingRequests(access.requests);
+                setPendingRequests(access.requests.sort());
                 setCanViewRemote(true);
                 setStatus("Loaded local profile config");
             }).catch(err => {
@@ -915,18 +987,23 @@ function ConfigPanel(props) {
             });
         }
         return readRemoteConfig(nextRelayUrl, activeUserId, profileUserId).then(remote => {
-            setConfigText(JSON.stringify(remote, null, 2));
+            updateFromConfig(remote);
             setCanViewRemote(true);
             setStatus(`Loaded ${profileUserId}'s profile config`);
         }).catch(err => {
             setCanViewRemote(false);
             setStatus(String(err));
         });
-    }, [activeUserId, isOwnProfile, profileUserId]);
+    }, [activeUserId, isOwnProfile, profileUserId, updateFromConfig]);
 
     React.useEffect(() => {
         refresh();
     }, [refresh]);
+
+    React.useEffect(() => {
+        const handle = setInterval(() => setNowMs(Date.now()), 1000);
+        return () => clearInterval(handle);
+    }, []);
 
     const saveRelayUrl = React.useCallback(() => {
         const next = relayUrl.trim();
@@ -939,42 +1016,338 @@ function ConfigPanel(props) {
         setStatus("Saved relay URL");
     }, [relayUrl]);
 
-    const saveConfigFromText = React.useCallback(() => {
+    const saveStructuredConfig = React.useCallback(() => {
         if (!activeUserId) return Promise.resolve();
-        let parsed;
-        try {
-            parsed = JSON.parse(configText);
-        } catch {
-            setStatus("Config JSON is invalid");
-            return Promise.resolve();
-        }
-        const merged = mergeLocalConfig(parsed);
+        const merged = mergeLocalConfig({
+            ...editableConfig,
+            pet_words: getPetWordsForType(editableConfig.config.pet_type, editableConfig.pet_words),
+            censored_words: fromLines(censoredWordsText)
+        });
         if (isOwnProfile) {
             return saveLocalConfig(activeUserId, merged, activeUserId).then(() => {
-                setConfigText(JSON.stringify(merged, null, 2));
+                updateFromConfig(merged);
                 setStatus("Saved local profile config");
             }).catch(err => setStatus(String(err)));
         }
         return pushRemoteConfig(currentRelayUrl(), activeUserId, profileUserId, merged).then(() => {
-            setConfigText(JSON.stringify(merged, null, 2));
+            updateFromConfig(merged);
             setStatus(`Saved ${profileUserId}'s profile config`);
         }).catch(err => setStatus(String(err)));
-    }, [activeUserId, configText, isOwnProfile, profileUserId]);
+    }, [activeUserId, censoredWordsText, editableConfig, isOwnProfile, profileUserId, updateFromConfig]);
 
-    const button = (label, onPress, danger = false) => h(
+    const setTimeoutValue = React.useCallback((field, nextIso) => {
+        setEditableConfig(prev => ({
+            ...prev,
+            config: {
+                ...prev.config,
+                [field]: nextIso
+            }
+        }));
+    }, []);
+
+    const addTimeoutAmount = React.useCallback((field, multiplierSeconds) => {
+        const amount = Number(timeoutAdjustments[field]);
+        if (!Number.isFinite(amount) || amount <= 0) {
+            setStatus(`Enter a positive number for ${field}`);
+            return;
+        }
+        const currentEndMs = Date.parse(editableConfig.config[field]);
+        const baseline = Number.isFinite(currentEndMs) && currentEndMs > nowMs ? currentEndMs : nowMs;
+        const nextIso = new Date(baseline + amount * multiplierSeconds * 1000).toISOString();
+        setTimeoutValue(field, nextIso);
+        setStatus(`${field}: ${formatTimeoutStatus(nextIso, nowMs)}`);
+    }, [editableConfig.config, nowMs, setTimeoutValue, timeoutAdjustments]);
+
+    const setPermanentTimeout = React.useCallback(field => {
+        setTimeoutValue(field, farFuture);
+        setStatus(`${field}: Permanent`);
+    }, [setTimeoutValue]);
+
+    const setGroupTimeout = React.useCallback((groupId, nextIso) => {
+        setEditableConfig(prev => ({
+            ...prev,
+            rules_groups: prev.rules_groups.map(group => (
+                group.id === groupId ? { ...group, timeout_end: nextIso } : group
+            ))
+        }));
+    }, []);
+
+    const addGroupTimeoutAmount = React.useCallback((groupId, multiplierSeconds) => {
+        const amount = Number(groupTimeoutAdjustments[groupId] ?? "1");
+        if (!Number.isFinite(amount) || amount <= 0) {
+            setStatus(`Enter a positive number for group ${groupId}`);
+            return;
+        }
+        setEditableConfig(prev => ({
+            ...prev,
+            rules_groups: prev.rules_groups.map(group => {
+                if (group.id !== groupId) return group;
+                const currentEndMs = Date.parse(group.timeout_end);
+                const baseline = Number.isFinite(currentEndMs) && currentEndMs > nowMs ? currentEndMs : nowMs;
+                return {
+                    ...group,
+                    timeout_end: new Date(baseline + amount * multiplierSeconds * 1000).toISOString()
+                };
+            })
+        }));
+    }, [groupTimeoutAdjustments, nowMs]);
+
+    const addRuleGroup = React.useCallback(() => {
+        setEditableConfig(prev => {
+            const nextGroupId = prev.rules_groups.reduce((maxId, group) => Math.max(maxId, group.id), 0) + 1;
+            const nextOrder = prev.rules_groups.length;
+            return {
+                ...prev,
+                rules_groups: [
+                    ...prev.rules_groups,
+                    { id: nextGroupId, timeout_end: farFuture, enabled: true, order: nextOrder }
+                ]
+            };
+        });
+    }, []);
+
+    const removeRuleGroup = React.useCallback(groupId => {
+        setEditableConfig(prev => ({
+            ...prev,
+            rules_groups: prev.rules_groups.filter(group => group.id !== groupId),
+            rules: prev.rules.filter(rule => rule.group_id !== groupId)
+        }));
+    }, []);
+
+    const addRuleToGroup = React.useCallback(groupId => {
+        setEditableConfig(prev => {
+            const nextOrder = prev.rules
+                .filter(rule => rule.group_id === groupId)
+                .reduce((maxOrder, rule) => Math.max(maxOrder, rule.order), -1) + 1;
+            return {
+                ...prev,
+                rules: [
+                    ...prev.rules,
+                    {
+                        rule_regex: "",
+                        rule_replacement: "",
+                        regex_normalize: false,
+                        enabled: true,
+                        chance_to_apply: 1,
+                        order: nextOrder,
+                        group_id: groupId
+                    }
+                ]
+            };
+        });
+    }, []);
+
+    const updateRuleAtIndex = React.useCallback((ruleIndex, updater) => {
+        setEditableConfig(prev => ({
+            ...prev,
+            rules: prev.rules.map((rule, index) => (index === ruleIndex ? updater(rule) : rule))
+        }));
+    }, []);
+
+    const removeRuleAtIndex = React.useCallback(ruleIndex => {
+        setEditableConfig(prev => ({
+            ...prev,
+            rules: prev.rules.filter((_, index) => index !== ruleIndex)
+        }));
+    }, []);
+
+    const cardStyle = {
+        marginTop: 12,
+        padding: 12,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: "#3f4147",
+        backgroundColor: "#2b2d31"
+    };
+
+    const inputStyle = {
+        color: "#f2f3f5",
+        borderWidth: 1,
+        borderColor: "#3f4147",
+        borderRadius: 8,
+        paddingHorizontal: 10,
+        paddingVertical: 8,
+        marginTop: 6
+    };
+
+    const button = (label, onPress, options = {}) => h(
         Pressable,
         {
-            key: label,
+            key: options.key ?? label,
             onPress,
             style: {
                 paddingVertical: 10,
                 paddingHorizontal: 12,
                 borderRadius: 8,
-                backgroundColor: danger ? "#da373c" : "#5865f2",
-                marginTop: 6
+                backgroundColor: options.danger ? "#da373c" : (options.active ? "#3ba55d" : "#5865f2"),
+                marginTop: options.noTopMargin ? 0 : 6,
+                marginRight: 6
             }
         },
         h(Text, { style: { color: "#ffffff", fontWeight: "600" } }, label)
+    );
+
+    const renderTimeoutControls = (field, label) => h(
+        View,
+        { style: { marginTop: 8 } },
+        h(Text, { style: { color: "#f2f3f5", fontWeight: "600" } }, label),
+        h(Text, { style: { color: "#b5bac1", marginTop: 4 } }, formatTimeoutStatus(editableConfig.config[field], nowMs)),
+        h(TextInput, {
+            value: timeoutAdjustments[field],
+            onChangeText: value => setTimeoutAdjustments(prev => ({ ...prev, [field]: value })),
+            keyboardType: "numeric",
+            style: inputStyle
+        }),
+        h(View, { style: { marginTop: 6, flexDirection: "row", flexWrap: "wrap" } },
+            button("+Sec", () => addTimeoutAmount(field, 1), { key: `${field}-sec`, noTopMargin: true }),
+            button("+Min", () => addTimeoutAmount(field, 60), { key: `${field}-min`, noTopMargin: true }),
+            button("+Hour", () => addTimeoutAmount(field, 3600), { key: `${field}-hour`, noTopMargin: true }),
+            button("Permanent", () => setPermanentTimeout(field), { key: `${field}-perm`, noTopMargin: true })
+        )
+    );
+
+    const section = (key, title, children) => h(
+        View,
+        { key, style: cardStyle },
+        h(Text, { style: { color: "#f2f3f5", fontWeight: "700", fontSize: 15 } }, title),
+        children
+    );
+
+    const scopeList = getSharedScopeList(editableConfig);
+
+    const rulesEditor = !isRulesEditorOpen ? null : h(
+        View,
+        { style: cardStyle },
+        h(Text, { style: { color: "#f2f3f5", fontWeight: "700", fontSize: 15 } }, "Custom Rules Editor"),
+        button("Add rule group", addRuleGroup),
+        ...[...editableConfig.rules_groups].sort((a, b) => a.order - b.order).map(group => {
+            const groupRules = editableConfig.rules
+                .map((rule, index) => ({ rule, index }))
+                .filter(item => item.rule.group_id === group.id)
+                .sort((a, b) => a.rule.order - b.rule.order);
+            return h(
+                View,
+                {
+                    key: `group-${group.id}`,
+                    style: {
+                        marginTop: 10,
+                        borderWidth: 1,
+                        borderColor: "#3f4147",
+                        borderRadius: 10,
+                        padding: 10
+                    }
+                },
+                h(Text, { style: { color: "#f2f3f5", fontWeight: "700" } }, `Group #${group.id}`),
+                h(View, { style: { marginTop: 6, flexDirection: "row", flexWrap: "wrap" } },
+                    button(group.enabled ? "Enabled" : "Disabled", () => {
+                        setEditableConfig(prev => ({
+                            ...prev,
+                            rules_groups: prev.rules_groups.map(current => (
+                                current.id === group.id ? { ...current, enabled: !current.enabled } : current
+                            ))
+                        }));
+                    }, { active: group.enabled, noTopMargin: true, key: `group-enabled-${group.id}` }),
+                    button("Remove Group", () => removeRuleGroup(group.id), { danger: true, noTopMargin: true, key: `group-remove-${group.id}` }),
+                    button("Add Rule", () => addRuleToGroup(group.id), { noTopMargin: true, key: `group-add-rule-${group.id}` })
+                ),
+                h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, `Order: ${group.order}`),
+                h(TextInput, {
+                    value: String(group.order),
+                    onChangeText: value => {
+                        const nextValue = parseNumericInput(value, group.order, { min: 0 });
+                        setEditableConfig(prev => ({
+                            ...prev,
+                            rules_groups: prev.rules_groups.map(current => (
+                                current.id === group.id ? { ...current, order: nextValue } : current
+                            ))
+                        }));
+                    },
+                    keyboardType: "numeric",
+                    style: inputStyle
+                }),
+                h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, `Timeout: ${formatTimeoutStatus(group.timeout_end, nowMs)}`),
+                h(TextInput, {
+                    value: group.timeout_end,
+                    onChangeText: value => setGroupTimeout(group.id, value),
+                    autoCapitalize: "none",
+                    autoCorrect: false,
+                    style: inputStyle
+                }),
+                h(TextInput, {
+                    value: groupTimeoutAdjustments[group.id] ?? "1",
+                    onChangeText: value => setGroupTimeoutAdjustments(prev => ({ ...prev, [group.id]: value })),
+                    keyboardType: "numeric",
+                    style: inputStyle
+                }),
+                h(View, { style: { marginTop: 6, flexDirection: "row", flexWrap: "wrap" } },
+                    button("+Sec", () => addGroupTimeoutAmount(group.id, 1), { noTopMargin: true, key: `group-sec-${group.id}` }),
+                    button("+Min", () => addGroupTimeoutAmount(group.id, 60), { noTopMargin: true, key: `group-min-${group.id}` }),
+                    button("+Hour", () => addGroupTimeoutAmount(group.id, 3600), { noTopMargin: true, key: `group-hour-${group.id}` }),
+                    button("Permanent", () => setGroupTimeout(group.id, farFuture), { noTopMargin: true, key: `group-perm-${group.id}` })
+                ),
+                groupRules.length === 0
+                    ? h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, "No rules in this group")
+                    : null,
+                ...groupRules.map(({ rule, index }) => h(
+                    View,
+                    {
+                        key: `rule-${group.id}-${index}`,
+                        style: {
+                            marginTop: 8,
+                            borderWidth: 1,
+                            borderColor: "#3f4147",
+                            borderRadius: 8,
+                            padding: 8
+                        }
+                    },
+                    h(Text, { style: { color: "#f2f3f5" } }, "Regex"),
+                    h(TextInput, {
+                        value: rule.rule_regex,
+                        onChangeText: value => updateRuleAtIndex(index, current => ({ ...current, rule_regex: value })),
+                        autoCapitalize: "none",
+                        autoCorrect: false,
+                        style: inputStyle
+                    }),
+                    h(Text, { style: { color: "#f2f3f5", marginTop: 6 } }, "Replacement"),
+                    h(TextInput, {
+                        value: rule.rule_replacement,
+                        onChangeText: value => updateRuleAtIndex(index, current => ({ ...current, rule_replacement: value })),
+                        autoCapitalize: "none",
+                        autoCorrect: false,
+                        style: inputStyle
+                    }),
+                    h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, `Chance: ${Math.round(rule.chance_to_apply * 100)}%`),
+                    h(TextInput, {
+                        value: String(Math.round(rule.chance_to_apply * 100)),
+                        onChangeText: value => {
+                            const nextValue = parseNumericInput(value, Math.round(rule.chance_to_apply * 100), { min: 0, max: 100 });
+                            updateRuleAtIndex(index, current => ({ ...current, chance_to_apply: nextValue / 100 }));
+                        },
+                        keyboardType: "numeric",
+                        style: inputStyle
+                    }),
+                    h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, `Order: ${rule.order}`),
+                    h(TextInput, {
+                        value: String(rule.order),
+                        onChangeText: value => {
+                            const nextValue = parseNumericInput(value, rule.order, { min: 0 });
+                            updateRuleAtIndex(index, current => ({ ...current, order: nextValue }));
+                        },
+                        keyboardType: "numeric",
+                        style: inputStyle
+                    }),
+                    h(View, { style: { marginTop: 6, flexDirection: "row", flexWrap: "wrap" } },
+                        button(rule.enabled ? "Rule Enabled" : "Rule Disabled", () => {
+                            updateRuleAtIndex(index, current => ({ ...current, enabled: !current.enabled }));
+                        }, { active: rule.enabled, noTopMargin: true, key: `rule-enabled-${group.id}-${index}` }),
+                        button(rule.regex_normalize ? "Normalize On" : "Normalize Off", () => {
+                            updateRuleAtIndex(index, current => ({ ...current, regex_normalize: !current.regex_normalize }));
+                        }, { active: rule.regex_normalize, noTopMargin: true, key: `rule-normalize-${group.id}-${index}` }),
+                        button("Remove Rule", () => removeRuleAtIndex(index), { danger: true, noTopMargin: true, key: `rule-remove-${group.id}-${index}` })
+                    )
+                ))
+            );
+        })
     );
 
     const editorRows = allowedEditors.map(editor => h(
@@ -990,7 +1363,7 @@ function ConfigPanel(props) {
             }
         },
         h(Text, { style: { color: "#f2f3f5", marginBottom: 6 } }, editor),
-        button(`Remove ${editor}`, () => removeAllowedEditor(activeUserId, editor).then(refresh), true)
+        button(`Remove ${editor}`, () => removeAllowedEditor(activeUserId, editor).then(refresh), { danger: true })
     ));
 
     const requestRows = pendingRequests.map(requesterId => h(
@@ -1007,13 +1380,13 @@ function ConfigPanel(props) {
         },
         h(Text, { style: { color: "#f2f3f5" } }, requesterId),
         button(`Approve ${requesterId}`, () => approveAccessRequest(currentRelayUrl(), activeUserId, requesterId).then(refresh)),
-        button(`Deny ${requesterId}`, () => denyAccessRequest(currentRelayUrl(), activeUserId, requesterId).then(refresh), true)
+        button(`Deny ${requesterId}`, () => denyAccessRequest(currentRelayUrl(), activeUserId, requesterId).then(refresh), { danger: true })
     ));
 
     return h(
         ScrollView,
         {
-            style: { maxHeight: 620, width: "100%" },
+            style: { maxHeight: 720, width: "100%" },
             contentContainerStyle: {
                 backgroundColor: "#313338",
                 borderRadius: 12,
@@ -1023,96 +1396,248 @@ function ConfigPanel(props) {
         h(Text, { style: { color: "#f2f3f5", fontSize: 16, fontWeight: "700" } }, "key-intercept control center"),
         h(Text, { style: { color: "#b5bac1", marginTop: 4 } }, isOwnProfile ? "Your profile configuration" : `Viewing profile ${profileUserId}`),
 
-        isOwnProfile ? h(
+        isOwnProfile ? section("relay-url", "Relay", h(
             View,
-            { style: { marginTop: 12 } },
-            h(Text, { style: { color: "#f2f3f5", marginBottom: 6 } }, "Relay URL"),
+            null,
+            h(Text, { style: { color: "#f2f3f5", marginTop: 6 } }, "Relay URL"),
             h(TextInput, {
                 value: relayUrl,
                 onChangeText: setRelayUrl,
                 autoCapitalize: "none",
                 autoCorrect: false,
-                style: {
-                    color: "#f2f3f5",
-                    borderWidth: 1,
-                    borderColor: "#3f4147",
-                    borderRadius: 8,
-                    paddingHorizontal: 10,
-                    paddingVertical: 8
-                }
+                style: inputStyle
             }),
             button("Save Relay URL", saveRelayUrl)
-        ) : null,
+        )) : null,
 
-        !isOwnProfile && !canViewRemote ? h(
+        !isOwnProfile && !canViewRemote ? section("access-request", "Access", h(
             View,
-            { style: { marginTop: 12 } },
-            h(Text, { style: { color: "#f2f3f5" } }, "You do not currently have permission to view this profile config."),
+            null,
+            h(Text, { style: { color: "#f2f3f5", marginTop: 6 } }, "You do not currently have permission to view this profile config."),
             button("Request Access via Relay", () => requestRemoteAccess(currentRelayUrl(), activeUserId, profileUserId).then(() => {
                 setStatus(`Requested config access from ${profileUserId}`);
             }).catch(err => setStatus(String(err))))
-        ) : null,
+        )) : null,
 
-        (isOwnProfile || canViewRemote) ? h(
+        (isOwnProfile || canViewRemote) ? section("gag", "Gag", renderTimeoutControls("gag_end", "Gag timeout")) : null,
+
+        (isOwnProfile || canViewRemote) ? section("pet", "Pet", h(
             View,
-            { style: { marginTop: 12 } },
-            h(Text, { style: { color: "#f2f3f5", marginBottom: 6 } }, "Config JSON"),
+            null,
+            renderTimeoutControls("pet_end", "Pet timeout"),
+            h(Text, { style: { color: "#f2f3f5", marginTop: 6 } }, "Pet type (1-7)"),
             h(TextInput, {
-                value: configText,
-                onChangeText: setConfigText,
+                value: String(editableConfig.config.pet_type),
+                onChangeText: value => {
+                    const nextValue = parseNumericInput(value, editableConfig.config.pet_type, { min: 1, max: petTypeOptions.length });
+                    setEditableConfig(prev => ({
+                        ...prev,
+                        config: {
+                            ...prev.config,
+                            pet_type: nextValue
+                        }
+                    }));
+                },
+                keyboardType: "numeric",
+                style: inputStyle
+            }),
+            h(Text, { style: { color: "#b5bac1", marginTop: 4 } }, petTypeOptions.map(option => `${option.value}:${option.label}`).join(" • ")),
+            h(Text, { style: { color: "#f2f3f5", marginTop: 6 } }, `Pet amount (${Math.round(editableConfig.config.pet_amount * 100)}%)`),
+            h(TextInput, {
+                value: String(Math.round(editableConfig.config.pet_amount * 100)),
+                onChangeText: value => {
+                    const nextValue = parseNumericInput(value, Math.round(editableConfig.config.pet_amount * 100), { min: 0, max: 100 });
+                    setEditableConfig(prev => ({
+                        ...prev,
+                        config: {
+                            ...prev.config,
+                            pet_amount: nextValue / 100
+                        }
+                    }));
+                },
+                keyboardType: "numeric",
+                style: inputStyle
+            })
+        )) : null,
+
+        (isOwnProfile || canViewRemote) ? section("bimbo", "Bimbo", h(
+            View,
+            null,
+            renderTimeoutControls("bimbo_end", "Bimbo timeout"),
+            h(Text, { style: { color: "#f2f3f5", marginTop: 6 } }, "Bimbo word length"),
+            h(TextInput, {
+                value: String(editableConfig.config.bimbo_word_length),
+                onChangeText: value => {
+                    const nextValue = parseNumericInput(value, editableConfig.config.bimbo_word_length, { min: 1 });
+                    setEditableConfig(prev => ({
+                        ...prev,
+                        config: {
+                            ...prev.config,
+                            bimbo_word_length: nextValue
+                        }
+                    }));
+                },
+                keyboardType: "numeric",
+                style: inputStyle
+            })
+        )) : null,
+
+        (isOwnProfile || canViewRemote) ? section("horny", "Horny", renderTimeoutControls("horny_end", "Horny timeout")) : null,
+
+        (isOwnProfile || canViewRemote) ? section("drone", "Drone", h(
+            View,
+            null,
+            renderTimeoutControls("drone_end", "Drone timeout"),
+            ...[
+                ["Drone term", "drone_term"],
+                ["Speech header", "speech_header"],
+                ["Speech footer", "speech_footer"],
+                ["Action header", "action_header"],
+                ["Action footer", "action_footer"],
+                ["Whisper header", "whisper_header"],
+                ["Whisper footer", "whisper_footer"],
+                ["Loud header", "loud_header"],
+                ["Loud footer", "loud_footer"]
+            ].map(([label, key]) => h(
+                View,
+                { key: `drone-${key}` },
+                h(Text, { style: { color: "#f2f3f5", marginTop: 6 } }, label),
+                h(TextInput, {
+                    value: editableConfig.drone_config[key],
+                    onChangeText: value => {
+                        setEditableConfig(prev => ({
+                            ...prev,
+                            drone_config: {
+                                ...prev.drone_config,
+                                [key]: value
+                            }
+                        }));
+                    },
+                    autoCapitalize: "none",
+                    autoCorrect: false,
+                    style: inputStyle
+                })
+            ))
+        )) : null,
+
+        (isOwnProfile || canViewRemote) ? section("uwu", "UWU", renderTimeoutControls("uwu_end", "UWU timeout")) : null,
+
+        (isOwnProfile || canViewRemote) ? section("censored", "Censored", h(
+            View,
+            null,
+            renderTimeoutControls("censored_end", "Censored timeout"),
+            h(Text, { style: { color: "#f2f3f5", marginTop: 6 } }, "Censored replacement"),
+            h(TextInput, {
+                value: editableConfig.config.censored_replacement,
+                onChangeText: value => {
+                    setEditableConfig(prev => ({
+                        ...prev,
+                        config: {
+                            ...prev.config,
+                            censored_replacement: value
+                        }
+                    }));
+                },
+                autoCapitalize: "none",
+                autoCorrect: false,
+                style: inputStyle
+            }),
+            h(Text, { style: { color: "#f2f3f5", marginTop: 6 } }, "Censored words (one per line)"),
+            h(TextInput, {
+                value: censoredWordsText,
+                onChangeText: setCensoredWordsText,
                 multiline: true,
                 textAlignVertical: "top",
                 autoCapitalize: "none",
                 autoCorrect: false,
                 style: {
-                    color: "#f2f3f5",
-                    borderWidth: 1,
-                    borderColor: "#3f4147",
-                    borderRadius: 8,
-                    paddingHorizontal: 10,
-                    paddingVertical: 8,
-                    minHeight: 220
+                    ...inputStyle,
+                    minHeight: 110
                 }
-            }),
-            button("Save Config", saveConfigFromText),
-            button("Reload", refresh)
-        ) : null,
+            })
+        )) : null,
 
-        isOwnProfile ? h(
+        (isOwnProfile || canViewRemote) ? section("scope", "Scope Filter", h(
             View,
-            { style: { marginTop: 12 } },
-            h(Text, { style: { color: "#f2f3f5", fontWeight: "700" } }, "Allowed Editors"),
+            null,
+            h(Text, { style: { color: "#f2f3f5", marginTop: 6 } }, `Filter mode: ${editableConfig.filter_mode}`),
+            h(View, { style: { marginTop: 6, flexDirection: "row", flexWrap: "wrap" } },
+                button("Whitelist", () => setEditableConfig(prev => ({ ...prev, filter_mode: "whitelist" })), { active: editableConfig.filter_mode === "whitelist", noTopMargin: true, key: "scope-whitelist" }),
+                button("Blacklist", () => setEditableConfig(prev => ({ ...prev, filter_mode: "blacklist" })), { active: editableConfig.filter_mode === "blacklist", noTopMargin: true, key: "scope-blacklist" })
+            ),
+            h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, "Use server/DM context menu for quick add/remove. You can remove entries here."),
+            scopeList.length
+                ? scopeList.map((item, index) => h(
+                    View,
+                    {
+                        key: `scope-${index}`,
+                        style: {
+                            marginTop: 8,
+                            borderWidth: 1,
+                            borderColor: "#3f4147",
+                            borderRadius: 8,
+                            padding: 8
+                        }
+                    },
+                    h(Text, { style: { color: "#f2f3f5" } }, item.server_name || item.discord_id || "(empty)"),
+                    button("Remove", () => {
+                        setEditableConfig(prev => {
+                            const nextList = getSharedScopeList(prev).filter((_, listIndex) => listIndex !== index);
+                            return { ...prev, whitelist: nextList, blacklist: nextList };
+                        });
+                    }, { danger: true })
+                ))
+                : h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, "No scope entries")
+        )) : null,
+
+        (isOwnProfile || canViewRemote) ? section("custom-rules", "Custom Rules", h(
+            View,
+            null,
+            h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, `${editableConfig.rules_groups.length} group(s), ${editableConfig.rules.length} rule(s)`),
+            h(View, { style: { marginTop: 6, flexDirection: "row", flexWrap: "wrap" } },
+                button(isRulesEditorOpen ? "Hide Rules Editor" : "Open Rules Editor", () => setIsRulesEditorOpen(open => !open), { noTopMargin: true, key: "rules-toggle" }),
+                button(editableConfig.config.debug ? "Debug On" : "Debug Off", () => {
+                    setEditableConfig(prev => ({
+                        ...prev,
+                        config: {
+                            ...prev.config,
+                            debug: !prev.config.debug
+                        }
+                    }));
+                }, { active: editableConfig.config.debug, noTopMargin: true, key: "debug-toggle" })
+            )
+        )) : null,
+
+        (isOwnProfile || canViewRemote) ? rulesEditor : null,
+
+        (isOwnProfile || canViewRemote) ? section("save-controls", "Save", h(
+            View,
+            { style: { flexDirection: "row", flexWrap: "wrap", marginTop: 6 } },
+            button("Save Config", saveStructuredConfig, { noTopMargin: true, key: "save-config" }),
+            button("Reload", refresh, { noTopMargin: true, key: "reload-config" })
+        )) : null,
+
+        isOwnProfile ? section("allowed-editors", "Allowed Editors", h(
+            View,
+            null,
             h(TextInput, {
                 value: newEditorId,
                 onChangeText: setNewEditorId,
                 placeholder: "Discord ID",
                 placeholderTextColor: "#80848e",
                 keyboardType: "numeric",
-                style: {
-                    color: "#f2f3f5",
-                    borderWidth: 1,
-                    borderColor: "#3f4147",
-                    borderRadius: 8,
-                    paddingHorizontal: 10,
-                    paddingVertical: 8,
-                    marginTop: 6
-                }
+                style: inputStyle
             }),
             button("Add Editor", () => addAllowedEditor(activeUserId, newEditorId.trim()).then(() => {
                 setNewEditorId("");
                 return refresh();
             }).catch(err => setStatus(String(err)))),
             ...editorRows
-        ) : null,
+        )) : null,
 
-        isOwnProfile ? h(
-            View,
-            { style: { marginTop: 12 } },
-            h(Text, { style: { color: "#f2f3f5", fontWeight: "700" } }, "Pending Requests"),
-            requestRows.length
-                ? requestRows
-                : h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, "No pending requests")
-        ) : null,
+        isOwnProfile ? section("pending-requests", "Pending Requests", requestRows.length
+            ? h(View, null, ...requestRows)
+            : h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, "No pending requests")) : null,
 
         h(Text, { style: { color: "#b5bac1", marginTop: 12 } }, status)
     );
