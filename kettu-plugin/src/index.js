@@ -2,6 +2,7 @@ const LOG_PREFIX = "[key-intercept/kettu]";
 const MOBILE_STATE_KEY = "key-intercept/mobile-loopback-state/v1";
 const RELAY_URL_STORAGE_KEY = "key-intercept/relay-url";
 const DEFAULT_RELAY_URL = "http://82.165.196.147:45491";
+const PROFILE_HOOK_EVENT_LIMIT = 40;
 const farFuture = "9999-12-31T23:59:59.000Z";
 const epoch = "1970-01-01T00:00:00.000Z";
 const permanentTimestamp = new Date(farFuture).getTime();
@@ -78,6 +79,7 @@ let unpatchSendMessage = null;
 let findByProps = null;
 let ReactRef = null;
 let ReactNativeRef = null;
+const profileHookEvents = [];
 
 function cloneDefaultConfig() {
     return JSON.parse(JSON.stringify(defaultLocalConfig));
@@ -937,19 +939,47 @@ function patchSendMessage() {
     });
 }
 
-function getProfileUserId(props) {
+function getProfileUserIdCandidates(props) {
     const candidates = [
-        props?.user?.id,
-        props?.user?.user?.id,
-        props?.profileUserId,
-        props?.userId,
-        props?.profile?.id,
-        props?.profile?.user?.id,
-        props?.profile?.userId,
-        props?.displayProfile?.userId,
-        props?.account?.id
+        ["user.id", props?.user?.id],
+        ["user.user.id", props?.user?.user?.id],
+        ["profileUserId", props?.profileUserId],
+        ["userId", props?.userId],
+        ["profile.id", props?.profile?.id],
+        ["profile.user.id", props?.profile?.user?.id],
+        ["profile.userId", props?.profile?.userId],
+        ["displayProfile.userId", props?.displayProfile?.userId],
+        ["account.id", props?.account?.id]
     ];
-    return candidates.find(value => typeof value === "string" && value.length > 0) ?? null;
+    return candidates.filter(([, value]) => typeof value === "string" && value.length > 0);
+}
+
+function getProfileUserId(props) {
+    return getProfileUserIdCandidates(props)[0]?.[1] ?? null;
+}
+
+function appendProfileHookEvent(event, props, extra = {}) {
+    const userIdCandidates = getProfileUserIdCandidates(props);
+    const entry = {
+        at: new Date().toISOString(),
+        event,
+        user_id_candidates: userIdCandidates.map(([path, id]) => `${path}:${id}`),
+        panel_open_state: {
+            isOpen: props?.isOpen,
+            open: props?.open,
+            isActive: props?.isActive,
+            active: props?.active,
+            isVisible: props?.isVisible,
+            visible: props?.visible
+        },
+        ...extra
+    };
+    profileHookEvents.unshift(entry);
+    if (profileHookEvents.length > PROFILE_HOOK_EVENT_LIMIT) {
+        profileHookEvents.length = PROFILE_HOOK_EVENT_LIMIT;
+    }
+    console.log(`${LOG_PREFIX} profile-hook`, entry);
+    return entry;
 }
 
 function getProfilePanelOpenInfo(props) {
@@ -981,17 +1011,22 @@ function ConfigPanel(props) {
     if (!ScrollView || !View || !Text || !TextInput || !Pressable) return null;
     const h = React.createElement;
     const activeUserId = currentUser().id;
-    const profileUserId = getProfileUserId(props) ?? activeUserId;
-    const isOwnProfile = profileUserId === activeUserId;
+    const profileUserIdFromProps = getProfileUserId(props);
+    const profileUserIdCandidates = getProfileUserIdCandidates(props);
     const panelOpenInfo = getProfilePanelOpenInfo(props);
     const isPanelOpen = panelOpenInfo.isOpen;
     const hasExplicitPanelOpenState = panelOpenInfo.hasExplicitState;
 
     const [relayUrl, setRelayUrl] = React.useState(currentRelayUrl());
     const [status, setStatus] = React.useState("");
+    const [manualTargetUserIdInput, setManualTargetUserIdInput] = React.useState("");
+    const [manualTargetUserId, setManualTargetUserId] = React.useState("");
     const [newEditorId, setNewEditorId] = React.useState("");
     const [allowedEditors, setAllowedEditors] = React.useState([]);
     const [pendingRequests, setPendingRequests] = React.useState([]);
+    const profileUserId = manualTargetUserId || profileUserIdFromProps || activeUserId;
+    const isManualTargetActive = Boolean(manualTargetUserId);
+    const isOwnProfile = profileUserId === activeUserId;
     const [canViewRemote, setCanViewRemote] = React.useState(isOwnProfile);
     const [editableConfig, setEditableConfig] = React.useState(() => mergeLocalConfig(interceptConfig));
     const [censoredWordsText, setCensoredWordsText] = React.useState(() => toLines(interceptConfig.censored_words));
@@ -1003,6 +1038,30 @@ function ConfigPanel(props) {
     const lastSavedSnapshotRef = React.useRef("");
     const saveQueueRef = React.useRef(Promise.resolve());
     const refreshInFlightRef = React.useRef(false);
+
+    const profileCandidateSignature = profileUserIdCandidates.map(([path, id]) => `${path}:${id}`).join("|");
+
+    React.useEffect(() => {
+        appendProfileHookEvent("config-panel-mounted", props, {
+            entrypoint: "settings-or-userProfileBadge",
+            profile_user_id_from_props: profileUserIdFromProps,
+            profile_candidate_signature: profileCandidateSignature
+        });
+    }, []);
+
+    React.useEffect(() => {
+        appendProfileHookEvent("config-panel-context", props, {
+            profile_user_id_from_props: profileUserIdFromProps,
+            effective_profile_user_id: profileUserId,
+            is_manual_target_active: isManualTargetActive,
+            is_own_profile: isOwnProfile,
+            panel_is_open: isPanelOpen
+        });
+    }, [isManualTargetActive, isOwnProfile, isPanelOpen, profileCandidateSignature, profileUserId, profileUserIdFromProps]);
+
+    React.useEffect(() => {
+        setCanViewRemote(isOwnProfile);
+    }, [isOwnProfile, profileUserId]);
 
     const updateFromConfig = React.useCallback(config => {
         const merged = mergeLocalConfig(config);
@@ -1018,6 +1077,10 @@ function ConfigPanel(props) {
         refreshInFlightRef.current = true;
         const nextRelayUrl = currentRelayUrl();
         setRelayUrl(nextRelayUrl);
+        appendProfileHookEvent("refresh-start", props, {
+            target_profile_user_id: profileUserId,
+            is_own_profile: isOwnProfile
+        });
         try {
             if (isOwnProfile) {
                 await syncInAppLoopback(nextRelayUrl, activeUserId).catch(() => {});
@@ -1028,6 +1091,9 @@ function ConfigPanel(props) {
                 setPendingRequests(access.requests.sort());
                 setCanViewRemote(true);
                 setStatus("Loaded local profile config");
+                appendProfileHookEvent("refresh-success-local", props, {
+                    target_profile_user_id: profileUserId
+                });
                 return;
             }
 
@@ -1035,8 +1101,16 @@ function ConfigPanel(props) {
             updateFromConfig(remote);
             setCanViewRemote(true);
             setStatus(`Loaded ${profileUserId}'s profile config`);
+            appendProfileHookEvent("refresh-success-remote", props, {
+                target_profile_user_id: profileUserId
+            });
         } catch (err) {
             setCanViewRemote(false);
+            appendProfileHookEvent("refresh-failed", props, {
+                target_profile_user_id: profileUserId,
+                error: String(err),
+                status: err?.status
+            });
             if (err?.status === 403) {
                 setStatus(`No access to ${profileUserId}'s config. Request permission below.`);
             } else {
@@ -1045,7 +1119,7 @@ function ConfigPanel(props) {
         } finally {
             refreshInFlightRef.current = false;
         }
-    }, [activeUserId, isOwnProfile, isPanelOpen, profileUserId, updateFromConfig]);
+    }, [activeUserId, isOwnProfile, isPanelOpen, profileUserId, props, updateFromConfig]);
 
     React.useEffect(() => {
         refresh().catch(err => setStatus(String(err)));
@@ -1076,6 +1150,37 @@ function ConfigPanel(props) {
         storage?.setItem(RELAY_URL_STORAGE_KEY, next);
         setStatus("Saved relay URL");
     }, [relayUrl]);
+
+    const applyManualTargetUserId = React.useCallback(() => {
+        const next = manualTargetUserIdInput.trim();
+        if (!next) {
+            setManualTargetUserId("");
+            setStatus("Manual profile target cleared");
+            appendProfileHookEvent("manual-target-cleared", props, {
+                fallback_entrypoint: "settings"
+            });
+            return;
+        }
+        if (!/^\d+$/.test(next)) {
+            setStatus("Manual profile target must be a numeric Discord ID");
+            return;
+        }
+        setManualTargetUserId(next);
+        setStatus(`Manual profile target set to ${next}`);
+        appendProfileHookEvent("manual-target-set", props, {
+            target_profile_user_id: next,
+            fallback_entrypoint: "settings"
+        });
+    }, [manualTargetUserIdInput, props]);
+
+    const clearManualTargetUserId = React.useCallback(() => {
+        setManualTargetUserIdInput("");
+        setManualTargetUserId("");
+        setStatus("Manual profile target cleared");
+        appendProfileHookEvent("manual-target-cleared", props, {
+            fallback_entrypoint: "settings"
+        });
+    }, [props]);
 
     const saveStructuredConfig = React.useCallback(baseConfig => {
         if (!activeUserId) return Promise.resolve();
@@ -1285,6 +1390,33 @@ function ConfigPanel(props) {
     );
 
     const scopeList = getSharedScopeList(editableConfig);
+    const profileHookRows = profileHookEvents
+        .slice(0, 8)
+        .map((entry, index) => h(
+            View,
+            {
+                key: `hook-event-${index}`,
+                style: {
+                    marginTop: 8,
+                    borderWidth: 1,
+                    borderColor: "#3f4147",
+                    borderRadius: 8,
+                    padding: 8
+                }
+            },
+            h(Text, { style: { color: "#f2f3f5", fontWeight: "600" } }, `${entry.at} · ${entry.event}`),
+            h(Text, { style: { color: "#b5bac1", marginTop: 4 } }, `candidates: ${(entry.user_id_candidates || []).join(", ") || "(none)"}`),
+            h(Text, { style: { color: "#b5bac1", marginTop: 4 } }, `open flags: ${JSON.stringify(entry.panel_open_state || {})}`),
+            entry.effective_profile_user_id
+                ? h(Text, { style: { color: "#b5bac1", marginTop: 4 } }, `effective target: ${entry.effective_profile_user_id}`)
+                : null,
+            entry.target_profile_user_id
+                ? h(Text, { style: { color: "#b5bac1", marginTop: 4 } }, `refresh target: ${entry.target_profile_user_id}`)
+                : null,
+            entry.error
+                ? h(Text, { style: { color: "#f2f3f5", marginTop: 4 } }, `error: ${entry.error}`)
+                : null
+        ));
 
     const rulesEditor = !isRulesEditorOpen ? null : h(
         View,
@@ -1466,7 +1598,64 @@ function ConfigPanel(props) {
         },
         h(Text, { style: { color: "#f2f3f5", fontSize: 16, fontWeight: "700" } }, "key-intercept control center"),
         h(Text, { style: { color: "#b5bac1", marginTop: 4 } }, isOwnProfile ? "Your profile configuration" : `Viewing profile ${profileUserId}`),
-        h(Text, { style: { color: "#b5bac1", marginTop: 4 } }, "Open this panel from any user profile to view or edit that user's config."),
+        h(Text, { style: { color: "#b5bac1", marginTop: 4 } }, "Entry baseline: ConfigPanel is exposed via plugin.settings and userProfileBadge."),
+        h(Text, { style: { color: "#b5bac1", marginTop: 4 } }, "Primary path is profile badge; fallback path is opening settings and setting a manual profile target."),
+
+        section("profile-hook-routing", "Profile Hook Routing", h(
+            View,
+            null,
+            h(Text, { style: { color: "#f2f3f5", marginTop: 6 } }, "Detected profile IDs from current entrypoint"),
+            h(Text, { style: { color: "#b5bac1", marginTop: 4 } }, profileUserIdCandidates.length
+                ? profileUserIdCandidates.map(([path, id]) => `${path}:${id}`).join(" • ")
+                : "(none)"),
+            h(Text, { style: { color: "#f2f3f5", marginTop: 8 } }, "Manual fallback profile target (Discord ID)"),
+            h(TextInput, {
+                value: manualTargetUserIdInput,
+                onChangeText: setManualTargetUserIdInput,
+                placeholder: "Set target user ID when badge entrypoint is unavailable",
+                placeholderTextColor: "#80848e",
+                keyboardType: "numeric",
+                style: inputStyle
+            }),
+            h(View, { style: { flexDirection: "row", flexWrap: "wrap", marginTop: 6 } },
+                button("Apply Manual Target", applyManualTargetUserId, { noTopMargin: true, key: "manual-target-apply" }),
+                button("Clear Manual Target", clearManualTargetUserId, { noTopMargin: true, key: "manual-target-clear" }),
+                button("Use My Profile", () => {
+                    setManualTargetUserIdInput(activeUserId);
+                    setManualTargetUserId(activeUserId);
+                    setStatus(`Manual profile target set to ${activeUserId}`);
+                    appendProfileHookEvent("manual-target-set", props, {
+                        target_profile_user_id: activeUserId,
+                        fallback_entrypoint: "settings"
+                    });
+                }, { noTopMargin: true, key: "manual-target-self" })
+            ),
+            h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, isManualTargetActive
+                ? `Manual target active: ${manualTargetUserId}`
+                : "Manual target inactive; using profile-derived target.")
+        )),
+
+        section("profile-hook-diagnostics", "Profile Hook Diagnostics", h(
+            View,
+            null,
+            h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, "Recent profile hook events from this runtime session."),
+            h(View, { style: { flexDirection: "row", flexWrap: "wrap", marginTop: 6 } },
+                button("Capture Snapshot", () => {
+                    appendProfileHookEvent("manual-snapshot", props, {
+                        effective_profile_user_id: profileUserId,
+                        is_manual_target_active: isManualTargetActive
+                    });
+                    setStatus("Captured profile hook snapshot");
+                }, { noTopMargin: true, key: "hook-capture-snapshot" }),
+                button("Clear Diagnostics", () => {
+                    profileHookEvents.length = 0;
+                    setStatus("Cleared profile hook diagnostics");
+                }, { noTopMargin: true, key: "hook-clear-diagnostics", danger: true })
+            ),
+            profileHookRows.length
+                ? h(View, null, ...profileHookRows)
+                : h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, "No hook events captured yet.")
+        )),
 
         isOwnProfile ? section("relay-url", "Relay", h(
             View,
@@ -1717,11 +1906,26 @@ function ConfigPanel(props) {
     );
 }
 
+function SettingsPanel(props) {
+    appendProfileHookEvent("settings-entrypoint", props, { entrypoint: "settings" });
+    return ConfigPanel(props);
+}
+
+function UserProfileBadgePanel(props) {
+    appendProfileHookEvent("user-profile-badge-entrypoint", props, { entrypoint: "userProfileBadge" });
+    return ConfigPanel(props);
+}
+
 const plugin = {
     onLoad: () => {
         findByProps = globalThis?.vendetta?.metro?.findByProps ?? null;
         ReactRef = globalThis?.vendetta?.metro?.common?.React ?? null;
         ReactNativeRef = globalThis?.vendetta?.metro?.common?.ReactNative ?? null;
+        appendProfileHookEvent("plugin-onload", null, {
+            has_settings_entrypoint: typeof plugin.settings === "function",
+            has_user_profile_badge_entrypoint: Boolean(plugin.userProfileBadge?.component),
+            vendetta_keys: Object.keys(globalThis?.vendetta ?? {})
+        });
         if (!findByProps) {
             throw new Error("Vendetta modules unavailable");
         }
@@ -1735,12 +1939,12 @@ const plugin = {
             unpatchSendMessage = null;
         }
     },
-    settings: ConfigPanel,
+    settings: SettingsPanel,
     userProfileBadge: {
         id: "key-intercept-controls",
         key: "key-intercept-controls",
         description: "key-intercept controls",
-        component: ConfigPanel
+        component: UserProfileBadgePanel
     }
 };
 
