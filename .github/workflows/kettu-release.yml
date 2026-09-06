@@ -11,6 +11,54 @@ permissions:
   id-token: write
 
 jobs:
+  determine-version:
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.version.outputs.release_tag }}
+      tag_created: ${{ steps.version.outputs.tag_created }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine release tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --tags --force
+
+          existing_tag="$(git tag --points-at HEAD 'v*' | sort -V | tail -n1 || true)"
+          if [[ -n "$existing_tag" ]]; then
+            release_tag="$existing_tag"
+            tag_created="false"
+          else
+            latest_tag="$(git tag -l 'v*' | sort -V | tail -n1 || true)"
+            if [[ "$latest_tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              major="${BASH_REMATCH[1]}"
+              minor="${BASH_REMATCH[2]}"
+              patch="$(( ${BASH_REMATCH[3]} + 1 ))"
+              release_tag="v${major}.${minor}.${patch}"
+            else
+              release_tag="v0.1.0"
+            fi
+            git tag "$release_tag"
+            tag_created="true"
+          fi
+
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "tag_created=$tag_created" >> "$GITHUB_OUTPUT"
+
+      - name: Push release tag
+        if: steps.version.outputs.tag_created == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git push origin "refs/tags/${RELEASE_TAG}"
+
   build-kettu-pages:
     runs-on: ubuntu-latest
     needs: determine-version
