@@ -50,15 +50,6 @@ jobs:
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
           echo "tag_created=$tag_created" >> "$GITHUB_OUTPUT"
 
-      - name: Push release tag
-        if: steps.version.outputs.tag_created == 'true'
-        env:
-          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git push origin "refs/tags/${RELEASE_TAG}"
-
   build-kettu-pages:
     runs-on: ubuntu-latest
     needs: determine-version
