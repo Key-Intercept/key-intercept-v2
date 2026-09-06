@@ -1010,6 +1010,16 @@ function getReactTools() {
     return { React, ReactNative };
 }
 
+function resolveReactHook(React, hookName) {
+    if (!React) return null;
+    if (typeof React[hookName] === "function") return React[hookName].bind(React);
+    const ReactDefault = React.default;
+    if (ReactDefault && typeof ReactDefault[hookName] === "function") {
+        return ReactDefault[hookName].bind(ReactDefault);
+    }
+    return null;
+}
+
 function ConfigPanel(props) {
     const { React, ReactNative } = getReactTools();
     if (!React || !ReactNative) return null;
@@ -1017,7 +1027,14 @@ function ConfigPanel(props) {
     if (!ScrollView || !View || !Text || !TextInput || !Pressable) return null;
     if (typeof React.createElement !== "function") return null;
     const h = React.createElement;
-    const missingHooks = ["useState", "useEffect", "useRef"].filter(name => typeof React[name] !== "function");
+    const useStateCompat = resolveReactHook(React, "useState");
+    const useEffectCompat = resolveReactHook(React, "useEffect");
+    const useRefCompat = resolveReactHook(React, "useRef");
+    const rawUseCallbackCompat = resolveReactHook(React, "useCallback");
+    const missingHooks = [];
+    if (!useStateCompat) missingHooks.push("useState");
+    if (!useEffectCompat) missingHooks.push("useEffect");
+    if (!useRefCompat) missingHooks.push("useRef");
     if (missingHooks.length) {
         return h(
             ScrollView,
@@ -1034,7 +1051,7 @@ function ConfigPanel(props) {
             h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, `Missing React APIs: ${missingHooks.join(", ")}`)
         );
     }
-    const useCallbackCompat = typeof React.useCallback === "function" ? React.useCallback.bind(React) : (callback => callback);
+    const useCallbackCompat = rawUseCallbackCompat ?? (callback => callback);
     const activeUserId = currentUser().id;
     const profileUserIdFromProps = getProfileUserId(props);
     const profileUserIdCandidates = getProfileUserIdCandidates(props);
@@ -1042,31 +1059,31 @@ function ConfigPanel(props) {
     const isPanelOpen = panelOpenInfo.isOpen;
     const hasExplicitPanelOpenState = panelOpenInfo.hasExplicitState;
 
-    const [relayUrl, setRelayUrl] = React.useState(currentRelayUrl());
-    const [status, setStatus] = React.useState("");
-    const [manualTargetUserIdInput, setManualTargetUserIdInput] = React.useState("");
-    const [manualTargetUserId, setManualTargetUserId] = React.useState("");
-    const [newEditorId, setNewEditorId] = React.useState("");
-    const [allowedEditors, setAllowedEditors] = React.useState([]);
-    const [pendingRequests, setPendingRequests] = React.useState([]);
+    const [relayUrl, setRelayUrl] = useStateCompat(currentRelayUrl());
+    const [status, setStatus] = useStateCompat("");
+    const [manualTargetUserIdInput, setManualTargetUserIdInput] = useStateCompat("");
+    const [manualTargetUserId, setManualTargetUserId] = useStateCompat("");
+    const [newEditorId, setNewEditorId] = useStateCompat("");
+    const [allowedEditors, setAllowedEditors] = useStateCompat([]);
+    const [pendingRequests, setPendingRequests] = useStateCompat([]);
     const profileUserId = manualTargetUserId || profileUserIdFromProps || activeUserId;
     const isManualTargetActive = Boolean(manualTargetUserId);
     const isOwnProfile = profileUserId === activeUserId;
-    const [canViewRemote, setCanViewRemote] = React.useState(isOwnProfile);
-    const [editableConfig, setEditableConfig] = React.useState(() => mergeLocalConfig(interceptConfig));
-    const [censoredWordsText, setCensoredWordsText] = React.useState(() => toLines(interceptConfig.censored_words));
-    const [timeoutAdjustments, setTimeoutAdjustments] = React.useState(() => createTimeoutAdjustmentDefaults());
-    const [groupTimeoutAdjustments, setGroupTimeoutAdjustments] = React.useState({});
-    const [isRulesEditorOpen, setIsRulesEditorOpen] = React.useState(false);
-    const [nowMs, setNowMs] = React.useState(() => Date.now());
-    const skipAutosaveRef = React.useRef(true);
-    const lastSavedSnapshotRef = React.useRef("");
-    const saveQueueRef = React.useRef(Promise.resolve());
-    const refreshInFlightRef = React.useRef(false);
+    const [canViewRemote, setCanViewRemote] = useStateCompat(isOwnProfile);
+    const [editableConfig, setEditableConfig] = useStateCompat(() => mergeLocalConfig(interceptConfig));
+    const [censoredWordsText, setCensoredWordsText] = useStateCompat(() => toLines(interceptConfig.censored_words));
+    const [timeoutAdjustments, setTimeoutAdjustments] = useStateCompat(() => createTimeoutAdjustmentDefaults());
+    const [groupTimeoutAdjustments, setGroupTimeoutAdjustments] = useStateCompat({});
+    const [isRulesEditorOpen, setIsRulesEditorOpen] = useStateCompat(false);
+    const [nowMs, setNowMs] = useStateCompat(() => Date.now());
+    const skipAutosaveRef = useRefCompat(true);
+    const lastSavedSnapshotRef = useRefCompat("");
+    const saveQueueRef = useRefCompat(Promise.resolve());
+    const refreshInFlightRef = useRefCompat(false);
 
     const profileCandidateSignature = profileUserIdCandidates.map(([path, id]) => `${path}:${id}`).join("|");
 
-    React.useEffect(() => {
+    useEffectCompat(() => {
         appendProfileHookEvent("config-panel-mounted", props, {
             entrypoint: "settings-or-userProfileBadge",
             profile_user_id_from_props: profileUserIdFromProps,
@@ -1074,7 +1091,7 @@ function ConfigPanel(props) {
         });
     }, []);
 
-    React.useEffect(() => {
+    useEffectCompat(() => {
         appendProfileHookEvent("config-panel-context", props, {
             profile_user_id_from_props: profileUserIdFromProps,
             effective_profile_user_id: profileUserId,
@@ -1084,7 +1101,7 @@ function ConfigPanel(props) {
         });
     }, [isManualTargetActive, isOwnProfile, isPanelOpen, profileCandidateSignature, profileUserId, profileUserIdFromProps]);
 
-    React.useEffect(() => {
+    useEffectCompat(() => {
         setCanViewRemote(isOwnProfile);
     }, [isOwnProfile, profileUserId]);
 
@@ -1146,11 +1163,11 @@ function ConfigPanel(props) {
         }
     }, [activeUserId, isOwnProfile, isPanelOpen, profileUserId, props, updateFromConfig]);
 
-    React.useEffect(() => {
+    useEffectCompat(() => {
         refresh().catch(err => setStatus(String(err)));
     }, [refresh, isPanelOpen]);
 
-    React.useEffect(() => {
+    useEffectCompat(() => {
         if (!isPanelOpen || hasExplicitPanelOpenState) return;
         const handle = setInterval(() => {
             const { snapshot } = buildConfigSnapshot(editableConfig, censoredWordsText);
@@ -1160,7 +1177,7 @@ function ConfigPanel(props) {
         return () => clearInterval(handle);
     }, [censoredWordsText, editableConfig, hasExplicitPanelOpenState, isPanelOpen, refresh]);
 
-    React.useEffect(() => {
+    useEffectCompat(() => {
         const handle = setInterval(() => setNowMs(Date.now()), 1000);
         return () => clearInterval(handle);
     }, []);
@@ -1222,7 +1239,7 @@ function ConfigPanel(props) {
         }).catch(err => setStatus(`Auto-save failed: ${String(err)}`));
     }, [activeUserId, censoredWordsText, isOwnProfile, profileUserId]);
 
-    React.useEffect(() => {
+    useEffectCompat(() => {
         if (!(isOwnProfile || canViewRemote) || !isPanelOpen) return;
         if (skipAutosaveRef.current) {
             skipAutosaveRef.current = false;
