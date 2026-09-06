@@ -1,6 +1,9 @@
 name: Build and Release
 
 on:
+  pull-request:
+    branches:
+      - main
   push:
     branches:
       - main
