@@ -991,7 +991,13 @@ function getProfilePanelOpenInfo(props) {
         props?.isVisible,
         props?.visible
     ];
-    const explicitState = openStateCandidates.find(value => typeof value === "boolean");
+    let explicitState;
+    for (const value of openStateCandidates) {
+        if (typeof value === "boolean") {
+            explicitState = value;
+            break;
+        }
+    }
     return {
         isOpen: explicitState ?? true,
         hasExplicitState: explicitState !== undefined
