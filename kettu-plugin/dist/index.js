@@ -548,7 +548,7 @@ function getPreviousMessage(channelId) {
     const messages = MessageStore?.getMessages?.(channelId);
     if (!messages) return null;
     const list = Array.isArray(messages) ? messages : messages._array ?? Object.values(messages);
-    return list.at(-1) ?? null;
+    return list.length ? list[list.length - 1] : null;
 }
 
 function editPreviousMessage(channelId, messageId, newContent) {
@@ -588,7 +588,7 @@ function applyRules(msg) {
             if (!rule.rule_regex) continue;
             let temp;
             try {
-                temp = new RegExp(rule.rule_regex.toString().replaceAll("\\\\", "\\"));
+                temp = new RegExp(rule.rule_regex.toString().split("\\\\").join("\\"));
             } catch {
                 continue;
             }
