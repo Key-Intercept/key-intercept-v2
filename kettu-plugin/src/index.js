@@ -1004,6 +1004,28 @@ function getReactTools() {
     return { React, ReactNative };
 }
 
+function renderRuntimeErrorPanel(message) {
+    const { React, ReactNative } = getReactTools();
+    if (!React || !ReactNative || typeof React.createElement !== "function") return null;
+    const { ScrollView, Text } = ReactNative;
+    if (!ScrollView || !Text) return null;
+    const h = React.createElement;
+    return h(
+        ScrollView,
+        {
+            style: { maxHeight: 320, width: "100%" },
+            contentContainerStyle: {
+                backgroundColor: "#313338",
+                borderRadius: 12,
+                padding: 12
+            }
+        },
+        h(Text, { style: { color: "#f2f3f5", fontSize: 16, fontWeight: "700" } }, "key-intercept control center"),
+        h(Text, { style: { color: "#f2f3f5", marginTop: 8 } }, "Settings UI failed to render."),
+        h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, message)
+    );
+}
+
 function ConfigPanel(props) {
     const { React, ReactNative } = getReactTools();
     if (!React || !ReactNative) return null;
@@ -1926,13 +1948,29 @@ function ConfigPanel(props) {
 }
 
 function SettingsPanel(props) {
-    appendProfileHookEvent("settings-entrypoint", props, { entrypoint: "settings" });
-    return ConfigPanel(props);
+    try {
+        appendProfileHookEvent("settings-entrypoint", props, { entrypoint: "settings" });
+        return ConfigPanel(props);
+    } catch (err) {
+        appendProfileHookEvent("settings-entrypoint-failed", props, {
+            entrypoint: "settings",
+            error: String(err)
+        });
+        return renderRuntimeErrorPanel(String(err));
+    }
 }
 
 function UserProfileBadgePanel(props) {
-    appendProfileHookEvent("user-profile-badge-entrypoint", props, { entrypoint: "userProfileBadge" });
-    return ConfigPanel(props);
+    try {
+        appendProfileHookEvent("user-profile-badge-entrypoint", props, { entrypoint: "userProfileBadge" });
+        return ConfigPanel(props);
+    } catch (err) {
+        appendProfileHookEvent("user-profile-badge-entrypoint-failed", props, {
+            entrypoint: "userProfileBadge",
+            error: String(err)
+        });
+        return renderRuntimeErrorPanel(String(err));
+    }
 }
 
 const plugin = {
