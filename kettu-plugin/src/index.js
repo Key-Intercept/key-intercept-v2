@@ -309,20 +309,38 @@ function getStorageBackend() {
     return null;
 }
 
+function getStorageItem(storage, key) {
+    if (!storage || typeof storage.getItem !== "function") return null;
+    try {
+        return storage.getItem(key);
+    } catch {
+        return null;
+    }
+}
+
+function setStorageItem(storage, key, value) {
+    if (!storage || typeof storage.setItem !== "function") return;
+    try {
+        storage.setItem(key, value);
+    } catch {
+        // ignore
+    }
+}
+
 function relayBaseUrl(relayUrl) {
     return String(relayUrl || "").trim().replace(/\/$/, "");
 }
 
 function currentRelayUrl() {
     const storage = getStorageBackend();
-    const configured = storage?.getItem(RELAY_URL_STORAGE_KEY)?.trim();
+    const configured = getStorageItem(storage, RELAY_URL_STORAGE_KEY)?.trim();
     return configured || DEFAULT_RELAY_URL;
 }
 
 function readMobileState(ownerId) {
     const storage = getStorageBackend();
     const key = `${MOBILE_STATE_KEY}:${ownerId}`;
-    const raw = storage?.getItem(key);
+    const raw = getStorageItem(storage, key);
     if (!raw) {
         const fresh = {
             owner_discord_id: ownerId,
@@ -331,7 +349,7 @@ function readMobileState(ownerId) {
             revision: 0,
             last_writer_id: ownerId
         };
-        if (storage) storage.setItem(key, JSON.stringify(fresh));
+        setStorageItem(storage, key, JSON.stringify(fresh));
         return fresh;
     }
 
@@ -365,7 +383,7 @@ function writeMobileState(state) {
         revision: Math.max(0, Math.floor(state.revision || 0)),
         last_writer_id: state.last_writer_id || state.owner_discord_id
     };
-    if (storage) storage.setItem(key, JSON.stringify(normalized));
+    setStorageItem(storage, key, JSON.stringify(normalized));
     return normalized;
 }
 
@@ -1025,8 +1043,9 @@ function ConfigPanel(props) {
     if (!React || !ReactNative) return null;
     const { ScrollView, View, Text, TextInput, Pressable } = ReactNative;
     if (!ScrollView || !View || !Text || !TextInput || !Pressable) return null;
-    if (typeof React.createElement !== "function") return null;
-    const h = React.createElement;
+    const createElementCompat = resolveReactHook(React, "createElement");
+    if (!createElementCompat) return null;
+    const h = createElementCompat;
     const useStateCompat = resolveReactHook(React, "useState");
     const useEffectCompat = resolveReactHook(React, "useEffect");
     const useRefCompat = resolveReactHook(React, "useRef");
@@ -1189,7 +1208,7 @@ function ConfigPanel(props) {
             setStatus("Relay URL cannot be empty");
             return;
         }
-        storage?.setItem(RELAY_URL_STORAGE_KEY, next);
+        setStorageItem(storage, RELAY_URL_STORAGE_KEY, next);
         setStatus("Saved relay URL");
     }, [relayUrl]);
 
@@ -1951,19 +1970,17 @@ function ConfigPanel(props) {
 function SettingsPanel(props) {
     appendProfileHookEvent("settings-entrypoint", props, { entrypoint: "settings" });
     const { React } = getReactTools();
-    if (React && typeof React.createElement === "function") {
-        return React.createElement(ConfigPanel, props);
-    }
-    return ConfigPanel(props);
+    const createElementCompat = resolveReactHook(React, "createElement");
+    if (!createElementCompat) return null;
+    return createElementCompat(ConfigPanel, props);
 }
 
 function UserProfileBadgePanel(props) {
     appendProfileHookEvent("user-profile-badge-entrypoint", props, { entrypoint: "userProfileBadge" });
     const { React } = getReactTools();
-    if (React && typeof React.createElement === "function") {
-        return React.createElement(ConfigPanel, props);
-    }
-    return ConfigPanel(props);
+    const createElementCompat = resolveReactHook(React, "createElement");
+    if (!createElementCompat) return null;
+    return createElementCompat(ConfigPanel, props);
 }
 
 const plugin = {
