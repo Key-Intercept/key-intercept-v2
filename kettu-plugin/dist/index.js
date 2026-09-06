@@ -977,27 +977,33 @@ function getProfileUserId(props) {
 }
 
 function appendProfileHookEvent(event, props, extra = {}) {
-    const userIdCandidates = getProfileUserIdCandidates(props);
-    const entry = {
-        at: new Date().toISOString(),
-        event,
-        user_id_candidates: userIdCandidates.map(([path, id]) => `${path}:${id}`),
-        panel_open_state: {
-            isOpen: props?.isOpen,
-            open: props?.open,
-            isActive: props?.isActive,
-            active: props?.active,
-            isVisible: props?.isVisible,
-            visible: props?.visible
-        },
-        ...extra
-    };
-    profileHookEvents.unshift(entry);
-    if (profileHookEvents.length > PROFILE_HOOK_EVENT_LIMIT) {
-        profileHookEvents.length = PROFILE_HOOK_EVENT_LIMIT;
+    try {
+        const userIdCandidates = getProfileUserIdCandidates(props);
+        const now = new Date();
+        const at = typeof now.toISOString === "function" ? now.toISOString() : String(now);
+        const entry = {
+            at,
+            event,
+            user_id_candidates: userIdCandidates.map(([path, id]) => `${path}:${id}`),
+            panel_open_state: {
+                isOpen: props?.isOpen,
+                open: props?.open,
+                isActive: props?.isActive,
+                active: props?.active,
+                isVisible: props?.isVisible,
+                visible: props?.visible
+            },
+            ...extra
+        };
+        profileHookEvents.unshift(entry);
+        if (profileHookEvents.length > PROFILE_HOOK_EVENT_LIMIT) {
+            profileHookEvents.length = PROFILE_HOOK_EVENT_LIMIT;
+        }
+        console.log(`${LOG_PREFIX} profile-hook`, entry);
+        return entry;
+    } catch {
+        return null;
     }
-    console.log(`${LOG_PREFIX} profile-hook`, entry);
-    return entry;
 }
 
 function getProfilePanelOpenInfo(props) {
