@@ -1009,7 +1009,25 @@ function ConfigPanel(props) {
     if (!React || !ReactNative) return null;
     const { ScrollView, View, Text, TextInput, Pressable } = ReactNative;
     if (!ScrollView || !View || !Text || !TextInput || !Pressable) return null;
+    if (typeof React.createElement !== "function") return null;
     const h = React.createElement;
+    const missingHooks = ["useState", "useEffect", "useRef"].filter(name => typeof React[name] !== "function");
+    if (missingHooks.length) {
+        return h(
+            ScrollView,
+            {
+                style: { maxHeight: 320, width: "100%" },
+                contentContainerStyle: {
+                    backgroundColor: "#313338",
+                    borderRadius: 12,
+                    padding: 12
+                }
+            },
+            h(Text, { style: { color: "#f2f3f5", fontSize: 16, fontWeight: "700" } }, "key-intercept control center"),
+            h(Text, { style: { color: "#f2f3f5", marginTop: 8 } }, "Settings UI is unavailable in this runtime."),
+            h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, `Missing React APIs: ${missingHooks.join(", ")}`)
+        );
+    }
     const useCallbackCompat = typeof React.useCallback === "function" ? React.useCallback.bind(React) : (callback => callback);
     const activeUserId = currentUser().id;
     const profileUserIdFromProps = getProfileUserId(props);
