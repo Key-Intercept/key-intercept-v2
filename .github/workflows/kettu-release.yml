@@ -1,0 +1,90 @@
+name: Build and Release
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  determine-version:
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.version.outputs.release_tag }}
+      tag_created: ${{ steps.version.outputs.tag_created }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine release tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --tags --force
+
+          existing_tag="$(git tag --points-at HEAD 'v*' | sort -V | tail -n1 || true)"
+          if [[ -n "$existing_tag" ]]; then
+            release_tag="$existing_tag"
+            tag_created="false"
+          else
+            latest_tag="$(git tag -l 'v*' | sort -V | tail -n1 || true)"
+            if [[ "$latest_tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              major="${BASH_REMATCH[1]}"
+              minor="${BASH_REMATCH[2]}"
+              patch="$(( ${BASH_REMATCH[3]} + 1 ))"
+              release_tag="v${major}.${minor}.${patch}"
+            else
+              release_tag="v0.1.0"
+            fi
+            git tag "$release_tag"
+            tag_created="true"
+          fi
+
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "tag_created=$tag_created" >> "$GITHUB_OUTPUT"
+
+  build-kettu-pages:
+    runs-on: ubuntu-latest
+    needs: determine-version
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build Kettu plugin site
+        run: |
+          npm --prefix kettu-plugin run build
+          mkdir -p pages-dist
+          cp kettu-plugin/dist/* pages-dist/
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: pages-dist
+
+  deploy-kettu-pages:
+    runs-on: ubuntu-latest
+    needs: build-kettu-pages
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
