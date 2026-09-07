@@ -39,4 +39,10 @@ for (const snippet of forbiddenSnippets) {
 const entrypointRenderMatches = source.match(/return h\(ConfigPanel, props\);/g) ?? [];
 assert.equal(entrypointRenderMatches.length, 2, "Expected both settings entrypoints to render ConfigPanel via createElement");
 
+assert.match(
+    source,
+    /relayUrlState\s*=\s*useState\(currentRelayUrl\(\)\);\s*}\s*catch\s*{\s*return null;\s*}/s,
+    "Expected ConfigPanel to guard first useState call and bail out safely on hook runtime failures"
+);
+
 console.log("kettu react compatibility test passed");

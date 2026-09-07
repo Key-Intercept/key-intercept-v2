@@ -1060,7 +1060,13 @@ function ConfigPanel(props) {
     const isPanelOpen = panelOpenInfo.isOpen;
     const hasExplicitPanelOpenState = panelOpenInfo.hasExplicitState;
 
-    const [relayUrl, setRelayUrl] = useState(currentRelayUrl());
+    let relayUrlState;
+    try {
+        relayUrlState = useState(currentRelayUrl());
+    } catch {
+        return null;
+    }
+    const [relayUrl, setRelayUrl] = relayUrlState;
     const [status, setStatus] = useState("");
     const [manualTargetUserIdInput, setManualTargetUserIdInput] = useState("");
     const [manualTargetUserId, setManualTargetUserId] = useState("");
