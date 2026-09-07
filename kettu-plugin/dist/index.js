@@ -1050,11 +1050,16 @@ function ConfigPanel(props) {
         setRelayUrl(nextRelayUrl);
         try {
             if (isOwnProfile) {
-                await syncInAppLoopback(nextRelayUrl, activeUserId).catch(() => {});
+                try {
+                    await syncInAppLoopback(nextRelayUrl, activeUserId);
+                } catch {}
                 const local = readLocalConfig(activeUserId);
                 updateFromConfig(local);
                 setAllowedEditors(getAllowedEditors(activeUserId).allowed_editors.sort());
-                const access = await getAccessRequests(nextRelayUrl, activeUserId).catch(() => ({ requests: [] }));
+                let access = { requests: [] };
+                try {
+                    access = await getAccessRequests(nextRelayUrl, activeUserId);
+                } catch {}
                 setPendingRequests(access.requests.sort());
                 setCanViewRemote(true);
                 setStatus("Loaded local profile config");
@@ -1078,7 +1083,14 @@ function ConfigPanel(props) {
     }, [activeUserId, isOwnProfile, isPanelOpen, profileUserId, updateFromConfig]);
 
     useEffect(() => {
-        Promise.resolve(refresh()).catch(err => setStatus(String(err)));
+        try {
+            const pending = refresh();
+            if (pending && typeof pending.then === "function") {
+                pending.then(undefined, err => setStatus(String(err)));
+            }
+        } catch (err) {
+            setStatus(String(err));
+        }
     }, [refresh, isPanelOpen]);
 
     useEffect(() => {
@@ -1086,7 +1098,14 @@ function ConfigPanel(props) {
         const handle = setInterval(() => {
             const { snapshot } = buildConfigSnapshot(editableConfig, censoredWordsText);
             if (snapshot !== lastSavedSnapshotRef.current) return;
-            Promise.resolve(refresh()).catch(err => setStatus(String(err)));
+            try {
+                const pending = refresh();
+                if (pending && typeof pending.then === "function") {
+                    pending.then(undefined, err => setStatus(String(err)));
+                }
+            } catch (err) {
+                setStatus(String(err));
+            }
         }, 1500);
         return () => clearInterval(handle);
     }, [censoredWordsText, editableConfig, hasExplicitPanelOpenState, isPanelOpen, refresh]);
@@ -1717,7 +1736,16 @@ function ConfigPanel(props) {
             null,
             h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, "Changes auto-save as you edit."),
             h(View, { style: { flexDirection: "row", flexWrap: "wrap", marginTop: 6 } },
-                button("Reload", () => refresh().catch(err => setStatus(String(err))), { noTopMargin: true, key: "reload-config" })
+                button("Reload", () => {
+                    try {
+                        const pending = refresh();
+                        if (pending && typeof pending.then === "function") {
+                            pending.then(undefined, err => setStatus(String(err)));
+                        }
+                    } catch (err) {
+                        setStatus(String(err));
+                    }
+                }, { noTopMargin: true, key: "reload-config" })
             )
         )) : null,
 
