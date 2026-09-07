@@ -961,7 +961,14 @@ function getProfilePanelOpenInfo(props) {
         props?.isVisible,
         props?.visible
     ];
-    const explicitState = openStateCandidates.find(value => typeof value === "boolean");
+    let explicitState;
+    for (let i = 0; i < openStateCandidates.length; i++) {
+        const value = openStateCandidates[i];
+        if (typeof value === "boolean") {
+            explicitState = value;
+            break;
+        }
+    }
     return {
         isOpen: explicitState ?? true,
         hasExplicitState: explicitState !== undefined
@@ -974,12 +981,25 @@ function getReactTools() {
     return { React, ReactNative };
 }
 
+function resolveReactHook(React, hookName) {
+    const directHook = React?.[hookName];
+    if (typeof directHook === "function") return directHook;
+    const defaultHook = React.default?.[hookName];
+    if (typeof defaultHook === "function") return defaultHook;
+    return null;
+}
+
 function ConfigPanel(props) {
     const { React, ReactNative } = getReactTools();
     if (!React || !ReactNative) return null;
     const { ScrollView, View, Text, TextInput, Pressable } = ReactNative;
     if (!ScrollView || !View || !Text || !TextInput || !Pressable) return null;
-    const h = React.createElement;
+    const h = resolveReactHook(React, "createElement");
+    const useState = resolveReactHook(React, "useState");
+    const useEffect = resolveReactHook(React, "useEffect");
+    const useRef = resolveReactHook(React, "useRef");
+    const useCallback = resolveReactHook(React, "useCallback") ?? (callback => callback);
+    if (!h || !useState || !useEffect || !useRef) return null;
     const activeUserId = currentUser().id;
     const profileUserId = getProfileUserId(props) ?? activeUserId;
     const isOwnProfile = profileUserId === activeUserId;
@@ -987,24 +1007,30 @@ function ConfigPanel(props) {
     const isPanelOpen = panelOpenInfo.isOpen;
     const hasExplicitPanelOpenState = panelOpenInfo.hasExplicitState;
 
-    const [relayUrl, setRelayUrl] = React.useState(currentRelayUrl());
-    const [status, setStatus] = React.useState("");
-    const [newEditorId, setNewEditorId] = React.useState("");
-    const [allowedEditors, setAllowedEditors] = React.useState([]);
-    const [pendingRequests, setPendingRequests] = React.useState([]);
-    const [canViewRemote, setCanViewRemote] = React.useState(isOwnProfile);
-    const [editableConfig, setEditableConfig] = React.useState(() => mergeLocalConfig(interceptConfig));
-    const [censoredWordsText, setCensoredWordsText] = React.useState(() => toLines(interceptConfig.censored_words));
-    const [timeoutAdjustments, setTimeoutAdjustments] = React.useState(() => createTimeoutAdjustmentDefaults());
-    const [groupTimeoutAdjustments, setGroupTimeoutAdjustments] = React.useState({});
-    const [isRulesEditorOpen, setIsRulesEditorOpen] = React.useState(false);
-    const [nowMs, setNowMs] = React.useState(() => Date.now());
-    const skipAutosaveRef = React.useRef(true);
-    const lastSavedSnapshotRef = React.useRef("");
-    const saveQueueRef = React.useRef(Promise.resolve());
-    const refreshInFlightRef = React.useRef(false);
+    let relayUrlState;
+    try {
+        relayUrlState = useState(currentRelayUrl());
+    } catch {
+        return null;
+    }
+    const [relayUrl, setRelayUrl] = relayUrlState;
+    const [status, setStatus] = useState("");
+    const [newEditorId, setNewEditorId] = useState("");
+    const [allowedEditors, setAllowedEditors] = useState([]);
+    const [pendingRequests, setPendingRequests] = useState([]);
+    const [canViewRemote, setCanViewRemote] = useState(isOwnProfile);
+    const [editableConfig, setEditableConfig] = useState(() => mergeLocalConfig(interceptConfig));
+    const [censoredWordsText, setCensoredWordsText] = useState(() => toLines(interceptConfig.censored_words));
+    const [timeoutAdjustments, setTimeoutAdjustments] = useState(() => createTimeoutAdjustmentDefaults());
+    const [groupTimeoutAdjustments, setGroupTimeoutAdjustments] = useState({});
+    const [isRulesEditorOpen, setIsRulesEditorOpen] = useState(false);
+    const [nowMs, setNowMs] = useState(() => Date.now());
+    const skipAutosaveRef = useRef(true);
+    const lastSavedSnapshotRef = useRef("");
+    const saveQueueRef = useRef(Promise.resolve());
+    const refreshInFlightRef = useRef(false);
 
-    const updateFromConfig = React.useCallback(config => {
+    const updateFromConfig = useCallback(config => {
         const merged = mergeLocalConfig(config);
         interceptConfig = merged;
         skipAutosaveRef.current = true;
@@ -1013,7 +1039,7 @@ function ConfigPanel(props) {
         lastSavedSnapshotRef.current = JSON.stringify(merged);
     }, []);
 
-    const refresh = React.useCallback(async () => {
+    const refresh = useCallback(async () => {
         if (refreshInFlightRef.current || !isPanelOpen || !activeUserId) return;
         refreshInFlightRef.current = true;
         const nextRelayUrl = currentRelayUrl();
@@ -1047,11 +1073,11 @@ function ConfigPanel(props) {
         }
     }, [activeUserId, isOwnProfile, isPanelOpen, profileUserId, updateFromConfig]);
 
-    React.useEffect(() => {
+    useEffect(() => {
         refresh().catch(err => setStatus(String(err)));
     }, [refresh, isPanelOpen]);
 
-    React.useEffect(() => {
+    useEffect(() => {
         if (!isPanelOpen || hasExplicitPanelOpenState) return;
         const handle = setInterval(() => {
             const { snapshot } = buildConfigSnapshot(editableConfig, censoredWordsText);
@@ -1061,12 +1087,12 @@ function ConfigPanel(props) {
         return () => clearInterval(handle);
     }, [censoredWordsText, editableConfig, hasExplicitPanelOpenState, isPanelOpen, refresh]);
 
-    React.useEffect(() => {
+    useEffect(() => {
         const handle = setInterval(() => setNowMs(Date.now()), 1000);
         return () => clearInterval(handle);
     }, []);
 
-    const saveRelayUrl = React.useCallback(() => {
+    const saveRelayUrl = useCallback(() => {
         const next = relayUrl.trim();
         const storage = getStorageBackend();
         if (!next) {
@@ -1077,7 +1103,7 @@ function ConfigPanel(props) {
         setStatus("Saved relay URL");
     }, [relayUrl]);
 
-    const saveStructuredConfig = React.useCallback(baseConfig => {
+    const saveStructuredConfig = useCallback(baseConfig => {
         if (!activeUserId) return Promise.resolve();
         const { merged } = buildConfigSnapshot(baseConfig, censoredWordsText);
         if (isOwnProfile) {
@@ -1092,7 +1118,7 @@ function ConfigPanel(props) {
         }).catch(err => setStatus(`Auto-save failed: ${String(err)}`));
     }, [activeUserId, censoredWordsText, isOwnProfile, profileUserId]);
 
-    React.useEffect(() => {
+    useEffect(() => {
         if (!(isOwnProfile || canViewRemote) || !isPanelOpen) return;
         if (skipAutosaveRef.current) {
             skipAutosaveRef.current = false;
@@ -1106,7 +1132,7 @@ function ConfigPanel(props) {
             .then(() => saveStructuredConfig(merged));
     }, [canViewRemote, censoredWordsText, editableConfig, isOwnProfile, isPanelOpen, saveStructuredConfig]);
 
-    const setTimeoutValue = React.useCallback((field, nextIso) => {
+    const setTimeoutValue = useCallback((field, nextIso) => {
         setEditableConfig(prev => ({
             ...prev,
             config: {
@@ -1116,7 +1142,7 @@ function ConfigPanel(props) {
         }));
     }, []);
 
-    const addTimeoutAmount = React.useCallback((field, multiplierSeconds) => {
+    const addTimeoutAmount = useCallback((field, multiplierSeconds) => {
         const amount = Number(timeoutAdjustments[field]);
         if (!Number.isFinite(amount) || amount <= 0) {
             setStatus(`Enter a positive number for ${field}`);
@@ -1129,12 +1155,12 @@ function ConfigPanel(props) {
         setStatus(`${field}: ${formatTimeoutStatus(nextIso, nowMs)}`);
     }, [editableConfig.config, nowMs, setTimeoutValue, timeoutAdjustments]);
 
-    const setPermanentTimeout = React.useCallback(field => {
+    const setPermanentTimeout = useCallback(field => {
         setTimeoutValue(field, farFuture);
         setStatus(`${field}: Permanent`);
     }, [setTimeoutValue]);
 
-    const setGroupTimeout = React.useCallback((groupId, nextIso) => {
+    const setGroupTimeout = useCallback((groupId, nextIso) => {
         setEditableConfig(prev => ({
             ...prev,
             rules_groups: prev.rules_groups.map(group => (
@@ -1143,7 +1169,7 @@ function ConfigPanel(props) {
         }));
     }, []);
 
-    const addGroupTimeoutAmount = React.useCallback((groupId, multiplierSeconds) => {
+    const addGroupTimeoutAmount = useCallback((groupId, multiplierSeconds) => {
         const amount = Number(groupTimeoutAdjustments[groupId] ?? "1");
         if (!Number.isFinite(amount) || amount <= 0) {
             setStatus(`Enter a positive number for group ${groupId}`);
@@ -1163,7 +1189,7 @@ function ConfigPanel(props) {
         }));
     }, [groupTimeoutAdjustments, nowMs]);
 
-    const addRuleGroup = React.useCallback(() => {
+    const addRuleGroup = useCallback(() => {
         setEditableConfig(prev => {
             const nextGroupId = prev.rules_groups.reduce((maxId, group) => Math.max(maxId, group.id), 0) + 1;
             const nextOrder = prev.rules_groups.length;
@@ -1177,7 +1203,7 @@ function ConfigPanel(props) {
         });
     }, []);
 
-    const removeRuleGroup = React.useCallback(groupId => {
+    const removeRuleGroup = useCallback(groupId => {
         setEditableConfig(prev => ({
             ...prev,
             rules_groups: prev.rules_groups.filter(group => group.id !== groupId),
@@ -1185,7 +1211,7 @@ function ConfigPanel(props) {
         }));
     }, []);
 
-    const addRuleToGroup = React.useCallback(groupId => {
+    const addRuleToGroup = useCallback(groupId => {
         setEditableConfig(prev => {
             const nextOrder = prev.rules
                 .filter(rule => rule.group_id === groupId)
@@ -1208,14 +1234,14 @@ function ConfigPanel(props) {
         });
     }, []);
 
-    const updateRuleAtIndex = React.useCallback((ruleIndex, updater) => {
+    const updateRuleAtIndex = useCallback((ruleIndex, updater) => {
         setEditableConfig(prev => ({
             ...prev,
             rules: prev.rules.map((rule, index) => (index === ruleIndex ? updater(rule) : rule))
         }));
     }, []);
 
-    const removeRuleAtIndex = React.useCallback(ruleIndex => {
+    const removeRuleAtIndex = useCallback(ruleIndex => {
         setEditableConfig(prev => ({
             ...prev,
             rules: prev.rules.filter((_, index) => index !== ruleIndex)
@@ -1735,12 +1761,22 @@ const plugin = {
             unpatchSendMessage = null;
         }
     },
-    settings: ConfigPanel,
+    settings: props => {
+        const { React } = getReactTools();
+        const h = resolveReactHook(React, "createElement");
+        if (!h) return null;
+        return h(ConfigPanel, props);
+    },
     userProfileBadge: {
         id: "key-intercept-controls",
         key: "key-intercept-controls",
         description: "key-intercept controls",
-        component: ConfigPanel
+        component: props => {
+            const { React } = getReactTools();
+            const h = resolveReactHook(React, "createElement");
+            if (!h) return null;
+            return h(ConfigPanel, props);
+        }
     }
 };
 
