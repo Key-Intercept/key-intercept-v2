@@ -309,20 +309,41 @@ function getStorageBackend() {
     return null;
 }
 
+function storageGetItem(storage, key) {
+    if (!storage || typeof storage.getItem !== "function") return null;
+    try {
+        const value = storage.getItem(key);
+        if (typeof value === "string") return value;
+        if (value == null) return null;
+        return String(value);
+    } catch {
+        return null;
+    }
+}
+
+function storageSetItem(storage, key, value) {
+    if (!storage || typeof storage.setItem !== "function") return;
+    try {
+        storage.setItem(key, String(value));
+    } catch {
+        // ignore
+    }
+}
+
 function relayBaseUrl(relayUrl) {
     return String(relayUrl || "").trim().replace(/\/$/, "");
 }
 
 function currentRelayUrl() {
     const storage = getStorageBackend();
-    const configured = storage?.getItem(RELAY_URL_STORAGE_KEY)?.trim();
+    const configured = storageGetItem(storage, RELAY_URL_STORAGE_KEY)?.trim();
     return configured || DEFAULT_RELAY_URL;
 }
 
 function readMobileState(ownerId) {
     const storage = getStorageBackend();
     const key = `${MOBILE_STATE_KEY}:${ownerId}`;
-    const raw = storage?.getItem(key);
+    const raw = storageGetItem(storage, key);
     if (!raw) {
         const fresh = {
             owner_discord_id: ownerId,
@@ -331,7 +352,7 @@ function readMobileState(ownerId) {
             revision: 0,
             last_writer_id: ownerId
         };
-        if (storage) storage.setItem(key, JSON.stringify(fresh));
+        storageSetItem(storage, key, JSON.stringify(fresh));
         return fresh;
     }
 
@@ -365,7 +386,7 @@ function writeMobileState(state) {
         revision: Math.max(0, Math.floor(state.revision || 0)),
         last_writer_id: state.last_writer_id || state.owner_discord_id
     };
-    if (storage) storage.setItem(key, JSON.stringify(normalized));
+    storageSetItem(storage, key, JSON.stringify(normalized));
     return normalized;
 }
 
@@ -991,7 +1012,14 @@ function getProfilePanelOpenInfo(props) {
         props?.isVisible,
         props?.visible
     ];
-    const explicitState = openStateCandidates.find(value => typeof value === "boolean");
+    let explicitState;
+    for (let i = 0; i < openStateCandidates.length; i += 1) {
+        const value = openStateCandidates[i];
+        if (typeof value === "boolean") {
+            explicitState = value;
+            break;
+        }
+    }
     return {
         isOpen: explicitState ?? true,
         hasExplicitState: explicitState !== undefined
@@ -1004,13 +1032,27 @@ function getReactTools() {
     return { React, ReactNative };
 }
 
+function resolveReactHook(React, hookName) {
+    if (!React) return null;
+    const directHook = React[hookName];
+    if (typeof directHook === "function") return directHook.bind(React);
+    const defaultHook = React.default?.[hookName];
+    if (typeof defaultHook === "function") return defaultHook.bind(React.default);
+    return null;
+}
+
 function ConfigPanel(props) {
     const { React, ReactNative } = getReactTools();
     if (!React || !ReactNative) return null;
+    const h = resolveReactHook(React, "createElement");
+    const useState = resolveReactHook(React, "useState");
+    const useEffect = resolveReactHook(React, "useEffect");
+    const useRef = resolveReactHook(React, "useRef");
+    const useCallback = resolveReactHook(React, "useCallback");
+    if (!h || !useState || !useEffect || !useRef) return null;
     const { ScrollView, View, Text, TextInput, Pressable } = ReactNative;
     if (!ScrollView || !View || !Text || !TextInput || !Pressable) return null;
-    const h = React.createElement;
-    const useCallbackCompat = typeof React.useCallback === "function" ? React.useCallback.bind(React) : (callback => callback);
+    const useCallbackCompat = useCallback ?? (callback => callback);
     const activeUserId = currentUser().id;
     const profileUserIdFromProps = getProfileUserId(props);
     const profileUserIdCandidates = getProfileUserIdCandidates(props);
@@ -1018,31 +1060,37 @@ function ConfigPanel(props) {
     const isPanelOpen = panelOpenInfo.isOpen;
     const hasExplicitPanelOpenState = panelOpenInfo.hasExplicitState;
 
-    const [relayUrl, setRelayUrl] = React.useState(currentRelayUrl());
-    const [status, setStatus] = React.useState("");
-    const [manualTargetUserIdInput, setManualTargetUserIdInput] = React.useState("");
-    const [manualTargetUserId, setManualTargetUserId] = React.useState("");
-    const [newEditorId, setNewEditorId] = React.useState("");
-    const [allowedEditors, setAllowedEditors] = React.useState([]);
-    const [pendingRequests, setPendingRequests] = React.useState([]);
+    let relayUrlState;
+    try {
+        relayUrlState = useState(currentRelayUrl());
+    } catch {
+        return null;
+    }
+    const [relayUrl, setRelayUrl] = relayUrlState;
+    const [status, setStatus] = useState("");
+    const [manualTargetUserIdInput, setManualTargetUserIdInput] = useState("");
+    const [manualTargetUserId, setManualTargetUserId] = useState("");
+    const [newEditorId, setNewEditorId] = useState("");
+    const [allowedEditors, setAllowedEditors] = useState([]);
+    const [pendingRequests, setPendingRequests] = useState([]);
     const profileUserId = manualTargetUserId || profileUserIdFromProps || activeUserId;
     const isManualTargetActive = Boolean(manualTargetUserId);
     const isOwnProfile = profileUserId === activeUserId;
-    const [canViewRemote, setCanViewRemote] = React.useState(isOwnProfile);
-    const [editableConfig, setEditableConfig] = React.useState(() => mergeLocalConfig(interceptConfig));
-    const [censoredWordsText, setCensoredWordsText] = React.useState(() => toLines(interceptConfig.censored_words));
-    const [timeoutAdjustments, setTimeoutAdjustments] = React.useState(() => createTimeoutAdjustmentDefaults());
-    const [groupTimeoutAdjustments, setGroupTimeoutAdjustments] = React.useState({});
-    const [isRulesEditorOpen, setIsRulesEditorOpen] = React.useState(false);
-    const [nowMs, setNowMs] = React.useState(() => Date.now());
-    const skipAutosaveRef = React.useRef(true);
-    const lastSavedSnapshotRef = React.useRef("");
-    const saveQueueRef = React.useRef(Promise.resolve());
-    const refreshInFlightRef = React.useRef(false);
+    const [canViewRemote, setCanViewRemote] = useState(isOwnProfile);
+    const [editableConfig, setEditableConfig] = useState(() => mergeLocalConfig(interceptConfig));
+    const [censoredWordsText, setCensoredWordsText] = useState(() => toLines(interceptConfig.censored_words));
+    const [timeoutAdjustments, setTimeoutAdjustments] = useState(() => createTimeoutAdjustmentDefaults());
+    const [groupTimeoutAdjustments, setGroupTimeoutAdjustments] = useState({});
+    const [isRulesEditorOpen, setIsRulesEditorOpen] = useState(false);
+    const [nowMs, setNowMs] = useState(() => Date.now());
+    const skipAutosaveRef = useRef(true);
+    const lastSavedSnapshotRef = useRef("");
+    const saveQueueRef = useRef(Promise.resolve());
+    const refreshInFlightRef = useRef(false);
 
     const profileCandidateSignature = profileUserIdCandidates.map(([path, id]) => `${path}:${id}`).join("|");
 
-    React.useEffect(() => {
+    useEffect(() => {
         appendProfileHookEvent("config-panel-mounted", props, {
             entrypoint: "settings-or-userProfileBadge",
             profile_user_id_from_props: profileUserIdFromProps,
@@ -1050,7 +1098,7 @@ function ConfigPanel(props) {
         });
     }, []);
 
-    React.useEffect(() => {
+    useEffect(() => {
         appendProfileHookEvent("config-panel-context", props, {
             profile_user_id_from_props: profileUserIdFromProps,
             effective_profile_user_id: profileUserId,
@@ -1060,7 +1108,7 @@ function ConfigPanel(props) {
         });
     }, [isManualTargetActive, isOwnProfile, isPanelOpen, profileCandidateSignature, profileUserId, profileUserIdFromProps]);
 
-    React.useEffect(() => {
+    useEffect(() => {
         setCanViewRemote(isOwnProfile);
     }, [isOwnProfile, profileUserId]);
 
@@ -1122,11 +1170,11 @@ function ConfigPanel(props) {
         }
     }, [activeUserId, isOwnProfile, isPanelOpen, profileUserId, props, updateFromConfig]);
 
-    React.useEffect(() => {
+    useEffect(() => {
         refresh().catch(err => setStatus(String(err)));
     }, [refresh, isPanelOpen]);
 
-    React.useEffect(() => {
+    useEffect(() => {
         if (!isPanelOpen || hasExplicitPanelOpenState) return;
         const handle = setInterval(() => {
             const { snapshot } = buildConfigSnapshot(editableConfig, censoredWordsText);
@@ -1136,7 +1184,7 @@ function ConfigPanel(props) {
         return () => clearInterval(handle);
     }, [censoredWordsText, editableConfig, hasExplicitPanelOpenState, isPanelOpen, refresh]);
 
-    React.useEffect(() => {
+    useEffect(() => {
         const handle = setInterval(() => setNowMs(Date.now()), 1000);
         return () => clearInterval(handle);
     }, []);
@@ -1148,7 +1196,7 @@ function ConfigPanel(props) {
             setStatus("Relay URL cannot be empty");
             return;
         }
-        storage?.setItem(RELAY_URL_STORAGE_KEY, next);
+        storageSetItem(storage, RELAY_URL_STORAGE_KEY, next);
         setStatus("Saved relay URL");
     }, [relayUrl]);
 
@@ -1198,7 +1246,7 @@ function ConfigPanel(props) {
         }).catch(err => setStatus(`Auto-save failed: ${String(err)}`));
     }, [activeUserId, censoredWordsText, isOwnProfile, profileUserId]);
 
-    React.useEffect(() => {
+    useEffect(() => {
         if (!(isOwnProfile || canViewRemote) || !isPanelOpen) return;
         if (skipAutosaveRef.current) {
             skipAutosaveRef.current = false;
@@ -1909,12 +1957,18 @@ function ConfigPanel(props) {
 
 function SettingsPanel(props) {
     appendProfileHookEvent("settings-entrypoint", props, { entrypoint: "settings" });
-    return ConfigPanel(props);
+    const { React } = getReactTools();
+    const h = resolveReactHook(React, "createElement");
+    if (!h) return null;
+    return h(ConfigPanel, props);
 }
 
 function UserProfileBadgePanel(props) {
     appendProfileHookEvent("user-profile-badge-entrypoint", props, { entrypoint: "userProfileBadge" });
-    return ConfigPanel(props);
+    const { React } = getReactTools();
+    const h = resolveReactHook(React, "createElement");
+    if (!h) return null;
+    return h(ConfigPanel, props);
 }
 
 const plugin = {
