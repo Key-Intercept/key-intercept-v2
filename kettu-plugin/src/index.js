@@ -1953,14 +1953,16 @@ function SettingsPanel(props) {
     appendProfileHookEvent("settings-entrypoint", props, { entrypoint: "settings" });
     const { React } = getReactTools();
     const h = resolveReactHook(React, "createElement");
-    return h ? h(ConfigPanel, props) : ConfigPanel(props);
+    if (!h) return null;
+    return h(ConfigPanel, props);
 }
 
 function UserProfileBadgePanel(props) {
     appendProfileHookEvent("user-profile-badge-entrypoint", props, { entrypoint: "userProfileBadge" });
     const { React } = getReactTools();
     const h = resolveReactHook(React, "createElement");
-    return h ? h(ConfigPanel, props) : ConfigPanel(props);
+    if (!h) return null;
+    return h(ConfigPanel, props);
 }
 
 const plugin = {

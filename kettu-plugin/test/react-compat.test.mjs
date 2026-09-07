@@ -15,7 +15,8 @@ const requiredSnippets = [
     "const useEffect = resolveReactHook(React, \"useEffect\");",
     "const useRef = resolveReactHook(React, \"useRef\");",
     "if (!h || !useState || !useEffect || !useRef) return null;",
-    "return h ? h(ConfigPanel, props) : ConfigPanel(props);"
+    "if (!h) return null;",
+    "return h(ConfigPanel, props);"
 ];
 
 for (const snippet of requiredSnippets) {
@@ -27,14 +28,15 @@ const forbiddenSnippets = [
     "React.useState(",
     "React.useEffect(",
     "React.useRef(",
-    "React.createElement("
+    "React.createElement(",
+    "return h ? h(ConfigPanel, props) : ConfigPanel(props);"
 ];
 
 for (const snippet of forbiddenSnippets) {
     assert.ok(!source.includes(snippet), `Found runtime-fragile snippet that should be avoided: ${snippet}`);
 }
 
-const entrypointRenderMatches = source.match(/return h \? h\(ConfigPanel, props\) : ConfigPanel\(props\);/g) ?? [];
-assert.equal(entrypointRenderMatches.length, 2, "Expected both settings entrypoints to render ConfigPanel via createElement fallback");
+const entrypointRenderMatches = source.match(/return h\(ConfigPanel, props\);/g) ?? [];
+assert.equal(entrypointRenderMatches.length, 2, "Expected both settings entrypoints to render ConfigPanel via createElement");
 
 console.log("kettu react compatibility test passed");
