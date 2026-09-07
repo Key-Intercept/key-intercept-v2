@@ -949,7 +949,11 @@ function getProfileUserId(props) {
         props?.displayProfile?.userId,
         props?.account?.id
     ];
-    return candidates.find(value => typeof value === "string" && value.length > 0) ?? null;
+    for (let i = 0; i < candidates.length; i++) {
+        const value = candidates[i];
+        if (typeof value === "string" && value.length > 0) return value;
+    }
+    return null;
 }
 
 function getProfilePanelOpenInfo(props) {
