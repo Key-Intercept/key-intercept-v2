@@ -34,6 +34,7 @@ Self-hosted refactor split into three components:
 cargo test -p loopback-server -p relay-server -p key-intercept-installer
 cargo check -p loopback-server -p relay-server -p key-intercept-installer
 npm --prefix plugin test
+npm --prefix kettu-plugin test
 npm --prefix kettu-plugin run build
 ```
 
