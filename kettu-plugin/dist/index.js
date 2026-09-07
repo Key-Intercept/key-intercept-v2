@@ -1785,6 +1785,18 @@ function ConfigPanel(props) {
     );
 }
 
+const profileConfigBadge = {
+    id: "key-intercept-controls",
+    key: "key-intercept-controls",
+    description: "key-intercept controls",
+    component: props => {
+        const { React } = getReactTools();
+        const h = resolveReactHook(React, "createElement");
+        if (!h) return null;
+        return h(ConfigPanel, props);
+    }
+};
+
 const plugin = {
     onLoad: () => {
         findByProps = globalThis?.vendetta?.metro?.findByProps ?? null;
@@ -1809,16 +1821,7 @@ const plugin = {
         if (!h) return null;
         return h(ConfigPanel, props);
     },
-    userProfileBadge: {
-        id: "key-intercept-controls",
-        key: "key-intercept-controls",
-        description: "key-intercept controls",
-        component: props => {
-            const { React } = getReactTools();
-            const h = resolveReactHook(React, "createElement");
-            if (!h) return null;
-            return h(ConfigPanel, props);
-        }
-    }
+    userProfileBadge: profileConfigBadge,
+    userProfileBadges: [profileConfigBadge]
 };
 return plugin;})(vendetta)
