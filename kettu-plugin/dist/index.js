@@ -1074,7 +1074,7 @@ function ConfigPanel(props) {
     }, [activeUserId, isOwnProfile, isPanelOpen, profileUserId, updateFromConfig]);
 
     useEffect(() => {
-        refresh().catch(err => setStatus(String(err)));
+        Promise.resolve(refresh()).catch(err => setStatus(String(err)));
     }, [refresh, isPanelOpen]);
 
     useEffect(() => {
@@ -1082,7 +1082,7 @@ function ConfigPanel(props) {
         const handle = setInterval(() => {
             const { snapshot } = buildConfigSnapshot(editableConfig, censoredWordsText);
             if (snapshot !== lastSavedSnapshotRef.current) return;
-            refresh().catch(err => setStatus(String(err)));
+            Promise.resolve(refresh()).catch(err => setStatus(String(err)));
         }, 1500);
         return () => clearInterval(handle);
     }, [censoredWordsText, editableConfig, hasExplicitPanelOpenState, isPanelOpen, refresh]);
