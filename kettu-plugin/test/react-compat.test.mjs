@@ -16,7 +16,8 @@ const requiredSnippets = [
     "const useRef = resolveReactHook(React, \"useRef\");",
     "if (!h || !useState || !useEffect || !useRef) return null;",
     "if (!h) return null;",
-    "return h(ConfigPanel, props);"
+    "return h(ConfigPanel, props);",
+    "userProfileBadges: [profileConfigBadge]"
 ];
 
 for (const snippet of requiredSnippets) {
