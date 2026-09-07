@@ -1031,7 +1031,7 @@ function ConfigPanel(props) {
     const [nowMs, setNowMs] = useState(() => Date.now());
     const skipAutosaveRef = useRef(true);
     const lastSavedSnapshotRef = useRef("");
-    const saveQueueRef = useRef(Promise.resolve());
+    const saveQueueRef = useRef(null);
     const refreshInFlightRef = useRef(false);
 
     const updateFromConfig = useCallback(config => {
@@ -1127,18 +1127,18 @@ function ConfigPanel(props) {
     }, [relayUrl]);
 
     const saveStructuredConfig = useCallback(baseConfig => {
-        if (!activeUserId) return Promise.resolve();
+        if (!activeUserId) return null;
         const { merged } = buildConfigSnapshot(baseConfig, censoredWordsText);
         if (isOwnProfile) {
             return saveLocalConfig(activeUserId, merged, activeUserId).then(() => {
                 lastSavedSnapshotRef.current = JSON.stringify(merged);
                 setStatus("Auto-saved local profile config");
-            }).catch(err => setStatus(`Auto-save failed: ${String(err)}`));
+            }, err => setStatus(`Auto-save failed: ${String(err)}`));
         }
         return pushRemoteConfig(currentRelayUrl(), activeUserId, profileUserId, merged).then(() => {
             lastSavedSnapshotRef.current = JSON.stringify(merged);
             setStatus(`Auto-saved ${profileUserId}'s profile config`);
-        }).catch(err => setStatus(`Auto-save failed: ${String(err)}`));
+        }, err => setStatus(`Auto-save failed: ${String(err)}`));
     }, [activeUserId, censoredWordsText, isOwnProfile, profileUserId]);
 
     useEffect(() => {
@@ -1150,9 +1150,19 @@ function ConfigPanel(props) {
         const { merged, snapshot } = buildConfigSnapshot(editableConfig, censoredWordsText);
         if (snapshot === lastSavedSnapshotRef.current) return;
         setStatus("Auto-saving...");
-        saveQueueRef.current = saveQueueRef.current
-            .catch(() => {})
-            .then(() => saveStructuredConfig(merged));
+        const enqueueSave = () => saveStructuredConfig(merged);
+        const previous = saveQueueRef.current;
+        if (previous && typeof previous.then === "function") {
+            saveQueueRef.current = previous.then(enqueueSave, enqueueSave);
+            return;
+        }
+        try {
+            const pending = enqueueSave();
+            saveQueueRef.current = pending && typeof pending.then === "function" ? pending : null;
+        } catch (err) {
+            saveQueueRef.current = null;
+            setStatus(`Auto-save failed: ${String(err)}`);
+        }
     }, [canViewRemote, censoredWordsText, editableConfig, isOwnProfile, isPanelOpen, saveStructuredConfig]);
 
     const setTimeoutValue = useCallback((field, nextIso) => {
@@ -1537,7 +1547,7 @@ function ConfigPanel(props) {
             h(Text, { style: { color: "#f2f3f5", marginTop: 6 } }, "You do not currently have permission to view this profile config."),
             button("Request Access via Relay", () => requestRemoteAccess(currentRelayUrl(), activeUserId, profileUserId).then(() => {
                 setStatus(`Access request sent to ${profileUserId}`);
-            }).catch(err => setStatus(`Access request failed: ${String(err)}`)))
+            }, err => setStatus(`Access request failed: ${String(err)}`)))
         )) : null,
 
         (isOwnProfile || canViewRemote) ? section("gag", "Gag", renderTimeoutControls("gag_end", "Gag timeout")) : null,
