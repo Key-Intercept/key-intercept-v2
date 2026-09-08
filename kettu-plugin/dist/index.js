@@ -78,6 +78,8 @@ let unpatchSendMessage = null;
 let findByProps = null;
 let ReactRef = null;
 let ReactNativeRef = null;
+let pendingProfileEditorLaunch = null;
+let registeredProfileActionFallback = null;
 
 function cloneDefaultConfig() {
     return JSON.parse(JSON.stringify(defaultLocalConfig));
@@ -420,6 +422,93 @@ function currentUser() {
 
 function validateDiscordId(value) {
     return typeof value === "string" && /^\d+$/.test(value);
+}
+
+function requestProfileEditorLaunch(targetUserId, source) {
+    if (!validateDiscordId(targetUserId)) {
+        console.log(`${LOG_PREFIX} launcher ignored invalid target`, { targetUserId, source });
+        return false;
+    }
+    pendingProfileEditorLaunch = { targetUserId, source };
+    console.log(`${LOG_PREFIX} launcher requested`, { targetUserId, source });
+
+    const openSettingsCandidates = [
+        globalThis?.vendetta?.ui?.openSettings,
+        globalThis?.vendetta?.ui?.plugins?.openSettings,
+        globalThis?.vendetta?.plugins?.openSettings
+    ];
+    for (let i = 0; i < openSettingsCandidates.length; i++) {
+        const openSettings = openSettingsCandidates[i];
+        if (typeof openSettings !== "function") continue;
+        try {
+            openSettings("key-intercept");
+            console.log(`${LOG_PREFIX} launcher attempted to open plugin settings`, { source, strategy: i + 1 });
+            break;
+        } catch (err) {
+            console.log(`${LOG_PREFIX} launcher failed to open plugin settings`, err);
+        }
+    }
+    return true;
+}
+
+function openProfileEditorPopup(targetUserId, source) {
+    if (!validateDiscordId(targetUserId)) return false;
+    const { React } = getReactTools();
+    const h = resolveReactHook(React, "createElement");
+    if (!h) return false;
+
+    const modalRender = modalProps => h(
+        ConfigPanel,
+        {
+            ...(modalProps ?? {}),
+            forcedProfileUserId: targetUserId,
+            entrypoint: `context-popup:${source}`,
+            isOpen: true
+        }
+    );
+
+    const modalAPIs = [
+        globalThis?.vendetta?.ui?.openModal,
+        globalThis?.vendetta?.ui?.modals?.openModal,
+        findByProps?.("openModal", "closeModal")?.openModal
+    ];
+    for (let i = 0; i < modalAPIs.length; i++) {
+        const openModal = modalAPIs[i];
+        if (typeof openModal !== "function") continue;
+        try {
+            openModal(modalRender);
+            console.log(`${LOG_PREFIX} popup opened`, { targetUserId, source, strategy: i + 1 });
+            return true;
+        } catch (err) {
+            console.log(`${LOG_PREFIX} popup open failed`, err);
+        }
+    }
+    console.log(`${LOG_PREFIX} popup api unavailable`, { targetUserId, source });
+    return false;
+}
+
+function consumePendingProfileEditorLaunch() {
+    const pending = pendingProfileEditorLaunch;
+    pendingProfileEditorLaunch = null;
+    return pending;
+}
+
+function getContextTargetUserId(props) {
+    const candidates = [
+        props?.user?.id,
+        props?.userId,
+        props?.message?.author?.id,
+        props?.message?.authorId,
+        props?.author?.id,
+        props?.targetUser?.id,
+        props?.profileUserId,
+        props?.account?.id
+    ];
+    for (let i = 0; i < candidates.length; i++) {
+        const value = candidates[i];
+        if (typeof value === "string" && value.length > 0) return value;
+    }
+    return null;
 }
 
 function readLocalConfig(ownerId) {
@@ -1005,7 +1094,11 @@ function ConfigPanel(props) {
     const useCallback = resolveReactHook(React, "useCallback") ?? (callback => callback);
     if (!h || !useState || !useEffect || !useRef) return null;
     const activeUserId = currentUser().id;
-    const profileUserId = getProfileUserId(props) ?? activeUserId;
+    const forcedProfileUserId = typeof props?.forcedProfileUserId === "string" && props.forcedProfileUserId.length > 0
+        ? props.forcedProfileUserId
+        : null;
+    const profileUserId = forcedProfileUserId ?? getProfileUserId(props) ?? activeUserId;
+    const entrypoint = typeof props?.entrypoint === "string" ? props.entrypoint : "unknown";
     const isOwnProfile = profileUserId === activeUserId;
     const panelOpenInfo = getProfilePanelOpenInfo(props);
     const isPanelOpen = panelOpenInfo.isOpen;
@@ -1033,6 +1126,23 @@ function ConfigPanel(props) {
     const lastSavedSnapshotRef = useRef("");
     const saveQueueRef = useRef(null);
     const refreshInFlightRef = useRef(false);
+    const profileDebugRef = useRef("");
+
+    useEffect(() => {
+        const nextDebug = `${entrypoint}:${activeUserId}:${profileUserId}:${isPanelOpen ? "open" : "closed"}`;
+        if (profileDebugRef.current === nextDebug) return;
+        profileDebugRef.current = nextDebug;
+        const propKeys = props && typeof props === "object" ? Object.keys(props).slice(0, 12) : [];
+        console.log(`${LOG_PREFIX} panel target`, {
+            entrypoint,
+            forcedProfileUserId,
+            activeUserId,
+            profileUserId,
+            isOwnProfile,
+            isPanelOpen,
+            propKeys
+        });
+    }, [activeUserId, entrypoint, forcedProfileUserId, isOwnProfile, isPanelOpen, profileUserId, props]);
 
     const updateFromConfig = useCallback(config => {
         const merged = mergeLocalConfig(config);
@@ -1785,6 +1895,195 @@ function ConfigPanel(props) {
     );
 }
 
+function ConfigLauncherPanel(props) {
+    const { React, ReactNative } = getReactTools();
+    if (!React || !ReactNative) return ConfigPanel(props);
+    const { View, Text, TextInput, Pressable } = ReactNative;
+    if (!View || !Text || !TextInput || !Pressable) return ConfigPanel(props);
+    const h = resolveReactHook(React, "createElement");
+    const useState = resolveReactHook(React, "useState");
+    const useEffect = resolveReactHook(React, "useEffect");
+    const useRef = resolveReactHook(React, "useRef");
+    if (!h || !useState || !useEffect || !useRef) return ConfigPanel(props);
+
+    let targetUserInputState;
+    try {
+        targetUserInputState = useState("");
+    } catch {
+        return ConfigPanel(props);
+    }
+    const activeUserId = currentUser().id;
+    const [targetUserInput, setTargetUserInput] = targetUserInputState;
+    const [selectedUserId, setSelectedUserId] = useState(activeUserId);
+    const [launcherStatus, setLauncherStatus] = useState("");
+    const [launcherRevision, setLauncherRevision] = useState(0);
+    const lastConsumedLaunchRef = useRef("");
+
+    useEffect(() => {
+        const pending = consumePendingProfileEditorLaunch();
+        if (!pending) return;
+        const launchKey = `${pending.source}:${pending.targetUserId}`;
+        lastConsumedLaunchRef.current = launchKey;
+        setSelectedUserId(pending.targetUserId);
+        setLauncherRevision(revision => revision + 1);
+        setLauncherStatus(`Opened target ${pending.targetUserId} from ${pending.source}`);
+        console.log(`${LOG_PREFIX} launcher consumed pending request`, pending);
+    }, []);
+
+    const launchForUser = (targetUserId, source) => {
+        if (!validateDiscordId(targetUserId)) {
+            setLauncherStatus("Enter a numeric Discord ID");
+            return;
+        }
+        const launchKey = `${source}:${targetUserId}`;
+        lastConsumedLaunchRef.current = launchKey;
+        setSelectedUserId(targetUserId);
+        setLauncherRevision(revision => revision + 1);
+        setLauncherStatus(`Opened target ${targetUserId}`);
+        console.log(`${LOG_PREFIX} launcher invoked`, { source, targetUserId });
+    };
+
+    const inputStyle = {
+        color: "#f2f3f5",
+        borderWidth: 1,
+        borderColor: "#3f4147",
+        borderRadius: 8,
+        paddingHorizontal: 10,
+        paddingVertical: 8,
+        marginTop: 6
+    };
+
+    const button = (label, onPress, options = {}) => h(
+        Pressable,
+        {
+            key: options.key ?? label,
+            onPress,
+            style: {
+                paddingVertical: 10,
+                paddingHorizontal: 12,
+                borderRadius: 8,
+                backgroundColor: options.active ? "#3ba55d" : "#5865f2",
+                marginTop: options.noTopMargin ? 0 : 6,
+                marginRight: 6
+            }
+        },
+        h(Text, { style: { color: "#ffffff", fontWeight: "600" } }, label)
+    );
+
+    return h(
+        View,
+        null,
+        h(
+            View,
+            {
+                style: {
+                    marginBottom: 12,
+                    padding: 12,
+                    borderRadius: 12,
+                    borderWidth: 1,
+                    borderColor: "#3f4147",
+                    backgroundColor: "#2b2d31"
+                }
+            },
+            h(Text, { style: { color: "#f2f3f5", fontSize: 16, fontWeight: "700" } }, "Profile Config Editor"),
+            h(Text, { style: { color: "#b5bac1", marginTop: 4 } }, "Use this launcher if profile badges do not appear."),
+            h(View, { style: { marginTop: 8, flexDirection: "row", flexWrap: "wrap" } },
+                button("Open my profile config", () => launchForUser(activeUserId, "settings:self"), { key: "open-self", noTopMargin: true }),
+                button("Open by Discord ID", () => launchForUser(targetUserInput.trim(), "settings:manual"), { key: "open-target", noTopMargin: true })
+            ),
+            h(TextInput, {
+                value: targetUserInput,
+                onChangeText: setTargetUserInput,
+                placeholder: "Discord ID",
+                placeholderTextColor: "#80848e",
+                keyboardType: "numeric",
+                style: inputStyle
+            }),
+            launcherStatus ? h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, launcherStatus) : null
+        ),
+        h(ConfigPanel, {
+            ...props,
+            forcedProfileUserId: selectedUserId,
+            entrypoint: `settings-launcher:${launcherRevision}`,
+            isOpen: true
+        })
+    );
+}
+
+function appendContextMenuOpenConfigItem(children, props, sourceLabel) {
+    if (!Array.isArray(children)) return;
+    const Menu = findByProps?.("MenuItem", "MenuGroup");
+    const { React } = getReactTools();
+    const h = resolveReactHook(React, "createElement");
+    if (!Menu?.MenuItem || !Menu?.MenuGroup || !h) return;
+
+    const targetUserId = getContextTargetUserId(props);
+    if (!validateDiscordId(targetUserId)) return;
+
+    const menuId = `key-intercept-open-config-${sourceLabel}`;
+    console.log(`${LOG_PREFIX} context entrypoint rendered`, { source: sourceLabel, targetUserId });
+    children.push(h(
+        Menu.MenuGroup,
+        { key: menuId },
+        h(Menu.MenuItem, {
+            id: menuId,
+            label: "Open Key Intercept Config Popup",
+            action: () => {
+                console.log(`${LOG_PREFIX} context entrypoint invoked`, { source: sourceLabel, targetUserId });
+                if (openProfileEditorPopup(targetUserId, `context:${sourceLabel}`)) return;
+                requestProfileEditorLaunch(targetUserId, `context:${sourceLabel}:fallback`);
+            }
+        })
+    ));
+}
+
+function registerProfileActionFallback() {
+    const registerCandidates = [
+        globalThis?.vendetta?.ui?.profile?.registerAction,
+        globalThis?.vendetta?.ui?.profileActions?.register,
+        globalThis?.vendetta?.profile?.registerAction
+    ];
+    for (let i = 0; i < registerCandidates.length; i++) {
+        const register = registerCandidates[i];
+        if (typeof register !== "function") continue;
+        try {
+            const unpatch = register({
+                id: "key-intercept-open-profile-config",
+                label: "Open Key Intercept Config",
+                onPress: props => {
+                    const targetUserId = getContextTargetUserId(props) ?? currentUser().id;
+                    console.log(`${LOG_PREFIX} profile action fallback invoked`, { targetUserId, propsKeys: Object.keys(props ?? {}).slice(0, 8) });
+                    requestProfileEditorLaunch(targetUserId, "profile-action");
+                }
+            });
+            if (typeof unpatch === "function") {
+                registeredProfileActionFallback = unpatch;
+            } else {
+                registeredProfileActionFallback = null;
+            }
+            console.log(`${LOG_PREFIX} profile action fallback registered`, { strategy: i + 1 });
+            return true;
+        } catch (err) {
+            console.log(`${LOG_PREFIX} profile action fallback registration failed`, err);
+        }
+    }
+    console.log(`${LOG_PREFIX} profile action fallback unavailable`);
+    return false;
+}
+
+const profileConfigBadge = {
+    id: "key-intercept-controls",
+    key: "key-intercept-controls",
+    description: "key-intercept controls",
+    component: props => {
+        console.log(`${LOG_PREFIX} badge entrypoint invoked`, { propsKeys: Object.keys(props ?? {}).slice(0, 8) });
+        const { React } = getReactTools();
+        const h = resolveReactHook(React, "createElement");
+        if (!h) return null;
+        return h(ConfigPanel, { ...props, entrypoint: "profile-badge" });
+    }
+};
+
 const plugin = {
     onLoad: () => {
         findByProps = globalThis?.vendetta?.metro?.findByProps ?? null;
@@ -1795,6 +2094,14 @@ const plugin = {
         }
         return bootstrapConfig().then(() => {
             patchSendMessage();
+            const profileActionRegistered = registerProfileActionFallback();
+            console.log(`${LOG_PREFIX} entrypoints registered`, {
+                settingsLauncher: true,
+                badge: true,
+                badgeList: true,
+                contextMenus: true,
+                profileActionFallback: profileActionRegistered
+            });
         });
     },
     onUnload: () => {
@@ -1802,23 +2109,37 @@ const plugin = {
             unpatchSendMessage();
             unpatchSendMessage = null;
         }
+        if (registeredProfileActionFallback) {
+            try {
+                registeredProfileActionFallback();
+            } catch (err) {
+                console.log(`${LOG_PREFIX} failed to unregister profile action fallback`, err);
+            }
+            registeredProfileActionFallback = null;
+        }
     },
     settings: props => {
         const { React } = getReactTools();
         const h = resolveReactHook(React, "createElement");
         if (!h) return null;
-        return h(ConfigPanel, props);
+        console.log(`${LOG_PREFIX} settings entrypoint invoked`, { propsKeys: Object.keys(props ?? {}).slice(0, 8) });
+        return h(ConfigLauncherPanel, props);
     },
-    userProfileBadge: {
-        id: "key-intercept-controls",
-        key: "key-intercept-controls",
-        description: "key-intercept controls",
-        component: props => {
-            const { React } = getReactTools();
-            const h = resolveReactHook(React, "createElement");
-            if (!h) return null;
-            return h(ConfigPanel, props);
+    contextMenus: {
+        "user-context": (children, props) => {
+            appendContextMenuOpenConfigItem(children, props, "user-context");
         }
-    }
+    },
+    userProfileBadge: profileConfigBadge,
+    userProfileBadges: [profileConfigBadge],
+    profileActions: [{
+        id: "key-intercept-open-profile-config",
+        label: "Open Key Intercept Config",
+        onPress: props => {
+            const targetUserId = getContextTargetUserId(props) ?? currentUser().id;
+            console.log(`${LOG_PREFIX} profile actions entrypoint invoked`, { targetUserId, propsKeys: Object.keys(props ?? {}).slice(0, 8) });
+            requestProfileEditorLaunch(targetUserId, "profile-actions");
+        }
+    }]
 };
 return plugin;})(vendetta)

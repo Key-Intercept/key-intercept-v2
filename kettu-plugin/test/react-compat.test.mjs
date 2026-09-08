@@ -16,7 +16,13 @@ const requiredSnippets = [
     "const useRef = resolveReactHook(React, \"useRef\");",
     "if (!h || !useState || !useEffect || !useRef) return null;",
     "if (!h) return null;",
-    "return h(ConfigPanel, props);"
+    "entrypoint: \"profile-badge\"",
+    "return h(ConfigLauncherPanel, props);",
+    "userProfileBadges: [profileConfigBadge]",
+    "function openProfileEditorPopup(targetUserId, source) {",
+    "\"user-context\": (children, props) => {",
+    "appendContextMenuOpenConfigItem(children, props, \"user-context\");",
+    "label: \"Open Key Intercept Config Popup\""
 ];
 
 for (const snippet of requiredSnippets) {
@@ -36,8 +42,8 @@ for (const snippet of forbiddenSnippets) {
     assert.ok(!source.includes(snippet), `Found runtime-fragile snippet that should be avoided: ${snippet}`);
 }
 
-const entrypointRenderMatches = source.match(/return h\(ConfigPanel, props\);/g) ?? [];
-assert.equal(entrypointRenderMatches.length, 2, "Expected both settings entrypoints to render ConfigPanel via createElement");
+const entrypointRenderMatches = source.match(/return h\(ConfigPanel,\s*/g) ?? [];
+assert.ok(entrypointRenderMatches.length >= 1, "Expected at least one createElement ConfigPanel entrypoint for profile rendering");
 
 assert.match(
     source,
