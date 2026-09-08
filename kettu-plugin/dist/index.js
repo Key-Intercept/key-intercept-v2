@@ -451,6 +451,42 @@ function requestProfileEditorLaunch(targetUserId, source) {
     return true;
 }
 
+function openProfileEditorPopup(targetUserId, source) {
+    if (!validateDiscordId(targetUserId)) return false;
+    const { React } = getReactTools();
+    const h = resolveReactHook(React, "createElement");
+    if (!h) return false;
+
+    const modalRender = modalProps => h(
+        ConfigPanel,
+        {
+            ...(modalProps ?? {}),
+            forcedProfileUserId: targetUserId,
+            entrypoint: `context-popup:${source}`,
+            isOpen: true
+        }
+    );
+
+    const modalAPIs = [
+        globalThis?.vendetta?.ui?.openModal,
+        globalThis?.vendetta?.ui?.modals?.openModal,
+        findByProps?.("openModal", "closeModal")?.openModal
+    ];
+    for (let i = 0; i < modalAPIs.length; i++) {
+        const openModal = modalAPIs[i];
+        if (typeof openModal !== "function") continue;
+        try {
+            openModal(modalRender);
+            console.log(`${LOG_PREFIX} popup opened`, { targetUserId, source, strategy: i + 1 });
+            return true;
+        } catch (err) {
+            console.log(`${LOG_PREFIX} popup open failed`, err);
+        }
+    }
+    console.log(`${LOG_PREFIX} popup api unavailable`, { targetUserId, source });
+    return false;
+}
+
 function consumePendingProfileEditorLaunch() {
     const pending = pendingProfileEditorLaunch;
     pendingProfileEditorLaunch = null;
@@ -1991,10 +2027,11 @@ function appendContextMenuOpenConfigItem(children, props, sourceLabel) {
         { key: menuId },
         h(Menu.MenuItem, {
             id: menuId,
-            label: "Open Key Intercept Config",
+            label: "Open Key Intercept Config Popup",
             action: () => {
                 console.log(`${LOG_PREFIX} context entrypoint invoked`, { source: sourceLabel, targetUserId });
-                requestProfileEditorLaunch(targetUserId, `context:${sourceLabel}`);
+                if (openProfileEditorPopup(targetUserId, `context:${sourceLabel}`)) return;
+                requestProfileEditorLaunch(targetUserId, `context:${sourceLabel}:fallback`);
             }
         })
     ));
@@ -2091,12 +2128,6 @@ const plugin = {
     contextMenus: {
         "user-context": (children, props) => {
             appendContextMenuOpenConfigItem(children, props, "user-context");
-        },
-        "message": (children, props) => {
-            appendContextMenuOpenConfigItem(children, props, "message");
-        },
-        "message-long-press": (children, props) => {
-            appendContextMenuOpenConfigItem(children, props, "message-long-press");
         }
     },
     userProfileBadge: profileConfigBadge,
