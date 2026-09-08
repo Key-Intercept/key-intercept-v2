@@ -441,11 +441,19 @@ function requestProfileEditorLaunch(targetUserId, source) {
         const openSettings = openSettingsCandidates[i];
         if (typeof openSettings !== "function") continue;
         try {
-            openSettings("key-intercept");
-            console.log(`${LOG_PREFIX} launcher attempted to open plugin settings`, { source, strategy: i + 1 });
+            try {
+                openSettings("key-intercept");
+            } catch (innerErr) {
+                openSettings("key intercept");
+            }
+            if (interceptConfig?.config?.debug) {
+                console.log(`${LOG_PREFIX} launcher attempted to open plugin settings`, { source, strategy: i + 1 });
+            }
             break;
         } catch (err) {
-            console.log(`${LOG_PREFIX} launcher failed to open plugin settings`, err);
+            if (interceptConfig?.config?.debug) {
+                console.log(`${LOG_PREFIX} launcher failed to open plugin settings`, err);
+            }
         }
     }
     return true;
