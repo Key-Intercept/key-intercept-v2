@@ -19,8 +19,10 @@ const requiredSnippets = [
     "entrypoint: \"profile-badge\"",
     "return h(ConfigLauncherPanel, props);",
     "userProfileBadges: [profileConfigBadge]",
+    "function openProfileEditorPopup(targetUserId, source) {",
     "\"user-context\": (children, props) => {",
-    "appendContextMenuOpenConfigItem(children, props, \"user-context\");"
+    "appendContextMenuOpenConfigItem(children, props, \"user-context\");",
+    "label: \"Open Key Intercept Config Popup\""
 ];
 
 for (const snippet of requiredSnippets) {
