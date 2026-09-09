@@ -34,7 +34,7 @@ struct Args {
     #[arg(long)]
     loopback_artifact: Option<String>,
 
-    #[arg(long, default_value = "key-intercept-vencord-plugin")]
+    #[arg(long, default_value = "keyInterceptSelfHosted.tsx")]
     plugin_artifact: String,
 
     #[arg(long)]
@@ -54,25 +54,15 @@ struct Args {
 }
 
 #[derive(Debug, Deserialize)]
-struct WorkflowRunsResponse {
-    workflow_runs: Vec<WorkflowRun>,
+struct ReleaseResponse {
+    tag_name: String,
+    assets: Vec<ReleaseAsset>,
 }
 
 #[derive(Debug, Deserialize)]
-struct WorkflowRun {
-    id: u64,
-}
-
-#[derive(Debug, Deserialize)]
-struct ArtifactsResponse {
-    artifacts: Vec<Artifact>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Artifact {
-    id: u64,
+struct ReleaseAsset {
     name: String,
-    expired: bool,
+    browser_download_url: String,
 }
 
 #[derive(Debug, Clone)]
@@ -154,37 +144,33 @@ async fn run() -> Result<()> {
         }
     } else {
         let client = build_client()?;
-        let required_artifacts = if install_into_vencord {
+        let required_assets = if install_into_vencord {
             vec![loopback_artifact, args.plugin_artifact.as_str()]
         } else {
             vec![loopback_artifact]
         };
-        let (_run_id, artifacts) = latest_successful_run_with_artifacts(
+        let (_release_tag, assets) = latest_release_with_assets(
             &client,
             &args.repo_owner,
             &args.repo_name,
-            required_artifacts.as_slice(),
+            required_assets.as_slice(),
         )
         .await?;
 
-        let loopback_artifact = find_artifact(&artifacts, loopback_artifact)?;
+        let loopback_asset = find_release_asset(&assets, loopback_artifact)?;
 
-        let loopback_dir = download_artifact(
+        let loopback_dir = download_release_asset(
             &client,
-            &args.repo_owner,
-            &args.repo_name,
-            loopback_artifact.id,
+            loopback_asset,
         )
         .await?;
 
         install_loopback_binary(&loopback_dir, &loopback_binary_name)?;
         if install_into_vencord {
-            let plugin_artifact = find_artifact(&artifacts, &args.plugin_artifact)?;
-            let plugin_dir = download_artifact(
+            let plugin_asset = find_release_asset(&assets, &args.plugin_artifact)?;
+            let plugin_dir = download_release_asset(
                 &client,
-                &args.repo_owner,
-                &args.repo_name,
-                plugin_artifact.id,
+                plugin_asset,
             )
             .await?;
             let plugin_source = find_file_recursive(plugin_dir.path(), &args.plugin_file_name)?;
@@ -315,113 +301,81 @@ fn build_client() -> Result<reqwest::Client> {
         .build()?)
 }
 
-async fn latest_successful_run_with_artifacts(
+async fn latest_release_with_assets(
     client: &reqwest::Client,
     owner: &str,
     repo: &str,
-    required_artifacts: &[&str],
-) -> Result<(u64, Vec<Artifact>)> {
-    const RUN_PAGES_TO_SCAN: usize = 3;
-    const RUNS_PER_PAGE: usize = 30;
-
-    for page in 1..=RUN_PAGES_TO_SCAN {
-        let url = format!(
-            "https://api.github.com/repos/{owner}/{repo}/actions/runs?status=success&per_page={RUNS_PER_PAGE}&page={page}"
-        );
-
-        let response = client
-            .get(url)
-            .send()
-            .await
-            .context("failed to request workflow runs")?
-            .error_for_status()
-            .context("workflow runs request failed")?;
-
-        let parsed = response
-            .json::<WorkflowRunsResponse>()
-            .await
-            .context("invalid workflow runs response")?;
-
-        if parsed.workflow_runs.is_empty() {
-            break;
-        }
-
-        for run in parsed.workflow_runs {
-            let artifacts = list_artifacts(client, owner, repo, run.id).await?;
-            if has_required_artifacts(&artifacts, required_artifacts) {
-                return Ok((run.id, artifacts));
-            }
-        }
-    }
-
-    let required = required_artifacts.join(", ");
-    Err(anyhow!(
-        "no successful workflow runs found with required artifacts: {required}"
-    ))
-}
-
-fn has_required_artifacts(artifacts: &[Artifact], required_artifacts: &[&str]) -> bool {
-    required_artifacts.iter().all(|required_name| {
-        artifacts
-            .iter()
-            .any(|artifact| artifact.name == *required_name && !artifact.expired)
-    })
-}
-
-async fn list_artifacts(
-    client: &reqwest::Client,
-    owner: &str,
-    repo: &str,
-    run_id: u64,
-) -> Result<Vec<Artifact>> {
-    let url =
-        format!("https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts");
+    required_assets: &[&str],
+) -> Result<(String, Vec<ReleaseAsset>)> {
+    let url = format!("https://api.github.com/repos/{owner}/{repo}/releases/latest");
 
     let response = client
         .get(url)
         .send()
         .await
-        .context("failed to request workflow artifacts")?
+        .context("failed to request latest release")?
         .error_for_status()
-        .context("workflow artifacts request failed")?;
+        .context("latest release request failed")?;
 
     let parsed = response
-        .json::<ArtifactsResponse>()
+        .json::<ReleaseResponse>()
         .await
-        .context("invalid workflow artifacts response")?;
+        .context("invalid latest release response")?;
 
-    Ok(parsed.artifacts)
+    if has_required_assets(&parsed.assets, required_assets) {
+        return Ok((parsed.tag_name, parsed.assets));
+    }
+
+    let required = required_assets.join(", ");
+    Err(anyhow!(
+        "latest release '{}' does not include required assets: {required}",
+        parsed.tag_name
+    ))
 }
 
-fn find_artifact<'a>(artifacts: &'a [Artifact], name: &str) -> Result<&'a Artifact> {
-    artifacts
+fn has_required_assets(assets: &[ReleaseAsset], required_assets: &[&str]) -> bool {
+    required_assets.iter().all(|required_name| {
+        assets
+            .iter()
+            .any(|asset| asset.name == *required_name)
+    })
+}
+
+fn find_release_asset<'a>(assets: &'a [ReleaseAsset], name: &str) -> Result<&'a ReleaseAsset> {
+    assets
         .iter()
-        .find(|artifact| artifact.name == name && !artifact.expired)
-        .ok_or_else(|| anyhow!("artifact '{name}' not found or expired"))
+        .find(|asset| asset.name == name)
+        .ok_or_else(|| anyhow!("release asset '{name}' not found"))
 }
 
-async fn download_artifact(
+async fn download_release_asset(
     client: &reqwest::Client,
-    owner: &str,
-    repo: &str,
-    artifact_id: u64,
+    asset: &ReleaseAsset,
 ) -> Result<TempDir> {
-    let url =
-        format!("https://api.github.com/repos/{owner}/{repo}/actions/artifacts/{artifact_id}/zip");
-
     let bytes = client
-        .get(url)
+        .get(&asset.browser_download_url)
         .send()
         .await
-        .context("failed to download artifact")?
+        .context("failed to download release asset")?
         .error_for_status()
-        .context("artifact download failed")?
+        .context("release asset download failed")?
         .bytes()
         .await
-        .context("failed to read artifact body")?;
+        .context("failed to read release asset body")?;
 
     let dir = TempDir::new().context("failed to create temporary extraction dir")?;
-    unzip_to_dir(&bytes, dir.path())?;
+    if asset.name.ends_with(".zip") {
+        unzip_to_dir(&bytes, dir.path())?;
+    } else {
+        let file_name = Path::new(&asset.name)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| *name == asset.name)
+            .ok_or_else(|| anyhow!("invalid release asset name: {}", asset.name))?;
+        let file_path = dir.path().join(file_name);
+        fs::write(&file_path, &bytes)
+            .with_context(|| format!("failed to write {}", file_path.display()))?;
+    }
     Ok(dir)
 }
 
@@ -926,17 +880,17 @@ fn plugin_entry_file_name(plugin_file_name: &str) -> Result<&'static str> {
 
 #[cfg(windows)]
 fn default_loopback_artifact_name() -> &'static str {
-    "loopback-server-windows-x86_64"
+    "loopback-server.exe"
 }
 
 #[cfg(target_os = "macos")]
 fn default_loopback_artifact_name() -> &'static str {
-    "loopback-server-macos-x86_64"
+    "loopback-server"
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn default_loopback_artifact_name() -> &'static str {
-    "loopback-server-linux-x86_64"
+    "loopback-server"
 }
 
 fn default_loopback_binary_name() -> String {
@@ -1337,75 +1291,56 @@ mod tests {
     use zip::{ZipWriter, write::FileOptions};
 
     #[test]
-    fn find_artifact_skips_expired_entries() {
-        let artifacts = vec![
-            Artifact {
-                id: 1,
-                name: "key-intercept-vencord-plugin".to_string(),
-                expired: true,
-            },
-            Artifact {
-                id: 2,
-                name: "key-intercept-vencord-plugin".to_string(),
-                expired: false,
-            },
-        ];
-
-        let found = find_artifact(&artifacts, "key-intercept-vencord-plugin").unwrap();
-        assert_eq!(found.id, 2);
-    }
-
-    #[test]
-    fn find_artifact_returns_error_when_missing() {
-        let artifacts = vec![Artifact {
-            id: 1,
-            name: "loopback-server-linux-x86_64".to_string(),
-            expired: true,
+    fn find_release_asset_returns_matching_asset() {
+        let assets = vec![ReleaseAsset {
+            name: "keyInterceptSelfHosted.tsx".to_string(),
+            browser_download_url: "https://example.com/keyInterceptSelfHosted.tsx".to_string(),
         }];
 
-        let err = find_artifact(&artifacts, "loopback-server-linux-x86_64").unwrap_err();
-        assert!(err.to_string().contains("not found or expired"));
+        let found = find_release_asset(&assets, "keyInterceptSelfHosted.tsx").unwrap();
+        assert_eq!(found.name, "keyInterceptSelfHosted.tsx");
     }
 
     #[test]
-    fn has_required_artifacts_accepts_complete_non_expired_set() {
-        let artifacts = vec![
-            Artifact {
-                id: 1,
-                name: "loopback-server-linux-x86_64".to_string(),
-                expired: false,
+    fn find_release_asset_returns_error_when_missing() {
+        let assets = vec![ReleaseAsset {
+            name: "loopback-server".to_string(),
+            browser_download_url: "https://example.com/loopback-server".to_string(),
+        }];
+
+        let err = find_release_asset(&assets, "loopback-server.exe").unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn has_required_assets_accepts_complete_set() {
+        let assets = vec![
+            ReleaseAsset {
+                name: "loopback-server".to_string(),
+                browser_download_url: "https://example.com/loopback-server".to_string(),
             },
-            Artifact {
-                id: 2,
-                name: "key-intercept-vencord-plugin".to_string(),
-                expired: false,
+            ReleaseAsset {
+                name: "keyInterceptSelfHosted.tsx".to_string(),
+                browser_download_url: "https://example.com/keyInterceptSelfHosted.tsx".to_string(),
             },
         ];
 
-        assert!(has_required_artifacts(
-            &artifacts,
-            &["loopback-server-linux-x86_64", "key-intercept-vencord-plugin"],
+        assert!(has_required_assets(
+            &assets,
+            &["loopback-server", "keyInterceptSelfHosted.tsx"],
         ));
     }
 
     #[test]
-    fn has_required_artifacts_rejects_missing_or_expired_entries() {
-        let artifacts = vec![
-            Artifact {
-                id: 1,
-                name: "loopback-server-linux-x86_64".to_string(),
-                expired: false,
-            },
-            Artifact {
-                id: 2,
-                name: "key-intercept-vencord-plugin".to_string(),
-                expired: true,
-            },
-        ];
+    fn has_required_assets_rejects_missing_entries() {
+        let assets = vec![ReleaseAsset {
+            name: "loopback-server".to_string(),
+            browser_download_url: "https://example.com/loopback-server".to_string(),
+        }];
 
-        assert!(!has_required_artifacts(
-            &artifacts,
-            &["loopback-server-linux-x86_64", "key-intercept-vencord-plugin"],
+        assert!(!has_required_assets(
+            &assets,
+            &["loopback-server", "keyInterceptSelfHosted.tsx"],
         ));
     }
 
