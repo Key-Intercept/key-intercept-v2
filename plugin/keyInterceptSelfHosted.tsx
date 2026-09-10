@@ -583,6 +583,15 @@ async function pushRemoteConfig(relayUrl: string, editorId: string, targetUserId
     if (!response.ok) throw new Error(`Relay update failed: ${response.status}`);
 }
 
+function deriveRelayConfigReadStatus(status: number, payload: unknown): number {
+    if (status !== 502 || !payload || typeof payload !== "object") return status;
+    const error = (payload as { error?: unknown }).error;
+    const match = /target returned status (\d{3})/.exec(String(error ?? ""));
+    if (!match) return status;
+    const parsed = Number(match[1]);
+    return Number.isFinite(parsed) ? parsed : status;
+}
+
 async function readRemoteConfig(relayUrl: string, requesterId: string, targetUserId: string): Promise<LocalConfig> {
     console.info(`${LOG_PREFIX} readRemoteConfig:start`, { requesterId, targetUserId });
     const response = await fetch(
@@ -590,12 +599,18 @@ async function readRemoteConfig(relayUrl: string, requesterId: string, targetUse
         { cache: "no-store" }
     );
     if (!response.ok) {
+        let payload: unknown = null;
+        try {
+            payload = await response.json();
+        } catch {}
+        const status = deriveRelayConfigReadStatus(response.status, payload);
         console.error(`${LOG_PREFIX} readRemoteConfig:failed`, {
             requesterId,
             targetUserId,
-            status: response.status
+            status,
+            relayStatus: response.status
         });
-        throw new Error(`Relay config read failed: ${response.status}`);
+        throw new Error(`Relay config read failed: ${status}`);
     }
     const payload = mergeLocalConfig(await response.json());
     console.info(`${LOG_PREFIX} readRemoteConfig:success`, {

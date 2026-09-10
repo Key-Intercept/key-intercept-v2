@@ -550,15 +550,30 @@ function pushRemoteConfig(relayUrl, editorId, targetUserId, config) {
     });
 }
 
+function deriveRelayConfigReadStatus(status, payload) {
+    if (status !== 502) return status;
+    const match = /target returned status (\d{3})/.exec(String(payload?.error ?? ""));
+    if (!match) return status;
+    const parsed = Number(match[1]);
+    return Number.isFinite(parsed) ? parsed : status;
+}
+
 function readRemoteConfig(relayUrl, requesterId, targetUserId) {
     return fetch(
         `${relayBaseUrl(relayUrl)}/users/${targetUserId}/config?requester_id=${encodeURIComponent(requesterId)}`,
         { cache: "no-store" }
     ).then(response => {
         if (!response.ok) {
-            const err = new Error(`Relay config read failed: ${response.status}`);
-            err.status = response.status;
-            throw err;
+            return response.text().then(body => {
+                let payload = null;
+                try {
+                    payload = body ? JSON.parse(body) : null;
+                } catch {}
+                const status = deriveRelayConfigReadStatus(response.status, payload);
+                const err = new Error(`Relay config read failed: ${status}`);
+                err.status = status;
+                throw err;
+            });
         }
         return response.json();
     }).then(payload => mergeLocalConfig(payload?.config ?? payload));
