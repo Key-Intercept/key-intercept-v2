@@ -1,7 +1,7 @@
 const LOG_PREFIX = "[key-intercept/kettu]";
 const MOBILE_STATE_KEY = "key-intercept/mobile-loopback-state/v1";
 const RELAY_URL_STORAGE_KEY = "key-intercept/relay-url";
-const DEFAULT_RELAY_URL = "http://82.165.196.147:45491";
+const DEFAULT_RELAY_URL = "https://kirelay.thomaslower.com";
 const farFuture = "9999-12-31T23:59:59.000Z";
 const epoch = "1970-01-01T00:00:00.000Z";
 const permanentTimestamp = new Date(farFuture).getTime();
