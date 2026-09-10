@@ -9,7 +9,6 @@ use std::{
     env::consts::EXE_SUFFIX,
     fs,
     io::Cursor,
-    net::IpAddr,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -24,11 +23,6 @@ struct Args {
     user_discord_id: Option<String>,
 
     #[arg(long)]
-    relay_server_url: Option<String>,
-
-    #[arg(long)]
-    loopback_public_url: Option<String>,
-
     #[arg(long, default_value = "Key-Intercept")]
     repo_owner: String,
 
@@ -111,18 +105,7 @@ async fn run() -> Result<()> {
     reqwest::Url::parse(&kettu_plugin_source_url)
         .with_context(|| format!("invalid --kettu-plugin-source-url: {kettu_plugin_source_url}"))?;
 
-    let owner_discord_id = resolve_owner_discord_id(
-        args.user_discord_id,
-        args.relay_server_url.as_deref(),
-        args.loopback_public_url.as_deref(),
-    )?;
-    let relay_server_url =
-        resolve_relay_server_url(args.relay_server_url, owner_discord_id.relay_server_url);
-    let loopback_public_url = resolve_loopback_public_url(
-        args.loopback_public_url,
-        owner_discord_id.loopback_public_url,
-        relay_server_url.as_deref(),
-    )?;
+    let owner_discord_id = resolve_owner_discord_id(args.user_discord_id)?;
     let loopback_artifact = args
         .loopback_artifact
         .as_deref()
@@ -151,7 +134,6 @@ async fn run() -> Result<()> {
                 &local_sources.plugin_file,
                 &args.plugin_file_name,
                 &args.vencord_plugin_folder,
-                relay_server_url.as_deref(),
             )?;
         }
     } else {
@@ -193,16 +175,11 @@ async fn run() -> Result<()> {
                 &plugin_source,
                 &args.plugin_file_name,
                 &args.vencord_plugin_folder,
-                relay_server_url.as_deref(),
             )?;
         }
     }
 
-    configure_loopback_startup(
-        &owner_discord_id.owner_discord_id,
-        relay_server_url.as_deref(),
-        loopback_public_url.as_deref(),
-    )?;
+    configure_loopback_startup(&owner_discord_id.owner_discord_id)?;
 
     if !install_into_vencord {
         print_kettu_install_instructions(&kettu_plugin_source_url);
@@ -222,85 +199,23 @@ fn print_kettu_install_instructions(source_url: &str) {
 #[derive(Debug)]
 struct ResolvedOwner {
     owner_discord_id: String,
-    relay_server_url: Option<String>,
-    loopback_public_url: Option<String>,
 }
 
 #[cfg(not(windows))]
-fn resolve_owner_discord_id(
-    owner_discord_id: Option<String>,
-    _relay_server_url: Option<&str>,
-    _loopback_public_url: Option<&str>,
-) -> Result<ResolvedOwner> {
+fn resolve_owner_discord_id(owner_discord_id: Option<String>) -> Result<ResolvedOwner> {
     let owner_discord_id = owner_discord_id
         .ok_or_else(|| anyhow!("--owner-discord-id is required on this platform"))?;
     validate_owner_discord_id(&owner_discord_id)?;
-    Ok(ResolvedOwner {
-        owner_discord_id,
-        relay_server_url: None,
-        loopback_public_url: None,
-    })
+    Ok(ResolvedOwner { owner_discord_id })
 }
 
 #[cfg(windows)]
-fn resolve_owner_discord_id(
-    owner_discord_id: Option<String>,
-    relay_server_url: Option<&str>,
-    loopback_public_url: Option<&str>,
-) -> Result<ResolvedOwner> {
+fn resolve_owner_discord_id(owner_discord_id: Option<String>) -> Result<ResolvedOwner> {
     if let Some(owner_discord_id) = owner_discord_id {
         validate_owner_discord_id(&owner_discord_id)?;
-        return Ok(ResolvedOwner {
-            owner_discord_id,
-            relay_server_url: None,
-            loopback_public_url: None,
-        });
+        return Ok(ResolvedOwner { owner_discord_id });
     }
-    collect_windows_wizard_inputs(relay_server_url, loopback_public_url)
-}
-
-fn resolve_relay_server_url(
-    cli_relay_server_url: Option<String>,
-    wizard_relay_server_url: Option<String>,
-) -> Option<String> {
-    cli_relay_server_url
-        .or(wizard_relay_server_url)
-        .or_else(|| Some(default_relay_server_url().to_string()))
-}
-
-fn resolve_loopback_public_url(
-    cli_loopback_public_url: Option<String>,
-    wizard_loopback_public_url: Option<String>,
-    _relay_server_url: Option<&str>,
-) -> Result<Option<String>> {
-    match cli_loopback_public_url.or(wizard_loopback_public_url) {
-        Some(value) => Ok(Some(validate_loopback_public_url(value)?)),
-        None => Ok(None),
-    }
-}
-
-fn validate_loopback_public_url(value: String) -> Result<String> {
-    let trimmed = value.trim().to_string();
-    if trimmed.is_empty() {
-        bail!("loopback public URL cannot be empty");
-    }
-    let parsed = reqwest::Url::parse(&trimmed)
-        .with_context(|| format!("invalid --loopback-public-url: {trimmed}"))?;
-    if parsed.scheme() != "http" && parsed.scheme() != "https" {
-        bail!("loopback public URL must use http or https");
-    }
-    let Some(host) = parsed.host_str() else {
-        bail!("loopback public URL must include a hostname");
-    };
-    if host.eq_ignore_ascii_case("localhost") {
-        bail!("loopback public URL cannot use localhost");
-    }
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        if ip.is_loopback() {
-            bail!("loopback public URL cannot use a loopback IP");
-        }
-    }
-    Ok(trimmed)
+    collect_windows_wizard_inputs()
 }
 
 #[cfg(windows)]
@@ -323,10 +238,6 @@ fn validate_owner_discord_id(owner_discord_id: &str) -> Result<()> {
         bail!("owner Discord ID must contain only digits");
     }
     Ok(())
-}
-
-fn default_relay_server_url() -> &'static str {
-    "https://kirelay.thomaslower.com"
 }
 
 fn build_client() -> Result<reqwest::Client> {
@@ -491,11 +402,9 @@ fn install_plugin_into_vencord(
     source: &Path,
     plugin_file_name: &str,
     plugin_folder: &str,
-    relay_server_url: Option<&str>,
 ) -> Result<()> {
     let vencord_dir = ensure_vencord_checkout(installer_tools)?;
     sync_vencord_checkout(installer_tools, &vencord_dir)?;
-    patch_vencord_csp(&vencord_dir, relay_server_url)?;
     install_vencord_userplugin(source, &vencord_dir, plugin_folder, plugin_file_name)?;
     run_sandboxed_pnpm_in_dir(installer_tools, &pnpm_install_args(), &vencord_dir)?;
     run_sandboxed_pnpm_in_dir(installer_tools, &["build"], &vencord_dir)?;
@@ -505,45 +414,6 @@ fn install_plugin_into_vencord(
     }
 
     Ok(())
-}
-
-fn patch_vencord_csp(vencord_dir: &Path, relay_server_url: Option<&str>) -> Result<()> {
-    let Some(relay_url) = relay_server_url.filter(|value| !value.trim().is_empty()) else {
-        return Ok(());
-    };
-
-    let relay_origin = relay_origin_for_csp(relay_url)?;
-    let csp_path = vencord_dir
-        .join("src")
-        .join("main")
-        .join("csp")
-        .join("index.ts");
-    let mut csp_source = fs::read_to_string(&csp_path)
-        .with_context(|| format!("failed to read {}", csp_path.display()))?;
-
-    if csp_source.contains(&format!("\"{relay_origin}\": ConnectSrc")) {
-        return Ok(());
-    }
-
-    let marker = "export const CspPolicies: PolicyMap = {\n";
-    let insert =
-        format!("{marker}    \"{relay_origin}\": ConnectSrc, // key-intercept relay server\n");
-    if !csp_source.contains(marker) {
-        bail!(
-            "failed to patch {}, CspPolicies marker not found",
-            csp_path.display()
-        );
-    }
-    csp_source = csp_source.replacen(marker, &insert, 1);
-    fs::write(&csp_path, csp_source)
-        .with_context(|| format!("failed to write {}", csp_path.display()))?;
-    Ok(())
-}
-
-fn relay_origin_for_csp(relay_server_url: &str) -> Result<String> {
-    let parsed = reqwest::Url::parse(relay_server_url)
-        .with_context(|| format!("invalid --relay-server-url: {relay_server_url}"))?;
-    Ok(parsed.origin().ascii_serialization())
 }
 
 fn pnpm_install_args() -> [&'static str; 2] {
@@ -987,34 +857,16 @@ fn find_file_recursive(root: &Path, name: &str) -> Result<PathBuf> {
 }
 
 #[cfg(unix)]
-fn configure_loopback_startup(
-    owner_discord_id: &str,
-    relay_server_url: Option<&str>,
-    loopback_public_url: Option<&str>,
-) -> Result<()> {
+fn configure_loopback_startup(owner_discord_id: &str) -> Result<()> {
     let systemd_user = home_dir()?.join(".config/systemd/user");
     fs::create_dir_all(&systemd_user)
         .with_context(|| format!("failed to create {}", systemd_user.display()))?;
 
     let service_file = systemd_user.join("key-intercept-loopback.service");
-    let mut unit = format!(
+    let unit = format!(
         "[Unit]\nDescription=Key Intercept Loopback Server\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart={home}/.local/bin/key-intercept-loopback\nEnvironment=OWNER_DISCORD_ID={owner_discord_id}\nEnvironment=LOOPBACK_PORT=35491\nEnvironment=KEY_INTERCEPT_CONFIG_PATH={home}/.config/key-intercept/config.json\nRestart=always\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n",
         home = home_dir()?.display(),
     );
-
-    if relay_server_url.is_some() || loopback_public_url.is_some() {
-        let mut env_lines = String::new();
-        if let Some(relay) = relay_server_url {
-            env_lines.push_str(&format!("Environment=RELAY_SERVER_URL={relay}\n"));
-        }
-        if let Some(public_url) = loopback_public_url {
-            env_lines.push_str(&format!("Environment=LOOPBACK_PUBLIC_URL={public_url}\n"));
-        }
-        unit = unit.replace(
-            "Restart=always",
-            &format!("{env_lines}Restart=always"),
-        );
-    }
 
     fs::write(&service_file, unit)
         .with_context(|| format!("failed to write {}", service_file.display()))?;
@@ -1029,11 +881,7 @@ fn configure_loopback_startup(
 }
 
 #[cfg(windows)]
-fn configure_loopback_startup(
-    owner_discord_id: &str,
-    relay_server_url: Option<&str>,
-    loopback_public_url: Option<&str>,
-) -> Result<()> {
+fn configure_loopback_startup(owner_discord_id: &str) -> Result<()> {
     let startup_dir = windows_startup_dir()?;
     fs::create_dir_all(&startup_dir)
         .with_context(|| format!("failed to create {}", startup_dir.display()))?;
@@ -1050,13 +898,8 @@ fn configure_loopback_startup(
         .join("key-intercept")
         .join("config.json");
 
-    let tray_script = build_windows_tray_script(
-        owner_discord_id,
-        relay_server_url,
-        loopback_public_url,
-        &loopback_binary,
-        &config_path,
-    );
+    let tray_script =
+        build_windows_tray_script(owner_discord_id, &loopback_binary, &config_path);
     fs::write(&tray_script_file, tray_script).with_context(|| {
         format!(
             "failed to write tray script {}",
@@ -1089,35 +932,12 @@ fn to_powershell_single_quoted_literal(value: &str) -> String {
 #[cfg(windows)]
 fn build_windows_tray_script(
     owner_discord_id: &str,
-    relay_server_url: Option<&str>,
-    loopback_public_url: Option<&str>,
     loopback_binary: &Path,
     config_path: &Path,
 ) -> String {
     let loopback = to_powershell_single_quoted_literal(&loopback_binary.to_string_lossy());
     let owner = to_powershell_single_quoted_literal(owner_discord_id);
     let config = to_powershell_single_quoted_literal(&config_path.to_string_lossy());
-    let relay_assignment = relay_server_url
-        .filter(|value| !value.trim().is_empty())
-        .map(|relay| {
-            format!(
-                "$env:RELAY_SERVER_URL = '{}'",
-                to_powershell_single_quoted_literal(relay)
-            )
-        })
-        .unwrap_or_else(|| "Remove-Item Env:RELAY_SERVER_URL -ErrorAction SilentlyContinue".to_string());
-    let loopback_public_assignment = loopback_public_url
-        .filter(|value| !value.trim().is_empty())
-        .map(|url| {
-            format!(
-                "$env:LOOPBACK_PUBLIC_URL = '{}'",
-                to_powershell_single_quoted_literal(url)
-            )
-        })
-        .unwrap_or_else(|| {
-            "Remove-Item Env:LOOPBACK_PUBLIC_URL -ErrorAction SilentlyContinue".to_string()
-        });
-
     format!(
         r#"$ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
@@ -1134,8 +954,6 @@ public static class Win32ShowWindow {{
 $env:OWNER_DISCORD_ID = '{owner}'
 $env:LOOPBACK_PORT = '35491'
 $env:KEY_INTERCEPT_CONFIG_PATH = '{config}'
-{relay_assignment}
-{loopback_public_assignment}
 
 $loopback = '{loopback}'
 $process = Start-Process -FilePath $loopback -PassThru
@@ -1199,12 +1017,7 @@ fn windows_startup_dir() -> Result<PathBuf> {
 }
 
 #[cfg(windows)]
-fn collect_windows_wizard_inputs(
-    relay_server_url: Option<&str>,
-    loopback_public_url: Option<&str>,
-) -> Result<ResolvedOwner> {
-    let default_relay_server_url = relay_server_url.unwrap_or(default_relay_server_url());
-    let default_loopback_public_url = loopback_public_url.unwrap_or("");
+fn collect_windows_wizard_inputs() -> Result<ResolvedOwner> {
     let script = r#"
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -1230,38 +1043,10 @@ $ownerInput.Top = 42
 $ownerInput.Width = 440
 $form.Controls.Add($ownerInput)
 
-$relayLabel = New-Object System.Windows.Forms.Label
-$relayLabel.Left = 12
-$relayLabel.Top = 76
-$relayLabel.Width = 440
-$relayLabel.Text = "Relay server URL (don't change unless you know what you're doing)"
-$form.Controls.Add($relayLabel)
-
-$relayInput = New-Object System.Windows.Forms.TextBox
-$relayInput.Left = 12
-$relayInput.Top = 98
-$relayInput.Width = 440
-$relayInput.Text = $env:KEY_INTERCEPT_DEFAULT_RELAY_URL
-$form.Controls.Add($relayInput)
-
-$publicLabel = New-Object System.Windows.Forms.Label
-$publicLabel.Left = 12
-$publicLabel.Top = 132
-$publicLabel.Width = 440
-$publicLabel.Text = "Loopback public URL (reachable by relay, not localhost)"
-$form.Controls.Add($publicLabel)
-
-$publicInput = New-Object System.Windows.Forms.TextBox
-$publicInput.Left = 12
-$publicInput.Top = 154
-$publicInput.Width = 440
-$publicInput.Text = $env:KEY_INTERCEPT_DEFAULT_LOOPBACK_PUBLIC_URL
-$form.Controls.Add($publicInput)
-
 $okButton = New-Object System.Windows.Forms.Button
 $okButton.Text = "Install"
 $okButton.Left = 276
-$okButton.Top = 198
+$okButton.Top = 110
 $okButton.Width = 84
 $okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
 $form.Controls.Add($okButton)
@@ -1269,7 +1054,7 @@ $form.Controls.Add($okButton)
 $cancelButton = New-Object System.Windows.Forms.Button
 $cancelButton.Text = "Cancel"
 $cancelButton.Left = 368
-$cancelButton.Top = 198
+$cancelButton.Top = 110
 $cancelButton.Width = 84
 $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
 $form.Controls.Add($cancelButton)
@@ -1282,11 +1067,7 @@ if ($form.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
 }
 
 $owner = $ownerInput.Text.Trim()
-$relay = $relayInput.Text.Trim()
-$public = $publicInput.Text.Trim()
 Write-Output $owner
-Write-Output $relay
-Write-Output $public
 "#;
 
     let output = Command::new("powershell")
@@ -1295,14 +1076,6 @@ Write-Output $public
         .arg("Bypass")
         .arg("-Command")
         .arg(script)
-        .env(
-            "KEY_INTERCEPT_DEFAULT_RELAY_URL",
-            default_relay_server_url.to_string(),
-        )
-        .env(
-            "KEY_INTERCEPT_DEFAULT_LOOPBACK_PUBLIC_URL",
-            default_loopback_public_url.to_string(),
-        )
         .output()
         .context("failed to launch Windows installer wizard")?;
 
@@ -1322,14 +1095,7 @@ Write-Output $public
         .to_string();
     validate_owner_discord_id(&owner_discord_id)?;
 
-    let relay_server_url = lines.next().map(|value| value.to_string());
-    let loopback_public_url = lines.next().map(|value| value.to_string());
-
-    Ok(ResolvedOwner {
-        owner_discord_id,
-        relay_server_url,
-        loopback_public_url,
-    })
+    Ok(ResolvedOwner { owner_discord_id })
 }
 
 fn run_systemctl<const N: usize>(args: [&str; N]) -> Result<()> {
@@ -1519,27 +1285,6 @@ mod tests {
     }
 
     #[test]
-    fn relay_origin_for_csp_uses_url_origin_with_scheme() {
-        let origin = relay_origin_for_csp("https://kirelay.thomaslower.com").unwrap();
-        assert_eq!(origin, "https://kirelay.thomaslower.com");
-    }
-
-    #[test]
-    fn resolve_relay_server_url_prefers_cli_over_wizard_and_default() {
-        let relay = resolve_relay_server_url(
-            Some("https://cli.example".to_string()),
-            Some("https://wizard.example".to_string()),
-        );
-        assert_eq!(relay.as_deref(), Some("https://cli.example"));
-    }
-
-    #[test]
-    fn resolve_relay_server_url_uses_default_when_missing() {
-        let relay = resolve_relay_server_url(None, None);
-        assert_eq!(relay.as_deref(), Some(default_relay_server_url()));
-    }
-
-    #[test]
     fn validate_owner_discord_id_requires_digits() {
         assert!(validate_owner_discord_id("1234567890").is_ok());
         assert!(validate_owner_discord_id("12abc").is_err());
@@ -1548,45 +1293,9 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn non_windows_owner_discord_id_is_required() {
-        assert!(resolve_owner_discord_id(None, None, None).is_err());
-        let resolved = resolve_owner_discord_id(Some("123456".to_string()), None, None).unwrap();
+        assert!(resolve_owner_discord_id(None).is_err());
+        let resolved = resolve_owner_discord_id(Some("123456".to_string())).unwrap();
         assert_eq!(resolved.owner_discord_id, "123456");
-    }
-
-    #[test]
-    fn validate_loopback_public_url_rejects_localhost() {
-        assert!(validate_loopback_public_url("http://127.0.0.1:35491".to_string()).is_err());
-        assert!(validate_loopback_public_url("http://localhost:35491".to_string()).is_err());
-        assert!(validate_loopback_public_url("https://loopback.example.com".to_string()).is_ok());
-    }
-
-    #[test]
-    fn resolve_loopback_public_url_prefers_cli_value() {
-        let resolved = resolve_loopback_public_url(
-            Some("https://public.example.com".to_string()),
-            Some("https://wizard.example.com".to_string()),
-            Some("https://kirelay.thomaslower.com"),
-        )
-        .unwrap();
-        assert_eq!(resolved.as_deref(), Some("https://public.example.com"));
-    }
-
-    #[test]
-    fn patch_vencord_csp_adds_relay_connect_src_rule() {
-        let vencord_dir = tempdir().unwrap();
-        let csp_dir = vencord_dir.path().join("src").join("main").join("csp");
-        std::fs::create_dir_all(&csp_dir).unwrap();
-        let csp_file = csp_dir.join("index.ts");
-        std::fs::write(
-            &csp_file,
-            "export const CspPolicies: PolicyMap = {\n    \"localhost:*\": ImageAndCssSrc,\n};\n",
-        )
-        .unwrap();
-
-        patch_vencord_csp(vencord_dir.path(), Some("https://kirelay.thomaslower.com")).unwrap();
-
-        let patched = std::fs::read_to_string(&csp_file).unwrap();
-        assert!(patched.contains("\"https://kirelay.thomaslower.com\": ConnectSrc"));
     }
 
     #[test]

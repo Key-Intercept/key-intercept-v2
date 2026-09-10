@@ -1,37 +1,26 @@
 # key-intercept-v2
 
-Self-hosted refactor split into three components:
+Self-hosted refactor split into two components:
 
 1. **Vencord plugin (PC/Linux only)** (`/plugin/keyInterceptSelfHosted.tsx`)
    - Restores the original key-intercept message transform pipeline (rules, gag, pet, bimbo, horny, uwu, censored, drone).
-   - Supports hybrid loopback transport:
-     - `desktop_http`: reads/writes schema-shaped local config from the localhost loopback service.
-     - `in_app_mobile`: uses in-app persistent storage and relay-backed sync queue.
-     - `auto` (default): picks mobile in-app mode on mobile runtimes, localhost mode otherwise.
+   - Reads and writes schema-shaped local config from the localhost loopback service.
    - Exposes profile-embedded UI for config editing + allowed-editor ACL management.
-   - Sends remote update commands through the relay server.
 
 2. **Kettu plugin (iOS/Android only)** (`/kettu-plugin`)
    - Built as GitHub Pages source files (`manifest.json` + `index.js`) for Kettu plugin installs.
-   - Uses loopback-style local mobile state + relay sync (`/mobile/snapshot`, `/mobile/sync`) instead of legacy Supabase.
+   - Uses local mobile state instead of legacy Supabase.
 
 3. **Loopback server (Rust)** (`/loopback-server`)
    - Stores config locally at `~/.config/key-intercept/config.json`.
    - Tracks allowed editor Discord IDs.
    - Enforces ACLs when config is read/updated.
-   - Optionally self-registers with relay via `RELAY_SERVER_URL` and polls relay for per-user desktop commands.
-
-4. **Relay server (Rust)** (`/relay-server`)
-   - Runs on VPS and tracks online users.
-   - Queues config/access commands for connected desktop owners and returns loopback responses to requesters.
-   - Stores mobile snapshot state and queues remote updates for mobile owners while the app is closed.
-   - Exposes `/users/:owner_id/mobile/snapshot` and `/users/:owner_id/mobile/sync` for mobile state upload/sync.
 
 ## Build and test
 
 ```bash
-cargo test -p loopback-server -p relay-server -p key-intercept-installer
-cargo check -p loopback-server -p relay-server -p key-intercept-installer
+cargo test -p loopback-server -p key-intercept-installer
+cargo check -p loopback-server -p key-intercept-installer
 npm --prefix plugin test
 npm --prefix kettu-plugin run build
 ```
@@ -47,16 +36,11 @@ When local sources are not detected, it downloads pre-built assets from the late
 cargo run -p key-intercept-installer -- \
   --owner-discord-id <OWNER_DISCORD_ID> \
   [--plugin-install-mode kettu-source|vencord-custom] \
-  [--kettu-plugin-source-url <KETTU_PLUGIN_SOURCE_URL>] \
-  [--relay-server-url <RELAY_SERVER_URL>] \
-  [--loopback-public-url <LOOPBACK_PUBLIC_URL>]
+  [--kettu-plugin-source-url <KETTU_PLUGIN_SOURCE_URL>]
 ```
 
-On Windows, if `--owner-discord-id` is omitted, the installer opens a GUI wizard to collect `OWNER_DISCORD_ID`, `RELAY_SERVER_URL`, and `LOOPBACK_PUBLIC_URL`.  
+On Windows, if `--owner-discord-id` is omitted, the installer opens a GUI wizard to collect `OWNER_DISCORD_ID`.  
 On Linux/macOS, `--owner-discord-id` remains required and installer usage is CLI-only.
-`--loopback-public-url` is optional and only needed for legacy direct relay-to-loopback HTTP routing.
-
-Default relay URL: `https://kirelay.thomaslower.com`
 
 By default it expects release asset file names:
 - `loopback-server` (Linux/macOS)
@@ -75,8 +59,6 @@ Plugin install mode defaults to `vencord-custom` for desktop installs and instal
 
 `--plugin-install-mode kettu-source` remains available for mobile Kettu source installs and prints Kettu source install instructions (Profile > Settings > Plugins > + > Source URL).  
 Default Kettu source URL is `https://key-intercept.github.io/key-intercept-v2/` (GitHub Pages deployment from this repository workflow).
-
-The relay server is intended for manual VPS deployment and is not included in installer automation.
 
 ## GitHub Actions workflows
 

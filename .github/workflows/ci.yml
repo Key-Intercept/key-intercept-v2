@@ -19,10 +19,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Run Rust tests
-        run: cargo test -p loopback-server -p relay-server -p key-intercept-installer
+        run: cargo test -p loopback-server -p key-intercept-installer
 
       - name: Run Rust checks
-        run: cargo check -p loopback-server -p relay-server -p key-intercept-installer
+        run: cargo check -p loopback-server -p key-intercept-installer
 
       - name: Run plugin tests
         run: npm --prefix plugin test
