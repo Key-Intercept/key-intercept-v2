@@ -19,11 +19,11 @@ Self-hosted refactor split into three components:
    - Stores config locally at `~/.config/key-intercept/config.json`.
    - Tracks allowed editor Discord IDs.
    - Enforces ACLs when config is read/updated.
-   - Optionally self-registers with relay via `RELAY_SERVER_URL`.
+   - Optionally self-registers with relay via `RELAY_SERVER_URL` and polls relay for per-user desktop commands.
 
 4. **Relay server (Rust)** (`/relay-server`)
    - Runs on VPS and tracks online users.
-   - Forwards config fetch/update requests to registered loopback nodes.
+   - Queues config/access commands for connected desktop owners and returns loopback responses to requesters.
    - Stores mobile snapshot state and queues remote updates for mobile owners while the app is closed.
    - Exposes `/users/:owner_id/mobile/snapshot` and `/users/:owner_id/mobile/sync` for mobile state upload/sync.
 
@@ -48,11 +48,13 @@ cargo run -p key-intercept-installer -- \
   --owner-discord-id <OWNER_DISCORD_ID> \
   [--plugin-install-mode kettu-source|vencord-custom] \
   [--kettu-plugin-source-url <KETTU_PLUGIN_SOURCE_URL>] \
-  [--relay-server-url <RELAY_SERVER_URL>]
+  [--relay-server-url <RELAY_SERVER_URL>] \
+  [--loopback-public-url <LOOPBACK_PUBLIC_URL>]
 ```
 
-On Windows, if `--owner-discord-id` is omitted, the installer opens a GUI wizard to collect `OWNER_DISCORD_ID` and `RELAY_SERVER_URL`.  
+On Windows, if `--owner-discord-id` is omitted, the installer opens a GUI wizard to collect `OWNER_DISCORD_ID`, `RELAY_SERVER_URL`, and `LOOPBACK_PUBLIC_URL`.  
 On Linux/macOS, `--owner-discord-id` remains required and installer usage is CLI-only.
+`--loopback-public-url` is optional and only needed for legacy direct relay-to-loopback HTTP routing.
 
 Default relay URL: `https://kirelay.thomaslower.com`
 

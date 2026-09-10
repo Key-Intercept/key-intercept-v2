@@ -441,11 +441,19 @@ function requestProfileEditorLaunch(targetUserId, source) {
         const openSettings = openSettingsCandidates[i];
         if (typeof openSettings !== "function") continue;
         try {
-            openSettings("key-intercept");
-            console.log(`${LOG_PREFIX} launcher attempted to open plugin settings`, { source, strategy: i + 1 });
+            try {
+                openSettings("key-intercept");
+            } catch (innerErr) {
+                openSettings("key intercept");
+            }
+            if (interceptConfig?.config?.debug) {
+                console.log(`${LOG_PREFIX} launcher attempted to open plugin settings`, { source, strategy: i + 1 });
+            }
             break;
         } catch (err) {
-            console.log(`${LOG_PREFIX} launcher failed to open plugin settings`, err);
+            if (interceptConfig?.config?.debug) {
+                console.log(`${LOG_PREFIX} launcher failed to open plugin settings`, err);
+            }
         }
     }
     return true;
@@ -542,15 +550,30 @@ function pushRemoteConfig(relayUrl, editorId, targetUserId, config) {
     });
 }
 
+function deriveRelayConfigReadStatus(status, payload) {
+    if (status !== 502) return status;
+    const match = /target returned status (\d{3})/.exec(String(payload?.error ?? ""));
+    if (!match) return status;
+    const parsed = Number(match[1]);
+    return Number.isFinite(parsed) ? parsed : status;
+}
+
 function readRemoteConfig(relayUrl, requesterId, targetUserId) {
     return fetch(
         `${relayBaseUrl(relayUrl)}/users/${targetUserId}/config?requester_id=${encodeURIComponent(requesterId)}`,
         { cache: "no-store" }
     ).then(response => {
         if (!response.ok) {
-            const err = new Error(`Relay config read failed: ${response.status}`);
-            err.status = response.status;
-            throw err;
+            return response.text().then(body => {
+                let payload = null;
+                try {
+                    payload = body ? JSON.parse(body) : null;
+                } catch {}
+                const status = deriveRelayConfigReadStatus(response.status, payload);
+                const err = new Error(`Relay config read failed: ${status}`);
+                err.status = status;
+                throw err;
+            });
         }
         return response.json();
     }).then(payload => mergeLocalConfig(payload?.config ?? payload));
