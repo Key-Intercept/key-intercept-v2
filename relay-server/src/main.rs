@@ -928,13 +928,6 @@ fn discord_cors_layer() -> CorsLayer {
         .allow_headers([CONTENT_TYPE])
 }
 
-fn is_valid_base_url(value: &str) -> bool {
-    let Ok(url) = reqwest::Url::parse(value) else {
-        return false;
-    };
-    (url.scheme() == "http" || url.scheme() == "https") && url.host_str().is_some()
-}
-
 fn has_exact_keys(map: &serde_json::Map<String, Value>, expected: &[&str]) -> bool {
     if map.len() != expected.len() {
         return false;
@@ -1231,5 +1224,47 @@ mod tests {
         .await
         .into_response();
         assert_eq!(sync_response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn dispatch_desktop_command_round_trip_returns_response() {
+        let state = test_state();
+        state.peers.write().await.insert(
+            "123".to_string(),
+            RegisteredPeer { shared_token: None },
+        );
+        let cloned = state.clone();
+        tokio::spawn(async move {
+            for _ in 0..40 {
+                if let Some(requests) = cloned.desktop_requests.write().await.remove("123") {
+                    if let Some(request) = requests.first() {
+                        if let Some(sender) = cloned
+                            .desktop_waiters
+                            .write()
+                            .await
+                            .remove(&request.request_id)
+                        {
+                            let _ = sender.send(DesktopCommandResponse {
+                                status: StatusCode::OK,
+                                body: Some(json!({"ok": true})),
+                                error: None,
+                            });
+                        }
+                    }
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        });
+        let response = dispatch_desktop_command(
+            &state,
+            "123",
+            DesktopCommand::ReadConfig {
+                requester_id: "999".to_string(),
+            },
+        )
+        .await;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.body, Some(json!({"ok": true})));
     }
 }
