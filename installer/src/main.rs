@@ -20,7 +20,7 @@ use zip::ZipArchive;
 #[command(name = "key-intercept-installer")]
 struct Args {
     #[arg(long)]
-    owner_discord_id: Option<String>,
+    user_discord_id: Option<String>,
 
     #[arg(long)]
     relay_server_url: Option<String>,
@@ -108,7 +108,7 @@ async fn run() -> Result<()> {
         .with_context(|| format!("invalid --kettu-plugin-source-url: {kettu_plugin_source_url}"))?;
 
     let owner_discord_id =
-        resolve_owner_discord_id(args.owner_discord_id, args.relay_server_url.as_deref())?;
+        resolve_owner_discord_id(args.user_discord_id, args.relay_server_url.as_deref())?;
     let relay_server_url =
         resolve_relay_server_url(args.relay_server_url, owner_discord_id.relay_server_url);
     let loopback_artifact = args
