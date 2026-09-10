@@ -41,7 +41,7 @@ npm --prefix kettu-plugin run build
 Use:
 
 When run from this repository (or any subdirectory inside it), the installer builds `loopback-server` from local source and uses the local plugin file.  
-When local sources are not detected, it downloads pre-built artifacts from the latest successful GitHub Actions run, installs them locally, and configures startup.
+When local sources are not detected, it downloads pre-built assets from the latest GitHub Release, installs them locally, and configures startup.
 
 ```bash
 cargo run -p key-intercept-installer -- \
@@ -56,13 +56,12 @@ On Linux/macOS, `--owner-discord-id` remains required and installer usage is CLI
 
 Default relay URL: `http://82.165.196.147:45491`
 
-By default it expects two artifact names in that latest successful run:
-- `loopback-server-linux-x86_64` (Linux)
-- `loopback-server-macos-x86_64` (macOS)
-- `loopback-server-windows-x86_64` (Windows)
-- `key-intercept-vencord-plugin`
+By default it expects release asset file names:
+- `loopback-server` (Linux/macOS)
+- `loopback-server.exe` (Windows)
+- `keyInterceptSelfHosted.tsx`
 
-You can override artifact names with:
+You can override asset names with:
 - `--loopback-artifact <name>`
 - `--plugin-artifact <name>`
 
