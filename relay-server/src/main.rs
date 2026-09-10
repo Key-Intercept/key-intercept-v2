@@ -288,7 +288,7 @@ async fn get_remote_config(
             Json(body).into_response()
         }
         Ok(response) => (
-            StatusCode::BAD_GATEWAY,
+            relay_passthrough_status(response.status()),
             Json(ErrorResponse {
                 error: format!("target returned status {}", response.status()),
             }),
@@ -302,6 +302,13 @@ async fn get_remote_config(
         )
             .into_response(),
     }
+}
+
+fn relay_passthrough_status(target_status: StatusCode) -> StatusCode {
+    if target_status.is_client_error() {
+        return target_status;
+    }
+    StatusCode::BAD_GATEWAY
 }
 
 async fn put_remote_config(
@@ -1023,6 +1030,22 @@ mod tests {
         });
 
         assert!(validate_config_shape(&value).is_err());
+    }
+
+    #[test]
+    fn relay_passthrough_status_forwards_only_client_errors() {
+        assert_eq!(
+            relay_passthrough_status(StatusCode::FORBIDDEN),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            relay_passthrough_status(StatusCode::NOT_FOUND),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            relay_passthrough_status(StatusCode::INTERNAL_SERVER_ERROR),
+            StatusCode::BAD_GATEWAY
+        );
     }
 
     #[tokio::test]
