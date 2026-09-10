@@ -1009,7 +1009,7 @@ fn configure_loopback_startup(
     })?;
 
     let script = format!(
-        "@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{}\"\r\n",
+        "@echo off\r\nstart \"\" powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{}\"\r\n",
         tray_script_file.display()
     );
 
