@@ -942,7 +942,7 @@ fn configure_loopback_startup(
         .with_context(|| format!("failed to create {}", systemd_user.display()))?;
 
     let service_file = systemd_user.join("key-intercept-loopback.service");
-    let mut unit = format!(
+    let unit = format!(
         "[Unit]\nDescription=Key Intercept Loopback Server\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart={home}/.local/bin/key-intercept-loopback\nEnvironment=OWNER_DISCORD_ID={owner_discord_id}\nEnvironment=LOOPBACK_PORT=35491\nEnvironment=KEY_INTERCEPT_CONFIG_PATH={home}/.config/key-intercept/config.json\nRestart=always\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n",
         home = home_dir()?.display(),
     );
