@@ -189,10 +189,7 @@ async fn run() -> Result<()> {
         }
     }
 
-    configure_loopback_startup(
-        &owner_discord_id.owner_discord_id,
-        relay_server_url.as_deref(),
-    )?;
+    configure_loopback_startup(&owner_discord_id.owner_discord_id)?;
 
     if !install_into_vencord {
         print_kettu_install_instructions(&kettu_plugin_source_url);
@@ -939,7 +936,6 @@ fn find_file_recursive(root: &Path, name: &str) -> Result<PathBuf> {
 #[cfg(unix)]
 fn configure_loopback_startup(
     owner_discord_id: &str,
-    relay_server_url: Option<&str>,
 ) -> Result<()> {
     let systemd_user = home_dir()?.join(".config/systemd/user");
     fs::create_dir_all(&systemd_user)
@@ -950,17 +946,6 @@ fn configure_loopback_startup(
         "[Unit]\nDescription=Key Intercept Loopback Server\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart={home}/.local/bin/key-intercept-loopback\nEnvironment=OWNER_DISCORD_ID={owner_discord_id}\nEnvironment=LOOPBACK_PORT=35491\nEnvironment=KEY_INTERCEPT_CONFIG_PATH={home}/.config/key-intercept/config.json\nRestart=always\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n",
         home = home_dir()?.display(),
     );
-
-    if relay_server_url.is_some() {
-        let mut env_lines = String::new();
-        if let Some(relay) = relay_server_url {
-            env_lines.push_str(&format!("Environment=RELAY_SERVER_URL={relay}\n"));
-        }
-        unit = unit.replace(
-            "Restart=always",
-            &format!("{env_lines}Restart=always"),
-        );
-    }
 
     fs::write(&service_file, unit)
         .with_context(|| format!("failed to write {}", service_file.display()))?;
@@ -977,7 +962,6 @@ fn configure_loopback_startup(
 #[cfg(windows)]
 fn configure_loopback_startup(
     owner_discord_id: &str,
-    relay_server_url: Option<&str>,
 ) -> Result<()> {
     let startup_dir = windows_startup_dir()?;
     fs::create_dir_all(&startup_dir)
@@ -997,7 +981,6 @@ fn configure_loopback_startup(
 
     let tray_script = build_windows_tray_script(
         owner_discord_id,
-        relay_server_url,
         &loopback_binary,
         &config_path,
     );
@@ -1033,22 +1016,12 @@ fn to_powershell_single_quoted_literal(value: &str) -> String {
 #[cfg(windows)]
 fn build_windows_tray_script(
     owner_discord_id: &str,
-    relay_server_url: Option<&str>,
     loopback_binary: &Path,
     config_path: &Path,
 ) -> String {
     let loopback = to_powershell_single_quoted_literal(&loopback_binary.to_string_lossy());
     let owner = to_powershell_single_quoted_literal(owner_discord_id);
     let config = to_powershell_single_quoted_literal(&config_path.to_string_lossy());
-    let relay_assignment = relay_server_url
-        .filter(|value| !value.trim().is_empty())
-        .map(|relay| {
-            format!(
-                "$env:RELAY_SERVER_URL = '{}'",
-                to_powershell_single_quoted_literal(relay)
-            )
-        })
-        .unwrap_or_else(|| "Remove-Item Env:RELAY_SERVER_URL -ErrorAction SilentlyContinue".to_string());
     format!(
         r#"$ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
@@ -1065,7 +1038,6 @@ public static class Win32ShowWindow {{
 $env:OWNER_DISCORD_ID = '{owner}'
 $env:LOOPBACK_PORT = '35491'
 $env:KEY_INTERCEPT_CONFIG_PATH = '{config}'
-{relay_assignment}
 
 $loopback = '{loopback}'
 $process = Start-Process -FilePath $loopback -PassThru

@@ -19,7 +19,6 @@ Self-hosted refactor split into three components:
    - Stores config locally at `~/.config/key-intercept/config.json`.
    - Tracks allowed editor Discord IDs.
    - Enforces ACLs when config is read/updated.
-   - Optionally self-registers with relay via `RELAY_SERVER_URL` and polls relay for per-user desktop commands.
 
 4. **Relay server (Rust)** (`/relay-server`)
    - Runs on VPS and tracks online users.
