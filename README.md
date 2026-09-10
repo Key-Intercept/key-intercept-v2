@@ -54,7 +54,7 @@ cargo run -p key-intercept-installer -- \
 On Windows, if `--owner-discord-id` is omitted, the installer opens a GUI wizard to collect `OWNER_DISCORD_ID` and `RELAY_SERVER_URL`.  
 On Linux/macOS, `--owner-discord-id` remains required and installer usage is CLI-only.
 
-Default relay URL: `http://82.165.196.147:45491`
+Default relay URL: `https://82.165.196.147:45491`
 
 By default it expects release asset file names:
 - `loopback-server` (Linux/macOS)

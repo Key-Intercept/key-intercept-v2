@@ -2109,7 +2109,7 @@ const settings = definePluginSettings({
     relayUrl: {
         type: OptionType.STRING,
         description: "Public relay URL",
-        default: "http://82.165.196.147:45491"
+        default: "https://82.165.196.147:45491"
     },
     loopbackTransportMode: {
         type: OptionType.STRING,
