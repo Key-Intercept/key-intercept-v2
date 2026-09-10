@@ -494,8 +494,8 @@ fn relay_origin_for_csp(relay_server_url: &str) -> Result<String> {
         .host_str()
         .ok_or_else(|| anyhow!("relay URL has no host: {relay_server_url}"))?;
     let origin = match parsed.port() {
-        Some(port) => format!("{}://{host}:{port}", parsed.scheme()),
-        None => format!("{}://{host}", parsed.scheme()),
+        Some(port) => format!("*{host}:{port}"),
+        None => format!("*{host}"),
     };
     Ok(origin)
 }
@@ -1424,9 +1424,9 @@ mod tests {
     }
 
     #[test]
-    fn relay_origin_for_csp_preserves_scheme_host_and_port() {
+    fn relay_origin_for_csp_uses_wildcard_scheme_for_host_and_port() {
         let origin = relay_origin_for_csp("http://82.165.196.147:45491").unwrap();
-        assert_eq!(origin, "http://82.165.196.147:45491");
+        assert_eq!(origin, "*82.165.196.147:45491");
     }
 
     #[test]
@@ -1473,7 +1473,7 @@ mod tests {
         patch_vencord_csp(vencord_dir.path(), Some("http://82.165.196.147:45491")).unwrap();
 
         let patched = std::fs::read_to_string(&csp_file).unwrap();
-        assert!(patched.contains("\"http://82.165.196.147:45491\": ConnectSrc"));
+        assert!(patched.contains("\"*82.165.196.147:45491\": ConnectSrc"));
     }
 
     #[test]
