@@ -11,9 +11,11 @@ use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
+    sync::atomic::{AtomicU64, Ordering},
     sync::Arc,
 };
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, oneshot};
+use tokio::time::{Duration, timeout};
 use tower_http::cors::CorsLayer;
 use tracing::info;
 
@@ -22,7 +24,9 @@ struct AppState {
     peers: Arc<RwLock<HashMap<String, RegisteredPeer>>>,
     mobile_states: Arc<RwLock<HashMap<String, MobileState>>>,
     pending_access_requests: Arc<RwLock<HashMap<String, HashSet<String>>>>,
-    client: reqwest::Client,
+    desktop_requests: Arc<RwLock<HashMap<String, Vec<DesktopQueuedRequest>>>>,
+    desktop_waiters: Arc<RwLock<HashMap<u64, oneshot::Sender<DesktopCommandResponse>>>>,
+    next_desktop_request_id: Arc<AtomicU64>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -35,8 +39,43 @@ struct RegisterRequest {
 
 #[derive(Clone)]
 struct RegisteredPeer {
-    base_url: String,
     shared_token: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum DesktopCommand {
+    ReadConfig { requester_id: String },
+    PutConfig { editor_id: String, config: Value },
+    AddAllowedEditor { owner_id: String, editor_id: String },
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct DesktopQueuedRequest {
+    request_id: u64,
+    #[serde(flatten)]
+    command: DesktopCommand,
+}
+
+#[derive(Serialize)]
+struct DesktopRequestsResponse {
+    requests: Vec<DesktopQueuedRequest>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DesktopCommandResponsePayload {
+    request_id: u64,
+    status: u16,
+    body: Option<Value>,
+    error: Option<String>,
+}
+
+#[derive(Clone)]
+struct DesktopCommandResponse {
+    status: StatusCode,
+    body: Option<Value>,
+    error: Option<String>,
 }
 
 #[derive(Clone)]
@@ -167,12 +206,22 @@ async fn main() -> Result<()> {
             post(upsert_mobile_snapshot),
         )
         .route("/users/:owner_id/mobile/sync", get(get_mobile_sync))
+        .route(
+            "/users/:owner_id/desktop/requests",
+            get(pull_desktop_requests),
+        )
+        .route(
+            "/users/:owner_id/desktop/responses",
+            post(push_desktop_response),
+        )
         .layer(discord_cors_layer())
         .with_state(AppState {
             peers: Arc::new(RwLock::new(HashMap::new())),
             mobile_states: Arc::new(RwLock::new(HashMap::new())),
             pending_access_requests: Arc::new(RwLock::new(HashMap::new())),
-            client: reqwest::Client::new(),
+            desktop_requests: Arc::new(RwLock::new(HashMap::new())),
+            desktop_waiters: Arc::new(RwLock::new(HashMap::new())),
+            next_desktop_request_id: Arc::new(AtomicU64::new(1)),
         });
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -200,20 +249,9 @@ async fn register_peer(
         )
             .into_response();
     }
-    if !is_valid_base_url(&payload.base_url) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "base_url must be a valid http(s) URL".to_string(),
-            }),
-        )
-            .into_response();
-    }
-
     state.peers.write().await.insert(
         payload.owner_id,
         RegisteredPeer {
-            base_url: payload.base_url,
             shared_token: payload.shared_token,
         },
     );
@@ -264,44 +302,16 @@ async fn get_remote_config(
         )
             .into_response();
     };
-
-    let mut req = state
-        .client
-        .get(format!("{}/config", peer.base_url.trim_end_matches('/')))
-        .query(&[("requester_id", &query.requester_id)]);
-
-    if let Some(token) = peer.shared_token {
-        req = req.header("x-loopback-token", token);
-    }
-
-    match req.send().await {
-        Ok(response) if response.status().is_success() => {
-            let Ok(body) = response.json::<Value>().await else {
-                return (
-                    StatusCode::BAD_GATEWAY,
-                    Json(ErrorResponse {
-                        error: "target returned invalid JSON".to_string(),
-                    }),
-                )
-                    .into_response();
-            };
-            Json(body).into_response()
-        }
-        Ok(response) => (
-            relay_passthrough_status(response.status()),
-            Json(ErrorResponse {
-                error: format!("target returned status {}", response.status()),
-            }),
-        )
-            .into_response(),
-        Err(err) => (
-            StatusCode::BAD_GATEWAY,
-            Json(ErrorResponse {
-                error: format!("target is unreachable: {err}"),
-            }),
-        )
-            .into_response(),
-    }
+    let _ = peer;
+    let response = dispatch_desktop_command(
+        &state,
+        &owner_id,
+        DesktopCommand::ReadConfig {
+            requester_id: query.requester_id,
+        },
+    )
+    .await;
+    desktop_command_to_http_response(response)
 }
 
 fn relay_passthrough_status(target_status: StatusCode) -> StatusCode {
@@ -367,34 +377,17 @@ async fn put_remote_config(
         )
             .into_response();
     };
-
-    let mut req = state
-        .client
-        .put(format!("{}/config", peer.base_url.trim_end_matches('/')))
-        .header("x-discord-user-id", payload.editor_id)
-        .json(&serde_json::json!({ "config": payload.config }));
-
-    if let Some(token) = peer.shared_token {
-        req = req.header("x-loopback-token", token);
-    }
-
-    match req.send().await {
-        Ok(response) if response.status().is_success() => StatusCode::NO_CONTENT.into_response(),
-        Ok(response) => (
-            StatusCode::BAD_GATEWAY,
-            Json(ErrorResponse {
-                error: format!("target rejected update with status {}", response.status()),
-            }),
-        )
-            .into_response(),
-        Err(err) => (
-            StatusCode::BAD_GATEWAY,
-            Json(ErrorResponse {
-                error: format!("target is unreachable: {err}"),
-            }),
-        )
-            .into_response(),
-    }
+    let _ = peer;
+    let response = dispatch_desktop_command(
+        &state,
+        &owner_id,
+        DesktopCommand::PutConfig {
+            editor_id: payload.editor_id,
+            config: payload.config,
+        },
+    )
+    .await;
+    desktop_command_to_http_response(response)
 }
 
 async fn create_access_request(
@@ -539,48 +532,27 @@ async fn approve_access_request(
         )
             .into_response();
     };
-
-    let mut req = state
-        .client
-        .post(format!(
-            "{}/allowed-editors",
-            peer.base_url.trim_end_matches('/')
-        ))
-        .header("x-discord-user-id", owner_id.clone())
-        .json(&serde_json::json!({ "editor_id": requester_id }));
-    if let Some(token) = peer.shared_token {
-        req = req.header("x-loopback-token", token);
+    let _ = peer;
+    let response = dispatch_desktop_command(
+        &state,
+        &owner_id,
+        DesktopCommand::AddAllowedEditor {
+            owner_id: owner_id.clone(),
+            editor_id: requester_id.clone(),
+        },
+    )
+    .await;
+    if !response.status.is_success() {
+        return desktop_command_to_http_response(response);
     }
-
-    match req.send().await {
-        Ok(response) if response.status().is_success() => {
-            let mut pending = state.pending_access_requests.write().await;
-            if let Some(entry) = pending.get_mut(&owner_id) {
-                entry.remove(&requester_id);
-                if entry.is_empty() {
-                    pending.remove(&owner_id);
-                }
-            }
-            StatusCode::NO_CONTENT.into_response()
+    let mut pending = state.pending_access_requests.write().await;
+    if let Some(entry) = pending.get_mut(&owner_id) {
+        entry.remove(&requester_id);
+        if entry.is_empty() {
+            pending.remove(&owner_id);
         }
-        Ok(response) => (
-            StatusCode::BAD_GATEWAY,
-            Json(ErrorResponse {
-                error: format!(
-                    "target rejected access grant with status {}",
-                    response.status()
-                ),
-            }),
-        )
-            .into_response(),
-        Err(err) => (
-            StatusCode::BAD_GATEWAY,
-            Json(ErrorResponse {
-                error: format!("target is unreachable: {err}"),
-            }),
-        )
-            .into_response(),
     }
+    StatusCode::NO_CONTENT.into_response()
 }
 
 async fn deny_access_request(
@@ -761,6 +733,174 @@ async fn get_mobile_sync(
     .into_response()
 }
 
+async fn pull_desktop_requests(
+    State(state): State<AppState>,
+    Path(owner_id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    if !is_discord_id(&owner_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "owner_id must be numeric".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    let Some(peer) = state.peers.read().await.get(&owner_id).cloned() else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "target user is offline or unknown".to_string(),
+            }),
+        )
+            .into_response();
+    };
+    if !is_valid_loopback_token(&peer, &headers) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "invalid loopback token".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    let requests = state
+        .desktop_requests
+        .write()
+        .await
+        .remove(&owner_id)
+        .unwrap_or_default();
+    Json(DesktopRequestsResponse { requests }).into_response()
+}
+
+async fn push_desktop_response(
+    State(state): State<AppState>,
+    Path(owner_id): Path<String>,
+    headers: axum::http::HeaderMap,
+    Json(payload): Json<DesktopCommandResponsePayload>,
+) -> impl IntoResponse {
+    if !is_discord_id(&owner_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "owner_id must be numeric".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    let Some(peer) = state.peers.read().await.get(&owner_id).cloned() else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "target user is offline or unknown".to_string(),
+            }),
+        )
+            .into_response();
+    };
+    if !is_valid_loopback_token(&peer, &headers) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "invalid loopback token".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    let Ok(status) = StatusCode::from_u16(payload.status) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "status must be a valid HTTP status code".to_string(),
+            }),
+        )
+            .into_response();
+    };
+    let sender = state.desktop_waiters.write().await.remove(&payload.request_id);
+    if let Some(sender) = sender {
+        let _ = sender.send(DesktopCommandResponse {
+            status,
+            body: payload.body,
+            error: payload.error,
+        });
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
+fn is_valid_loopback_token(peer: &RegisteredPeer, headers: &axum::http::HeaderMap) -> bool {
+    let Some(expected) = peer.shared_token.as_deref() else {
+        return true;
+    };
+    headers
+        .get("x-loopback-token")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|value| value == expected)
+}
+
+async fn dispatch_desktop_command(
+    state: &AppState,
+    owner_id: &str,
+    command: DesktopCommand,
+) -> DesktopCommandResponse {
+    let request_id = state
+        .next_desktop_request_id
+        .fetch_add(1, Ordering::Relaxed);
+    let (sender, receiver) = oneshot::channel::<DesktopCommandResponse>();
+    state.desktop_waiters.write().await.insert(request_id, sender);
+    state
+        .desktop_requests
+        .write()
+        .await
+        .entry(owner_id.to_string())
+        .or_default()
+        .push(DesktopQueuedRequest {
+            request_id,
+            command,
+        });
+
+    match timeout(Duration::from_secs(15), receiver).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(_)) => DesktopCommandResponse {
+            status: StatusCode::BAD_GATEWAY,
+            body: None,
+            error: Some("desktop client disconnected before responding".to_string()),
+        },
+        Err(_) => {
+            state.desktop_waiters.write().await.remove(&request_id);
+            let mut requests = state.desktop_requests.write().await;
+            if let Some(queue) = requests.get_mut(owner_id) {
+                queue.retain(|entry| entry.request_id != request_id);
+                if queue.is_empty() {
+                    requests.remove(owner_id);
+                }
+            }
+            DesktopCommandResponse {
+                status: StatusCode::BAD_GATEWAY,
+                body: None,
+                error: Some("desktop client did not respond in time".to_string()),
+            }
+        }
+    }
+}
+
+fn desktop_command_to_http_response(response: DesktopCommandResponse) -> axum::response::Response {
+    if response.status.is_success() {
+        if let Some(body) = response.body {
+            return Json(body).into_response();
+        }
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    (
+        relay_passthrough_status(response.status),
+        Json(ErrorResponse {
+            error: response
+                .error
+                .unwrap_or_else(|| format!("target returned status {}", response.status)),
+        }),
+    )
+        .into_response()
+}
+
 fn is_discord_id(value: &str) -> bool {
     !value.is_empty() && value.chars().all(|c| c.is_ascii_digit())
 }
@@ -894,7 +1034,9 @@ mod tests {
             peers: Arc::new(RwLock::new(HashMap::new())),
             mobile_states: Arc::new(RwLock::new(HashMap::new())),
             pending_access_requests: Arc::new(RwLock::new(HashMap::new())),
-            client: reqwest::Client::new(),
+            desktop_requests: Arc::new(RwLock::new(HashMap::new())),
+            desktop_waiters: Arc::new(RwLock::new(HashMap::new())),
+            next_desktop_request_id: Arc::new(AtomicU64::new(1)),
         }
     }
 

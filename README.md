@@ -54,7 +54,7 @@ cargo run -p key-intercept-installer -- \
 
 On Windows, if `--owner-discord-id` is omitted, the installer opens a GUI wizard to collect `OWNER_DISCORD_ID`, `RELAY_SERVER_URL`, and `LOOPBACK_PUBLIC_URL`.  
 On Linux/macOS, `--owner-discord-id` remains required and installer usage is CLI-only.
-If relay registration is enabled and `--loopback-public-url` is not provided, the installer now prompts for it and rejects localhost/127.0.0.1 values.
+`--loopback-public-url` is optional and only needed for legacy direct relay-to-loopback HTTP routing.
 
 Default relay URL: `https://kirelay.thomaslower.com`
 

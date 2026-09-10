@@ -8,7 +8,7 @@ use std::{
     env,
     env::consts::EXE_SUFFIX,
     fs,
-    io::{self, Cursor, Write},
+    io::Cursor,
     net::IpAddr,
     path::{Path, PathBuf},
     process::Command,
@@ -271,32 +271,12 @@ fn resolve_relay_server_url(
 fn resolve_loopback_public_url(
     cli_loopback_public_url: Option<String>,
     wizard_loopback_public_url: Option<String>,
-    relay_server_url: Option<&str>,
+    _relay_server_url: Option<&str>,
 ) -> Result<Option<String>> {
-    if relay_server_url.is_none() {
-        return Ok(None);
+    match cli_loopback_public_url.or(wizard_loopback_public_url) {
+        Some(value) => Ok(Some(validate_loopback_public_url(value)?)),
+        None => Ok(None),
     }
-
-    if let Some(value) = cli_loopback_public_url.or(wizard_loopback_public_url) {
-        return Ok(Some(validate_loopback_public_url(value)?));
-    }
-
-    let relay = relay_server_url.unwrap_or_default();
-    println!(
-        "Relay registration is enabled ({relay}). Enter LOOPBACK_PUBLIC_URL (public URL reachable by the relay):"
-    );
-    print!("LOOPBACK_PUBLIC_URL: ");
-    io::stdout().flush().context("failed to flush stdout")?;
-
-    let mut line = String::new();
-    io::stdin()
-        .read_line(&mut line)
-        .context("failed to read LOOPBACK_PUBLIC_URL from stdin")?;
-    let value = line.trim().to_string();
-    if value.is_empty() {
-        bail!("LOOPBACK_PUBLIC_URL is required when relay registration is enabled");
-    }
-    Ok(Some(validate_loopback_public_url(value)?))
 }
 
 fn validate_loopback_public_url(value: String) -> Result<String> {
