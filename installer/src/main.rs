@@ -273,7 +273,7 @@ fn validate_owner_discord_id(owner_discord_id: &str) -> Result<()> {
 }
 
 fn default_relay_server_url() -> &'static str {
-    "https://82.165.196.147:45491"
+    "https://kirelay.thomaslower.com"
 }
 
 fn build_client() -> Result<reqwest::Client> {
@@ -1418,8 +1418,8 @@ mod tests {
 
     #[test]
     fn relay_origin_for_csp_uses_url_origin_with_scheme() {
-        let origin = relay_origin_for_csp("https://82.165.196.147:45491").unwrap();
-        assert_eq!(origin, "https://82.165.196.147:45491");
+        let origin = relay_origin_for_csp("https://kirelay.thomaslower.com").unwrap();
+        assert_eq!(origin, "https://kirelay.thomaslower.com");
     }
 
     #[test]
@@ -1463,10 +1463,10 @@ mod tests {
         )
         .unwrap();
 
-        patch_vencord_csp(vencord_dir.path(), Some("https://82.165.196.147:45491")).unwrap();
+        patch_vencord_csp(vencord_dir.path(), Some("https://kirelay.thomaslower.com")).unwrap();
 
         let patched = std::fs::read_to_string(&csp_file).unwrap();
-        assert!(patched.contains("\"https://82.165.196.147:45491\": ConnectSrc"));
+        assert!(patched.contains("\"https://kirelay.thomaslower.com\": ConnectSrc"));
     }
 
     #[test]
