@@ -913,14 +913,6 @@ async fn dispatch_desktop_command(
                 if queue.is_empty() {
                     requests.remove(owner_id);
                 }
-
-                async fn get_desktop_request_notifier(state: &AppState, owner_id: &str) -> Arc<Notify> {
-                    let mut notifiers = state.desktop_request_notifiers.write().await;
-                    notifiers
-                        .entry(owner_id.to_string())
-                        .or_insert_with(|| Arc::new(Notify::new()))
-                        .clone()
-                }
             }
             DesktopCommandResponse {
                 status: StatusCode::BAD_GATEWAY,
@@ -929,6 +921,14 @@ async fn dispatch_desktop_command(
             }
         }
     }
+}
+
+async fn get_desktop_request_notifier(state: &AppState, owner_id: &str) -> Arc<Notify> {
+    let mut notifiers = state.desktop_request_notifiers.write().await;
+    notifiers
+        .entry(owner_id.to_string())
+        .or_insert_with(|| Arc::new(Notify::new()))
+        .clone()
 }
 
 fn desktop_command_to_http_response(response: DesktopCommandResponse) -> axum::response::Response {
