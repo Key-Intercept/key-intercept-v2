@@ -1326,6 +1326,11 @@ function ConfigPanel(props) {
         setStatus(`${field}: Permanent`);
     }, [setTimeoutValue]);
 
+    const setTimeoutOff = useCallback(field => {
+        setTimeoutValue(field, epoch);
+        setStatus(`${field}: Off`);
+    }, [setTimeoutValue]);
+
     const setGroupTimeout = useCallback((groupId, nextIso) => {
         setEditableConfig(prev => ({
             ...prev,
@@ -1465,7 +1470,8 @@ function ConfigPanel(props) {
             button("+Sec", () => addTimeoutAmount(field, 1), { key: `${field}-sec`, noTopMargin: true }),
             button("+Min", () => addTimeoutAmount(field, 60), { key: `${field}-min`, noTopMargin: true }),
             button("+Hour", () => addTimeoutAmount(field, 3600), { key: `${field}-hour`, noTopMargin: true }),
-            button("Permanent", () => setPermanentTimeout(field), { key: `${field}-perm`, noTopMargin: true })
+            button("Permanent", () => setPermanentTimeout(field), { key: `${field}-perm`, noTopMargin: true }),
+            button("Off", () => setTimeoutOff(field), { key: `${field}-off`, noTopMargin: true })
         )
     );
 
