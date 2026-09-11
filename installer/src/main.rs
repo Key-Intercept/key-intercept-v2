@@ -1031,6 +1031,11 @@ fn build_windows_tray_script(
     let config = to_powershell_single_quoted_literal(&config_path.to_string_lossy());
     let log_path =
         to_powershell_single_quoted_literal(&config_path.with_file_name("loopback.log").to_string_lossy());
+    let error_log_path = to_powershell_single_quoted_literal(
+        &config_path
+            .with_file_name("loopback-error.log")
+            .to_string_lossy(),
+    );
     let relay_env = relay_server_url
         .map(to_powershell_single_quoted_literal)
         .map(|value| format!("$env:RELAY_SERVER_URL = '{value}'\n"))
@@ -1063,6 +1068,7 @@ $env:KEY_INTERCEPT_CONFIG_PATH = '{config}'
 
 $loopback = '{loopback}'
 $logPath = '{log_path}'
+$errorLogPath = '{error_log_path}'
 $logDirectory = Split-Path -Parent $logPath
 if (-not [string]::IsNullOrWhiteSpace($logDirectory)) {{
     New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
@@ -1070,7 +1076,10 @@ if (-not [string]::IsNullOrWhiteSpace($logDirectory)) {{
 if (-not (Test-Path -LiteralPath $logPath)) {{
     New-Item -ItemType File -Path $logPath -Force | Out-Null
 }}
-$process = Start-Process -FilePath $loopback -WindowStyle Hidden -RedirectStandardOutput $logPath -RedirectStandardError $logPath -PassThru
+if (-not (Test-Path -LiteralPath $errorLogPath)) {{
+    New-Item -ItemType File -Path $errorLogPath -Force | Out-Null
+}}
+$process = Start-Process -FilePath $loopback -WindowStyle Hidden -RedirectStandardOutput $logPath -RedirectStandardError $errorLogPath -PassThru
 
 $icon = New-Object System.Windows.Forms.NotifyIcon
 $icon.Icon = [System.Drawing.SystemIcons]::Application
@@ -1083,22 +1092,14 @@ $exitItem = $menu.Items.Add('Exit')
 $icon.ContextMenuStrip = $menu
 
 $showWindow = {{
-    if ($process.HasExited) {{ return }}
-    $tailCommand = "powershell -NoProfile -ExecutionPolicy Bypass -NoExit -Command ""Get-Content -Path ''{log_path}'' -Tail 200 -Wait"""
+    $tailCommand = "powershell -NoProfile -ExecutionPolicy Bypass -NoExit -Command ""Get-Content -Path @(''{log_path}'',''{error_log_path}'') -Tail 200 -Wait"""
     Start-Process -FilePath 'cmd.exe' -ArgumentList '/K', $tailCommand | Out-Null
 }}
 
 $showItem.Add_Click($showWindow)
 $icon.Add_DoubleClick($showWindow)
 $exitItem.Add_Click({{
-    if (-not $process.HasExited) {{ $process.Kill() }}
-    $icon.Visible = $false
-    $icon.Dispose()
-    [System.Windows.Forms.Application]::Exit()
-}})
-
-$process.EnableRaisingEvents = $true
-$process.add_Exited({{
+    if ($process -and -not $process.HasExited) {{ $process.Kill() }}
     $icon.Visible = $false
     $icon.Dispose()
     [System.Windows.Forms.Application]::Exit()
@@ -1108,6 +1109,7 @@ $process.add_Exited({{
 "#,
         relay_env = relay_env,
         log_path = log_path,
+        error_log_path = error_log_path,
     )
 }
 
@@ -1490,7 +1492,9 @@ mod tests {
             Path::new("C:\\Users\\me\\AppData\\Roaming\\key-intercept\\config.json"),
             None,
         );
-        assert!(script.contains("Start-Process -FilePath $loopback -WindowStyle Hidden -PassThru"));
+        assert!(
+            script.contains("Start-Process -FilePath $loopback -WindowStyle Hidden -RedirectStandardOutput $logPath -RedirectStandardError $errorLogPath -PassThru")
+        );
     }
 
     #[cfg(windows)]
@@ -1508,6 +1512,18 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn windows_tray_script_does_not_auto_exit_when_loopback_stops() {
+        let script = build_windows_tray_script(
+            "123456",
+            Path::new("C:\\loopback-server.exe"),
+            Path::new("C:\\Users\\me\\AppData\\Roaming\\key-intercept\\config.json"),
+            None,
+        );
+        assert!(!script.contains("$process.add_Exited"));
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn windows_tray_script_show_action_opens_log_tail_console() {
         let script = build_windows_tray_script(
             "123456",
@@ -1517,7 +1533,7 @@ mod tests {
         );
         assert!(script.contains("Start-Process -FilePath 'cmd.exe' -ArgumentList '/K', $tailCommand"));
         assert!(script.contains(
-            "Get-Content -Path ''C:\\Users\\me\\AppData\\Roaming\\key-intercept\\loopback.log'' -Tail 200 -Wait"
+            "Get-Content -Path @(''C:\\Users\\me\\AppData\\Roaming\\key-intercept\\loopback.log'',''C:\\Users\\me\\AppData\\Roaming\\key-intercept\\loopback-error.log'') -Tail 200 -Wait"
         ));
     }
 }
