@@ -1669,7 +1669,14 @@ function ConfigPanel(props) {
             }
         },
         h(Text, { style: { color: "#f2f3f5", marginBottom: 6 } }, editor),
-        button(`Remove ${editor}`, () => removeAllowedEditor(activeUserId, editor).then(refresh), { danger: true })
+        button(`Remove ${editor}`, () => Promise.resolve()
+            .then(() => removeAllowedEditor(activeUserId, editor))
+            .then(() => {
+                setAllowedEditors(prev => prev.filter(value => value !== editor));
+                setStatus(`Removed editor ${editor}`);
+                return refresh();
+            })
+            .catch(err => setStatus(String(err))), { danger: true })
     ));
 
     const requestRows = pendingRequests.map(requesterId => h(
@@ -1946,10 +1953,21 @@ function ConfigPanel(props) {
                 keyboardType: "numeric",
                 style: inputStyle
             }),
-            button("Add Editor", () => addAllowedEditor(activeUserId, newEditorId.trim()).then(() => {
-                setNewEditorId("");
-                return refresh();
-            }).catch(err => setStatus(String(err)))),
+            button("Add Editor", () => {
+                const editorId = newEditorId.trim();
+                return Promise.resolve()
+                    .then(() => addAllowedEditor(activeUserId, editorId))
+                    .then(() => {
+                        setAllowedEditors(prev => {
+                            if (prev.includes(editorId)) return prev;
+                            return [...prev, editorId].sort();
+                        });
+                        setNewEditorId("");
+                        setStatus(`Added editor ${editorId}`);
+                        return refresh();
+                    })
+                    .catch(err => setStatus(String(err)));
+            }),
             ...editorRows
         )) : null,
 
