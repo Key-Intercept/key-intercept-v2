@@ -84,23 +84,22 @@ let pendingProfileEditorLaunch = null;
 let registeredProfileActionFallback = null;
 const fallbackMobileStateByOwner = new Map();
 let cachedStorageBackend = null;
-let cachedMMKVStore = undefined;
+let cachedMMKVStore = null;
 
 function getMMKVStore() {
-    if (cachedMMKVStore !== undefined) return cachedMMKVStore;
-    cachedMMKVStore = null;
+    if (cachedMMKVStore && typeof cachedMMKVStore === "object") return cachedMMKVStore;
     try {
-        const vendettaStorage = globalThis?.vendetta?.storage;
+        const vendettaStorage = globalThis?.vendetta?.storage ?? globalThis?.vendetta?.default?.storage;
         const createMMKVBackend = vendettaStorage?.createMMKVBackend;
         const createStorage = vendettaStorage?.createStorage;
         const wrapSync = vendettaStorage?.wrapSync;
-        if (!createMMKVBackend || !createStorage || !wrapSync) return cachedMMKVStore;
+        if (!createMMKVBackend || !createStorage || !wrapSync) return null;
         const store = wrapSync(createStorage(createMMKVBackend("key-intercept-kettu-plugin")));
-        if (!store || typeof store !== "object") return cachedMMKVStore;
+        if (!store || typeof store !== "object") return null;
         cachedMMKVStore = store;
-        return cachedMMKVStore;
+        return store;
     } catch {
-        return cachedMMKVStore;
+        return null;
     }
 }
 
