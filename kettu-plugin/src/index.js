@@ -82,6 +82,7 @@ let ReactRef = null;
 let ReactNativeRef = null;
 let pendingProfileEditorLaunch = null;
 let registeredProfileActionFallback = null;
+const fallbackMobileStateByOwner = new Map();
 
 function cloneDefaultConfig() {
     return JSON.parse(JSON.stringify(defaultLocalConfig));
@@ -324,7 +325,8 @@ function currentRelayUrl() {
 function readMobileState(ownerId) {
     const storage = getStorageBackend();
     const key = `${MOBILE_STATE_KEY}:${ownerId}`;
-    const raw = storage?.getItem(key);
+    const fallback = fallbackMobileStateByOwner.get(ownerId);
+    const raw = storage?.getItem(key) ?? (fallback ? JSON.stringify(fallback) : null);
     if (!raw) {
         const fresh = {
             owner_discord_id: ownerId,
@@ -333,27 +335,34 @@ function readMobileState(ownerId) {
             revision: 0,
             last_writer_id: ownerId
         };
+        fallbackMobileStateByOwner.set(ownerId, fresh);
         if (storage) storage.setItem(key, JSON.stringify(fresh));
         return fresh;
     }
 
     try {
         const parsed = JSON.parse(raw);
-        return {
+        const normalized = {
             owner_discord_id: typeof parsed.owner_discord_id === "string" ? parsed.owner_discord_id : ownerId,
             config: mergeLocalConfig(parsed.config),
-            allowed_editors: Array.isArray(parsed.allowed_editors) ? parsed.allowed_editors.filter(v => typeof v === "string") : [],
+            allowed_editors: Array.isArray(parsed.allowed_editors)
+                ? parsed.allowed_editors.filter(validateDiscordId)
+                : [],
             revision: Number.isFinite(parsed.revision) ? Math.max(0, Math.floor(parsed.revision)) : 0,
-            last_writer_id: typeof parsed.last_writer_id === "string" ? parsed.last_writer_id : ownerId
+            last_writer_id: validateDiscordId(parsed.last_writer_id) ? parsed.last_writer_id : ownerId
         };
+        fallbackMobileStateByOwner.set(ownerId, normalized);
+        return normalized;
     } catch {
-        return {
+        const fresh = {
             owner_discord_id: ownerId,
             config: cloneDefaultConfig(),
             allowed_editors: [],
             revision: 0,
             last_writer_id: ownerId
         };
+        fallbackMobileStateByOwner.set(ownerId, fresh);
+        return fresh;
     }
 }
 
@@ -363,10 +372,11 @@ function writeMobileState(state) {
     const normalized = {
         owner_discord_id: state.owner_discord_id,
         config: mergeLocalConfig(state.config),
-        allowed_editors: Array.isArray(state.allowed_editors) ? state.allowed_editors : [],
+        allowed_editors: Array.isArray(state.allowed_editors) ? state.allowed_editors.filter(validateDiscordId) : [],
         revision: Math.max(0, Math.floor(state.revision || 0)),
-        last_writer_id: state.last_writer_id || state.owner_discord_id
+        last_writer_id: validateDiscordId(state.last_writer_id) ? state.last_writer_id : state.owner_discord_id
     };
+    fallbackMobileStateByOwner.set(state.owner_discord_id, normalized);
     if (storage) storage.setItem(key, JSON.stringify(normalized));
     return normalized;
 }
