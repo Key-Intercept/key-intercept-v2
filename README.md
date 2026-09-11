@@ -80,6 +80,7 @@ The relay server is intended for manual VPS deployment and is not included in in
 ### Relay manual deployment / DNS checklist
 
 1. Build and run relay server on your VPS, binding `RELAY_PORT` (default `35491`) and exposing `/health`.
+   - Set `RELAY_STATE_PATH` to a durable file path (default `./relay-state.json`) so mobile config state and pending access requests persist across relay restarts.
 2. Put the relay behind HTTPS at a stable public URL (example: `https://relay.your-domain.tld`).
 3. DNS:
    - Create an `A`/`AAAA` record for the relay hostname to your VPS.
