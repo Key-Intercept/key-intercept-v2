@@ -1,5 +1,5 @@
-use anyhow::{Context, Result, bail};
 use crate::schema::LocalConfig;
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,

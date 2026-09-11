@@ -11,8 +11,8 @@ use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
-    sync::atomic::{AtomicU64, Ordering},
     sync::Arc,
+    sync::atomic::{AtomicU64, Ordering},
 };
 use tokio::sync::{RwLock, oneshot};
 use tokio::time::{Duration, timeout};
@@ -816,7 +816,11 @@ async fn push_desktop_response(
         )
             .into_response();
     };
-    let sender = state.desktop_waiters.write().await.remove(&payload.request_id);
+    let sender = state
+        .desktop_waiters
+        .write()
+        .await
+        .remove(&payload.request_id);
     if let Some(sender) = sender {
         let _ = sender.send(DesktopCommandResponse {
             status,
@@ -846,7 +850,11 @@ async fn dispatch_desktop_command(
         .next_desktop_request_id
         .fetch_add(1, Ordering::Relaxed);
     let (sender, receiver) = oneshot::channel::<DesktopCommandResponse>();
-    state.desktop_waiters.write().await.insert(request_id, sender);
+    state
+        .desktop_waiters
+        .write()
+        .await
+        .insert(request_id, sender);
     state
         .desktop_requests
         .write()
@@ -1229,10 +1237,11 @@ mod tests {
     #[tokio::test]
     async fn dispatch_desktop_command_round_trip_returns_response() {
         let state = test_state();
-        state.peers.write().await.insert(
-            "123".to_string(),
-            RegisteredPeer { shared_token: None },
-        );
+        state
+            .peers
+            .write()
+            .await
+            .insert("123".to_string(), RegisteredPeer { shared_token: None });
         let cloned = state.clone();
         tokio::spawn(async move {
             for _ in 0..40 {
