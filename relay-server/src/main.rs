@@ -14,6 +14,7 @@ use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
+    path::{Path as FsPath, PathBuf},
     sync::Arc,
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -34,6 +35,7 @@ struct AppState {
     desktop_request_notifiers: Arc<RwLock<HashMap<String, Arc<Notify>>>>,
     desktop_waiters: Arc<RwLock<HashMap<u64, oneshot::Sender<DesktopCommandResponse>>>>,
     next_desktop_request_id: Arc<AtomicU64>,
+    persisted_state_path: Option<Arc<PathBuf>>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -91,14 +93,14 @@ struct DesktopCommandResponse {
     error: Option<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct MobileOperation {
     revision: u64,
     editor_id: String,
     config: Value,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct MobileState {
     revision: u64,
     last_writer_id: String,
@@ -181,6 +183,39 @@ struct MobileSyncResponse {
     operations: Vec<MobileOperationResponse>,
 }
 
+#[derive(Default, Serialize, Deserialize)]
+struct PersistedRelayState {
+    mobile_states: HashMap<String, MobileState>,
+    pending_access_requests: HashMap<String, HashSet<String>>,
+}
+
+fn load_persisted_relay_state(path: &FsPath) -> PersistedRelayState {
+    let Ok(raw) = std::fs::read(path) else {
+        return PersistedRelayState::default();
+    };
+    serde_json::from_slice(&raw).unwrap_or_default()
+}
+
+async fn persist_relay_state(state: &AppState) -> Result<()> {
+    let Some(path) = state.persisted_state_path.as_deref() else {
+        return Ok(());
+    };
+    let mobile_states = state.mobile_states.read().await.clone();
+    let pending_access_requests = state.pending_access_requests.read().await.clone();
+    let payload = PersistedRelayState {
+        mobile_states,
+        pending_access_requests,
+    };
+    let encoded = serde_json::to_vec(&payload)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, encoded)?;
+    std::fs::rename(tmp, path)?;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -193,6 +228,15 @@ async fn main() -> Result<()> {
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(35491);
+    let persisted_state_path = std::env::var("RELAY_STATE_PATH")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(|| Some(PathBuf::from("relay-state.json")));
+    let initial_state = persisted_state_path
+        .as_deref()
+        .map(load_persisted_relay_state)
+        .unwrap_or_default();
 
     let app = Router::new()
         .route("/health", get(health))
@@ -231,12 +275,13 @@ async fn main() -> Result<()> {
         .layer(TraceLayer::new_for_http())
         .with_state(AppState {
             peers: Arc::new(RwLock::new(HashMap::new())),
-            mobile_states: Arc::new(RwLock::new(HashMap::new())),
-            pending_access_requests: Arc::new(RwLock::new(HashMap::new())),
+            mobile_states: Arc::new(RwLock::new(initial_state.mobile_states)),
+            pending_access_requests: Arc::new(RwLock::new(initial_state.pending_access_requests)),
             desktop_requests: Arc::new(RwLock::new(HashMap::new())),
             desktop_request_notifiers: Arc::new(RwLock::new(HashMap::new())),
             desktop_waiters: Arc::new(RwLock::new(HashMap::new())),
             next_desktop_request_id: Arc::new(AtomicU64::new(1)),
+            persisted_state_path: persisted_state_path.map(Arc::new),
         });
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -379,6 +424,16 @@ async fn put_remote_config(
             let drain_count = mobile.operations.len().saturating_sub(512);
             mobile.operations.drain(0..drain_count);
         }
+        drop(mobile_states);
+        if let Err(err) = persist_relay_state(&state).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("failed to persist relay state: {err}"),
+                }),
+            )
+                .into_response();
+        }
         return StatusCode::NO_CONTENT.into_response();
     }
     drop(mobile_states);
@@ -455,7 +510,16 @@ async fn create_access_request(
         .entry(owner_id)
         .or_default()
         .insert(payload.requester_id);
-
+    drop(requests);
+    if let Err(err) = persist_relay_state(&state).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("failed to persist relay state: {err}"),
+            }),
+        )
+            .into_response();
+    }
     StatusCode::NO_CONTENT.into_response()
 }
 
@@ -535,6 +599,16 @@ async fn approve_access_request(
                 pending.remove(&owner_id);
             }
         }
+        drop(pending);
+        if let Err(err) = persist_relay_state(&state).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("failed to persist relay state: {err}"),
+                }),
+            )
+                .into_response();
+        }
         return StatusCode::NO_CONTENT.into_response();
     }
 
@@ -566,6 +640,16 @@ async fn approve_access_request(
         if entry.is_empty() {
             pending.remove(&owner_id);
         }
+    }
+    drop(pending);
+    if let Err(err) = persist_relay_state(&state).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("failed to persist relay state: {err}"),
+            }),
+        )
+            .into_response();
     }
     StatusCode::NO_CONTENT.into_response()
 }
@@ -605,7 +689,16 @@ async fn deny_access_request(
             pending.remove(&owner_id);
         }
     }
-
+    drop(pending);
+    if let Err(err) = persist_relay_state(&state).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("failed to persist relay state: {err}"),
+            }),
+        )
+            .into_response();
+    }
     StatusCode::NO_CONTENT.into_response()
 }
 
@@ -688,6 +781,16 @@ async fn upsert_mobile_snapshot(
                 operations: Vec::new(),
             },
         );
+    }
+    drop(mobile_states);
+    if let Err(err) = persist_relay_state(&state).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("failed to persist relay state: {err}"),
+            }),
+        )
+            .into_response();
     }
     StatusCode::NO_CONTENT.into_response()
 }
@@ -1084,6 +1187,7 @@ mod tests {
             desktop_request_notifiers: Arc::new(RwLock::new(HashMap::new())),
             desktop_waiters: Arc::new(RwLock::new(HashMap::new())),
             next_desktop_request_id: Arc::new(AtomicU64::new(1)),
+            persisted_state_path: None,
         }
     }
 
