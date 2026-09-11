@@ -1508,6 +1508,11 @@ function ConfigPanel(props: any) {
         setStatus(`${field}: Permanent`);
     }, [setTimeoutValue]);
 
+    const setTimeoutOff = React.useCallback((field: ModeTimeoutFieldKey) => {
+        setTimeoutValue(field, epoch);
+        setStatus(`${field}: Off`);
+    }, [setTimeoutValue]);
+
     const setGroupTimeout = React.useCallback((groupId: number, nextIso: string) => {
         setEditableConfig(prev => ({
             ...prev,
@@ -1688,6 +1693,7 @@ function ConfigPanel(props: any) {
                 <button style={buttonStyle} onClick={() => addTimeoutAmount(field, 60)}>Add Minutes</button>
                 <button style={buttonStyle} onClick={() => addTimeoutAmount(field, 3600)}>Add Hours</button>
                 <button style={buttonStyle} onClick={() => setPermanentTimeout(field)}>Permanent</button>
+                <button style={buttonStyle} onClick={() => setTimeoutOff(field)}>Off</button>
             </div>
         </div>
     );
