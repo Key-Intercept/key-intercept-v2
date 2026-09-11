@@ -11,6 +11,7 @@ use tokio::{
     sync::{Notify, RwLock},
     time::{Duration, timeout},
 };
+use tracing::warn;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedState {
@@ -18,6 +19,7 @@ pub struct PersistedState {
     #[serde(default)]
     pub revision: u64,
     pub config: LocalConfig,
+    #[serde(default)]
     pub allowed_editors: HashSet<String>,
 }
 
@@ -46,8 +48,40 @@ impl ConfigStore {
             let existing = fs::read_to_string(&path)
                 .await
                 .with_context(|| format!("failed to read {}", path.display()))?;
-            serde_json::from_str::<PersistedState>(&existing)
-                .with_context(|| format!("failed to parse {}", path.display()))?
+            match serde_json::from_str::<PersistedState>(&existing) {
+                Ok(state) => state,
+                Err(err) => match serde_json::from_str::<LocalConfig>(&existing) {
+                    Ok(config) => {
+                        let migrated = PersistedState {
+                            owner_discord_id: owner_discord_id.clone(),
+                            revision: 0,
+                            config,
+                            allowed_editors: HashSet::new(),
+                        };
+                        fs::write(&path, serde_json::to_vec_pretty(&migrated)?)
+                            .await
+                            .with_context(|| format!("failed to migrate {}", path.display()))?;
+                        migrated
+                    }
+                    Err(_) => {
+                        let backup_path = path.with_extension("corrupt.json");
+                        warn!(
+                            "failed to parse {}; backing up to {} and recreating default config: {}",
+                            path.display(),
+                            backup_path.display(),
+                            err
+                        );
+                        fs::write(&backup_path, existing.as_bytes()).await.with_context(|| {
+                            format!("failed to write backup {}", backup_path.display())
+                        })?;
+                        let fresh = PersistedState::new(owner_discord_id.clone());
+                        fs::write(&path, serde_json::to_vec_pretty(&fresh)?)
+                            .await
+                            .with_context(|| format!("failed to recreate {}", path.display()))?;
+                        fresh
+                    }
+                },
+            }
         } else {
             let fresh = PersistedState::new(owner_discord_id);
             if let Some(parent) = path.parent() {
@@ -221,5 +255,45 @@ mod tests {
             reloaded.get().await.config.config.censored_replacement,
             updated.config.censored_replacement
         );
+    }
+
+    #[tokio::test]
+    async fn load_or_create_migrates_legacy_local_config_format() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        fs::write(&path, serde_json::to_vec_pretty(&LocalConfig::default()).unwrap())
+            .await
+            .unwrap();
+
+        let store = ConfigStore::load_or_create(&path, "owner".to_string())
+            .await
+            .unwrap();
+        let state = store.get().await;
+
+        assert_eq!(state.owner_discord_id, "owner");
+        assert_eq!(state.revision, 0);
+        assert!(state.allowed_editors.is_empty());
+        assert_eq!(state.config.config.censored_replacement, "*");
+    }
+
+    #[tokio::test]
+    async fn load_or_create_recovers_from_corrupt_config_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        fs::write(&path, b"{invalid json")
+            .await
+            .unwrap();
+
+        let store = ConfigStore::load_or_create(&path, "owner".to_string())
+            .await
+            .unwrap();
+        let state = store.get().await;
+
+        assert_eq!(state.owner_discord_id, "owner");
+        assert!(state.allowed_editors.is_empty());
+        assert_eq!(state.config.config.censored_replacement, "*");
+
+        let backup_path = path.with_extension("corrupt.json");
+        assert!(backup_path.exists());
     }
 }
