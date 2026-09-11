@@ -84,6 +84,25 @@ let pendingProfileEditorLaunch = null;
 let registeredProfileActionFallback = null;
 const fallbackMobileStateByOwner = new Map();
 let cachedStorageBackend = null;
+let cachedMMKVStore = undefined;
+
+function getMMKVStore() {
+    if (cachedMMKVStore !== undefined) return cachedMMKVStore;
+    cachedMMKVStore = null;
+    try {
+        const vendettaStorage = globalThis?.vendetta?.storage;
+        const createMMKVBackend = vendettaStorage?.createMMKVBackend;
+        const createStorage = vendettaStorage?.createStorage;
+        const wrapSync = vendettaStorage?.wrapSync;
+        if (!createMMKVBackend || !createStorage || !wrapSync) return cachedMMKVStore;
+        const store = wrapSync(createStorage(createMMKVBackend("key-intercept-kettu-plugin")));
+        if (!store || typeof store !== "object") return cachedMMKVStore;
+        cachedMMKVStore = store;
+        return cachedMMKVStore;
+    } catch {
+        return cachedMMKVStore;
+    }
+}
 
 function cloneDefaultConfig() {
     return JSON.parse(JSON.stringify(defaultLocalConfig));
@@ -309,6 +328,23 @@ function getStorageBackend() {
         if (typeof window !== "undefined" && window.localStorage) return window.localStorage;
     } catch {
         // ignore
+    }
+    const mmkvStore = getMMKVStore();
+    if (mmkvStore && typeof mmkvStore === "object") {
+        if (!cachedStorageBackend || cachedStorageBackend.__raw !== mmkvStore) {
+            cachedStorageBackend = {
+                __raw: mmkvStore,
+                getItem(key) {
+                    const value = mmkvStore[key];
+                    if (value === undefined || value === null) return null;
+                    return typeof value === "string" ? value : String(value);
+                },
+                setItem(key, value) {
+                    mmkvStore[key] = String(value);
+                }
+            };
+        }
+        return cachedStorageBackend;
     }
     const pluginStorage = globalThis?.vendetta?.plugin?.storage;
     if (pluginStorage && typeof pluginStorage === "object") {
