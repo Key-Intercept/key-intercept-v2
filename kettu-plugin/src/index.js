@@ -1363,10 +1363,28 @@ function ConfigPanel(props) {
         if (!activeUserId) return null;
         const { merged } = buildConfigSnapshot(baseConfig, censoredWordsText);
         if (isOwnProfile) {
-            return saveLocalConfig(activeUserId, merged, activeUserId).then(() => {
+            return pushRemoteConfig(currentRelayUrl(), activeUserId, activeUserId, merged).then(() => {
+                const previous = readMobileState(activeUserId);
+                writeMobileState({
+                    owner_discord_id: activeUserId,
+                    config: merged,
+                    allowed_editors: previous.allowed_editors,
+                    revision: previous.revision + 1,
+                    last_writer_id: activeUserId
+                });
+                interceptConfig = merged;
                 lastSavedSnapshotRef.current = JSON.stringify(merged);
-                setStatus("Auto-saved local profile config");
-            }, err => setStatus(`Auto-save failed: ${String(err)}`));
+                setStatus("Auto-saved profile config");
+            }, err => {
+                const status = parseErrorStatusCode(err);
+                if (status === 404) {
+                    return saveLocalConfig(activeUserId, merged, activeUserId).then(() => {
+                        lastSavedSnapshotRef.current = JSON.stringify(merged);
+                        setStatus("Auto-saved profile config");
+                    }, fallbackErr => setStatus(`Auto-save failed: ${String(fallbackErr)}`));
+                }
+                setStatus(`Auto-save failed: ${String(err)}`);
+            });
         }
         return pushRemoteConfig(currentRelayUrl(), activeUserId, profileUserId, merged).then(() => {
             lastSavedSnapshotRef.current = JSON.stringify(merged);

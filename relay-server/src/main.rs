@@ -436,6 +436,33 @@ async fn put_remote_config(
         }
         return StatusCode::NO_CONTENT.into_response();
     }
+    if payload.editor_id == owner_id {
+        mobile_states.insert(
+            owner_id.clone(),
+            MobileState {
+                revision: 1,
+                last_writer_id: payload.editor_id.clone(),
+                config: payload.config.clone(),
+                allowed_editors: HashSet::new(),
+                operations: vec![MobileOperation {
+                    revision: 1,
+                    editor_id: payload.editor_id.clone(),
+                    config: payload.config,
+                }],
+            },
+        );
+        drop(mobile_states);
+        if let Err(err) = persist_relay_state(&state).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("failed to persist relay state: {err}"),
+                }),
+            )
+                .into_response();
+        }
+        return StatusCode::NO_CONTENT.into_response();
+    }
     drop(mobile_states);
 
     let Some(peer) = state.peers.read().await.get(&owner_id).cloned() else {
@@ -1377,6 +1404,34 @@ mod tests {
             Query(MobileSyncQuery {
                 requester_id: "123".to_string(),
                 after_revision: Some(2),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(sync_response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn owner_put_remote_config_bootstraps_mobile_state() {
+        let state = test_state();
+        let update_response = put_remote_config(
+            State(state.clone()),
+            Path("123".to_string()),
+            Json(RemoteUpdatePayload {
+                editor_id: "123".to_string(),
+                config: sample_config(),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(update_response.status(), StatusCode::NO_CONTENT);
+
+        let sync_response = get_mobile_sync(
+            State(state),
+            Path("123".to_string()),
+            Query(MobileSyncQuery {
+                requester_id: "123".to_string(),
+                after_revision: Some(0),
             }),
         )
         .await
