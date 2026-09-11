@@ -50,7 +50,10 @@ struct Args {
     #[arg(long, default_value = "vencord-custom")]
     plugin_install_mode: String,
 
-    #[arg(long, default_value = "https://key-intercept.github.io/key-intercept-v2/")]
+    #[arg(
+        long,
+        default_value = "https://key-intercept.github.io/key-intercept-v2/"
+    )]
     kettu_plugin_source_url: String,
 }
 
@@ -108,10 +111,8 @@ async fn run() -> Result<()> {
     reqwest::Url::parse(&kettu_plugin_source_url)
         .with_context(|| format!("invalid --kettu-plugin-source-url: {kettu_plugin_source_url}"))?;
 
-    let owner_discord_id = resolve_owner_discord_id(
-        args.user_discord_id,
-        args.relay_server_url.as_deref(),
-    )?;
+    let owner_discord_id =
+        resolve_owner_discord_id(args.user_discord_id, args.relay_server_url.as_deref())?;
     let relay_server_url =
         resolve_relay_server_url(args.relay_server_url, owner_discord_id.relay_server_url);
     let loopback_artifact = args
@@ -162,20 +163,12 @@ async fn run() -> Result<()> {
 
         let loopback_asset = find_release_asset(&assets, loopback_artifact)?;
 
-        let loopback_dir = download_release_asset(
-            &client,
-            loopback_asset,
-        )
-        .await?;
+        let loopback_dir = download_release_asset(&client, loopback_asset).await?;
 
         install_loopback_binary(&loopback_dir, &loopback_binary_name)?;
         if install_into_vencord {
             let plugin_asset = find_release_asset(&assets, &args.plugin_artifact)?;
-            let plugin_dir = download_release_asset(
-                &client,
-                plugin_asset,
-            )
-            .await?;
+            let plugin_dir = download_release_asset(&client, plugin_asset).await?;
             let plugin_source = find_file_recursive(plugin_dir.path(), &args.plugin_file_name)?;
             install_plugin_into_vencord(
                 installer_tools
@@ -189,7 +182,10 @@ async fn run() -> Result<()> {
         }
     }
 
-    configure_loopback_startup(&owner_discord_id.owner_discord_id)?;
+    configure_loopback_startup(
+        &owner_discord_id.owner_discord_id,
+        relay_server_url.as_deref(),
+    )?;
 
     if !install_into_vencord {
         print_kettu_install_instructions(&kettu_plugin_source_url);
@@ -334,11 +330,9 @@ async fn latest_release_with_assets(
 }
 
 fn has_required_assets(assets: &[ReleaseAsset], required_assets: &[&str]) -> bool {
-    required_assets.iter().all(|required_name| {
-        assets
-            .iter()
-            .any(|asset| asset.name == *required_name)
-    })
+    required_assets
+        .iter()
+        .all(|required_name| assets.iter().any(|asset| asset.name == *required_name))
 }
 
 fn find_release_asset<'a>(assets: &'a [ReleaseAsset], name: &str) -> Result<&'a ReleaseAsset> {
@@ -348,10 +342,7 @@ fn find_release_asset<'a>(assets: &'a [ReleaseAsset], name: &str) -> Result<&'a 
         .ok_or_else(|| anyhow!("release asset '{name}' not found"))
 }
 
-async fn download_release_asset(
-    client: &reqwest::Client,
-    asset: &ReleaseAsset,
-) -> Result<TempDir> {
+async fn download_release_asset(client: &reqwest::Client, asset: &ReleaseAsset) -> Result<TempDir> {
     let bytes = client
         .get(&asset.browser_download_url)
         .send()
@@ -591,7 +582,9 @@ fn sync_vencord_checkout(installer_tools: &InstallerTools, vencord_dir: &Path) -
     }
 
     match git_working_tree_clean(installer_tools, vencord_dir) {
-        Ok(true) => run_git_command_in_dir_warn(installer_tools, &["pull", "--ff-only"], vencord_dir),
+        Ok(true) => {
+            run_git_command_in_dir_warn(installer_tools, &["pull", "--ff-only"], vencord_dir)
+        }
         Ok(false) => println!(
             "Warning: Skipping `git pull` in {} because it has local changes.",
             vencord_dir.display()
@@ -613,8 +606,12 @@ fn ensure_installer_tools() -> Result<InstallerTools> {
         bail!("npm is required to provision installer tools; install npm and rerun installer");
     }
     let tools_dir = installer_tools_dir()?;
-    fs::create_dir_all(&tools_dir)
-        .with_context(|| format!("failed to create installer tool sandbox {}", tools_dir.display()))?;
+    fs::create_dir_all(&tools_dir).with_context(|| {
+        format!(
+            "failed to create installer tool sandbox {}",
+            tools_dir.display()
+        )
+    })?;
 
     let pnpm_spec = sandbox_pnpm_package_spec();
     let npm_install_args = vec![
@@ -627,7 +624,11 @@ fn ensure_installer_tools() -> Result<InstallerTools> {
     run_node_tool_in_dir("npm", &npm_install_refs, &tools_dir)
         .context("failed to provision sandboxed installer tools")?;
 
-    let pnpm_cli = tools_dir.join("node_modules").join("pnpm").join("bin").join("pnpm.cjs");
+    let pnpm_cli = tools_dir
+        .join("node_modules")
+        .join("pnpm")
+        .join("bin")
+        .join("pnpm.cjs");
     if !pnpm_cli.is_file() {
         bail!(
             "sandboxed pnpm executable not found at {}; provisioning did not complete",
@@ -725,7 +726,8 @@ fn node_eval_in_dir(dir: &Path, script: &str) -> Result<String> {
             stderr.trim()
         );
     }
-    let stdout = String::from_utf8(output.stdout).context("node script output was not valid UTF-8")?;
+    let stdout =
+        String::from_utf8(output.stdout).context("node script output was not valid UTF-8")?;
     let value = stdout.trim().to_string();
     if value.is_empty() {
         bail!("node script in {} returned empty output", dir.display());
@@ -812,7 +814,9 @@ fn run_node_tool_in_dir(command: &str, args: &[&str], dir: &Path) -> Result<()> 
             .arg(command)
             .args(args)
             .status()
-            .with_context(|| format!("failed to execute command `{command}` in {}", dir.display()))?;
+            .with_context(|| {
+                format!("failed to execute command `{command}` in {}", dir.display())
+            })?;
 
         if !status.success() {
             bail!(
@@ -936,14 +940,18 @@ fn find_file_recursive(root: &Path, name: &str) -> Result<PathBuf> {
 #[cfg(unix)]
 fn configure_loopback_startup(
     owner_discord_id: &str,
+    relay_server_url: Option<&str>,
 ) -> Result<()> {
     let systemd_user = home_dir()?.join(".config/systemd/user");
     fs::create_dir_all(&systemd_user)
         .with_context(|| format!("failed to create {}", systemd_user.display()))?;
 
     let service_file = systemd_user.join("key-intercept-loopback.service");
+    let relay_environment = relay_server_url
+        .map(|value| format!("Environment=RELAY_SERVER_URL={value}\n"))
+        .unwrap_or_default();
     let unit = format!(
-        "[Unit]\nDescription=Key Intercept Loopback Server\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart={home}/.local/bin/key-intercept-loopback\nEnvironment=OWNER_DISCORD_ID={owner_discord_id}\nEnvironment=LOOPBACK_PORT=35491\nEnvironment=KEY_INTERCEPT_CONFIG_PATH={home}/.config/key-intercept/config.json\nRestart=always\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n",
+        "[Unit]\nDescription=Key Intercept Loopback Server\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart={home}/.local/bin/key-intercept-loopback\nEnvironment=OWNER_DISCORD_ID={owner_discord_id}\nEnvironment=LOOPBACK_PORT=35491\nEnvironment=KEY_INTERCEPT_CONFIG_PATH={home}/.config/key-intercept/config.json\n{relay_environment}Restart=always\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n",
         home = home_dir()?.display(),
     );
 
@@ -962,6 +970,7 @@ fn configure_loopback_startup(
 #[cfg(windows)]
 fn configure_loopback_startup(
     owner_discord_id: &str,
+    relay_server_url: Option<&str>,
 ) -> Result<()> {
     let startup_dir = windows_startup_dir()?;
     fs::create_dir_all(&startup_dir)
@@ -983,13 +992,10 @@ fn configure_loopback_startup(
         owner_discord_id,
         &loopback_binary,
         &config_path,
+        relay_server_url,
     );
-    fs::write(&tray_script_file, tray_script).with_context(|| {
-        format!(
-            "failed to write tray script {}",
-            tray_script_file.display()
-        )
-    })?;
+    fs::write(&tray_script_file, tray_script)
+        .with_context(|| format!("failed to write tray script {}", tray_script_file.display()))?;
 
     let script = format!(
         "@echo off\r\nstart \"\" powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{}\"\r\n",
@@ -1018,10 +1024,15 @@ fn build_windows_tray_script(
     owner_discord_id: &str,
     loopback_binary: &Path,
     config_path: &Path,
+    relay_server_url: Option<&str>,
 ) -> String {
     let loopback = to_powershell_single_quoted_literal(&loopback_binary.to_string_lossy());
     let owner = to_powershell_single_quoted_literal(owner_discord_id);
     let config = to_powershell_single_quoted_literal(&config_path.to_string_lossy());
+    let relay_env = relay_server_url
+        .map(to_powershell_single_quoted_literal)
+        .map(|value| format!("$env:RELAY_SERVER_URL = '{value}'\n"))
+        .unwrap_or_default();
     format!(
         r#"$ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
@@ -1038,6 +1049,7 @@ public static class Win32ShowWindow {{
 $env:OWNER_DISCORD_ID = '{owner}'
 $env:LOOPBACK_PORT = '35491'
 $env:KEY_INTERCEPT_CONFIG_PATH = '{config}'
+{relay_env}
 
 $loopback = '{loopback}'
 $process = Start-Process -FilePath $loopback -PassThru
@@ -1084,7 +1096,8 @@ $process.add_Exited({{
 }})
 
 [System.Windows.Forms.Application]::Run()
-"#
+"#,
+        relay_env = relay_env,
     )
 }
 
@@ -1101,9 +1114,7 @@ fn windows_startup_dir() -> Result<PathBuf> {
 }
 
 #[cfg(windows)]
-fn collect_windows_wizard_inputs(
-    relay_server_url: Option<&str>,
-) -> Result<ResolvedOwner> {
+fn collect_windows_wizard_inputs(relay_server_url: Option<&str>) -> Result<ResolvedOwner> {
     let default_relay_server_url = relay_server_url.unwrap_or(default_relay_server_url());
     let script = r#"
 Add-Type -AssemblyName System.Windows.Forms

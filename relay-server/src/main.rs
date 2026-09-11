@@ -2,7 +2,10 @@ use anyhow::Result;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::{Method, StatusCode, header::CONTENT_TYPE},
+    http::{
+        HeaderName, Method, StatusCode,
+        header::{CONTENT_TYPE, ORIGIN},
+    },
     response::IntoResponse,
     routing::{delete, get, post},
 };
@@ -11,12 +14,15 @@ use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
-    sync::atomic::{AtomicU64, Ordering},
     sync::Arc,
+    sync::atomic::{AtomicU64, Ordering},
 };
 use tokio::sync::{RwLock, oneshot};
 use tokio::time::{Duration, timeout};
-use tower_http::cors::CorsLayer;
+use tower_http::{
+    cors::{AllowHeaders, CorsLayer},
+    trace::TraceLayer,
+};
 use tracing::info;
 
 #[derive(Clone)]
@@ -215,6 +221,7 @@ async fn main() -> Result<()> {
             post(push_desktop_response),
         )
         .layer(discord_cors_layer())
+        .layer(TraceLayer::new_for_http())
         .with_state(AppState {
             peers: Arc::new(RwLock::new(HashMap::new())),
             mobile_states: Arc::new(RwLock::new(HashMap::new())),
@@ -816,7 +823,11 @@ async fn push_desktop_response(
         )
             .into_response();
     };
-    let sender = state.desktop_waiters.write().await.remove(&payload.request_id);
+    let sender = state
+        .desktop_waiters
+        .write()
+        .await
+        .remove(&payload.request_id);
     if let Some(sender) = sender {
         let _ = sender.send(DesktopCommandResponse {
             status,
@@ -846,7 +857,11 @@ async fn dispatch_desktop_command(
         .next_desktop_request_id
         .fetch_add(1, Ordering::Relaxed);
     let (sender, receiver) = oneshot::channel::<DesktopCommandResponse>();
-    state.desktop_waiters.write().await.insert(request_id, sender);
+    state
+        .desktop_waiters
+        .write()
+        .await
+        .insert(request_id, sender);
     state
         .desktop_requests
         .write()
@@ -925,7 +940,12 @@ fn discord_cors_layer() -> CorsLayer {
             Method::DELETE,
             Method::OPTIONS,
         ])
-        .allow_headers([CONTENT_TYPE])
+        .allow_headers(AllowHeaders::list([
+            CONTENT_TYPE,
+            HeaderName::from_static("x-loopback-token"),
+            HeaderName::from_static("x-discord-user-id"),
+            ORIGIN,
+        ]))
 }
 
 fn has_exact_keys(map: &serde_json::Map<String, Value>, expected: &[&str]) -> bool {
@@ -1229,10 +1249,11 @@ mod tests {
     #[tokio::test]
     async fn dispatch_desktop_command_round_trip_returns_response() {
         let state = test_state();
-        state.peers.write().await.insert(
-            "123".to_string(),
-            RegisteredPeer { shared_token: None },
-        );
+        state
+            .peers
+            .write()
+            .await
+            .insert("123".to_string(), RegisteredPeer { shared_token: None });
         let cloned = state.clone();
         tokio::spawn(async move {
             for _ in 0..40 {

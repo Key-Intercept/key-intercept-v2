@@ -67,6 +67,7 @@ You can override asset names with:
 It installs:
 - loopback binary to `~/.local/bin/key-intercept-loopback` on Unix, or `%LOCALAPPDATA%/Programs/key-intercept/key-intercept-loopback.exe` on Windows
 - startup service via user `systemd` unit on Unix, or `%APPDATA%/Microsoft/Windows/Start Menu/Programs/Startup/key-intercept-loopback.cmd` on Windows
+- startup config now also sets `RELAY_SERVER_URL` when `--relay-server-url` is provided so loopback can register/poll relay desktop requests
 
 Plugin install mode defaults to `vencord-custom` for desktop installs and installs the plugin file to `~/Vencord/src/userplugins/key-intercept/index.tsx`.
 
@@ -74,6 +75,27 @@ Plugin install mode defaults to `vencord-custom` for desktop installs and instal
 Default Kettu source URL is `https://key-intercept.github.io/key-intercept-v2/` (GitHub Pages deployment from this repository workflow).
 
 The relay server is intended for manual VPS deployment and is not included in installer automation.
+
+### Relay manual deployment / DNS checklist
+
+1. Build and run relay server on your VPS, binding `RELAY_PORT` (default `35491`) and exposing `/health`.
+2. Put the relay behind HTTPS at a stable public URL (example: `https://relay.your-domain.tld`).
+3. DNS:
+   - Create an `A`/`AAAA` record for the relay hostname to your VPS.
+   - Wait for DNS propagation before updating clients.
+4. Reverse proxy requirements (Nginx/Caddy/Traefik/Cloudflare Tunnel/etc):
+   - Forward all relay paths to the relay process (`/register`, `/users/*`, `/health`) on the relay port (default `127.0.0.1:35491`).
+   - Keep HTTP/1.1 upstream and allow `Upgrade` + `Connection` headers so websocket-style upgrades are not dropped by the proxy chain.
+   - Increase upstream read timeout above 15 seconds to avoid proxy-generated 502 during desktop command waits.
+   - Do not route `/register` or `/users/*` to a websocket-only upstream; those routes are standard HTTPS JSON endpoints.
+5. Installer/client links:
+   - Pass `--relay-server-url https://relay.your-domain.tld` to installer.
+   - Ensure Vencord CSP includes that origin (installer patches it automatically when URL is provided).
+   - If using Kettu source mode, the plugin source link remains `https://key-intercept.github.io/key-intercept-v2/`.
+6. Quick verification after deployment:
+   - `curl -i https://relay.your-domain.tld/health` should return `200 ok`.
+   - `curl -i -X POST https://relay.your-domain.tld/register -H 'content-type: application/json' --data '{"owner_id":"123","base_url":"http://127.0.0.1:35491"}'` should return `204`.
+   - From browser devtools on `https://discord.com`, requests to `/users/:owner_id/access-requests?...` should no longer show proxy 502/CORS blocking.
 
 ## GitHub Actions workflows
 
