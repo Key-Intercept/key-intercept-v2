@@ -83,6 +83,7 @@ let ReactNativeRef = null;
 let pendingProfileEditorLaunch = null;
 let registeredProfileActionFallback = null;
 const fallbackMobileStateByOwner = new Map();
+let cachedStorageBackend = null;
 
 function cloneDefaultConfig() {
     return JSON.parse(JSON.stringify(defaultLocalConfig));
@@ -308,6 +309,23 @@ function getStorageBackend() {
         if (typeof window !== "undefined" && window.localStorage) return window.localStorage;
     } catch {
         // ignore
+    }
+    const pluginStorage = globalThis?.vendetta?.plugin?.storage;
+    if (pluginStorage && typeof pluginStorage === "object") {
+        if (!cachedStorageBackend || cachedStorageBackend.__raw !== pluginStorage) {
+            cachedStorageBackend = {
+                __raw: pluginStorage,
+                getItem(key) {
+                    const value = pluginStorage[key];
+                    if (value === undefined || value === null) return null;
+                    return typeof value === "string" ? value : String(value);
+                },
+                setItem(key, value) {
+                    pluginStorage[key] = String(value);
+                }
+            };
+        }
+        return cachedStorageBackend;
     }
     return null;
 }
