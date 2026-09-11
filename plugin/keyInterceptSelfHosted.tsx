@@ -592,6 +592,27 @@ function deriveRelayConfigReadStatus(status: number, payload: unknown): number {
     return Number.isFinite(parsed) ? parsed : status;
 }
 
+function parseErrorStatusCode(error: unknown): number | null {
+    const status = Number((error as { status?: unknown })?.status);
+    if (Number.isFinite(status)) return status;
+    const message = String((error as { message?: unknown })?.message ?? error ?? "");
+    const match = /(?:failed|status)\D+(\d{3})/i.exec(message);
+    if (!match) return null;
+    const parsed = Number(match[1]);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatConfigAccessError(error: unknown, targetUserId: string): string {
+    const status = parseErrorStatusCode(error);
+    if (status === 403) return "You do not have access to this user's config.";
+    if (status === 404) return "This user is not using Key Intercept.";
+    if (status === 400) return "This config request was invalid. Please try again.";
+    if (status === 429) return "Too many requests. Please wait and try again.";
+    if (status !== null && status >= 500) return "Key Intercept relay is unavailable right now. Please try again later.";
+    if (status !== null) return `Unable to load ${targetUserId}'s profile config (error ${status}).`;
+    return "Unable to load this profile config.";
+}
+
 async function readRemoteConfig(relayUrl: string, requesterId: string, targetUserId: string): Promise<LocalConfig> {
     console.info(`${LOG_PREFIX} readRemoteConfig:start`, { requesterId, targetUserId });
     const response = await fetch(
@@ -610,7 +631,9 @@ async function readRemoteConfig(relayUrl: string, requesterId: string, targetUse
             status,
             relayStatus: response.status
         });
-        throw new Error(`Relay config read failed: ${status}`);
+        const err = new Error(`Relay config read failed: ${status}`) as Error & { status?: number };
+        err.status = status;
+        throw err;
     }
     const payload = mergeLocalConfig(await response.json());
     console.info(`${LOG_PREFIX} readRemoteConfig:success`, {
@@ -1446,7 +1469,7 @@ function ConfigPanel(props: any) {
             });
         } catch (err) {
             setCanViewRemote(false);
-            setStatus(String(err));
+            setStatus(formatConfigAccessError(err, profileUserId));
             console.error(`${LOG_PREFIX} refresh:failed`, { activeUserId, profileUserId, isOwnProfile, error: String(err) });
         } finally {
             refreshInFlightRef.current = false;
@@ -1455,7 +1478,7 @@ function ConfigPanel(props: any) {
 
     React.useEffect(() => {
         if (!isPanelOpen) return;
-        refresh().catch(err => setStatus(String(err)));
+        refresh().catch(err => setStatus(formatConfigAccessError(err, profileUserId)));
     }, [isPanelOpen, refresh]);
 
     React.useEffect(() => {
@@ -1467,7 +1490,7 @@ function ConfigPanel(props: any) {
                 censored_words: fromLines(censoredWordsText)
             });
             if (currentSnapshot !== lastSavedSnapshotRef.current) return;
-            refresh().catch(err => setStatus(String(err)));
+            refresh().catch(err => setStatus(formatConfigAccessError(err, profileUserId)));
         }, 1500);
         return () => clearInterval(handle);
     }, [censoredWordsText, editableConfig, hasExplicitPanelOpenState, isPanelOpen, refresh]);
@@ -1723,11 +1746,11 @@ function ConfigPanel(props: any) {
                                 await requestRemoteAccess(settings.store.relayUrl, activeUserId, profileUserId);
                                 setStatus(`Requested config access from ${profileUserId}`);
                             } catch (err) {
-                                setStatus(String(err));
+                                setStatus(formatConfigAccessError(err, profileUserId));
                             }
                         }}
                     >
-                        Request Access via Relay
+                        Request Access
                     </button>
                 </div>
             )}
