@@ -1041,8 +1041,31 @@ Add-Type @"
 using System;
 using System.Runtime.InteropServices;
 public static class Win32ShowWindow {{
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
     [DllImport("user32.dll")]
     public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+    public static IntPtr FindWindowForProcess(int processId) {{
+        IntPtr found = IntPtr.Zero;
+        EnumWindows(delegate (IntPtr hWnd, IntPtr lParam) {{
+            uint windowProcessId;
+            GetWindowThreadProcessId(hWnd, out windowProcessId);
+            if (windowProcessId == processId) {{
+                found = hWnd;
+                return false;
+            }}
+
+            return true;
+        }}, IntPtr.Zero);
+        return found;
+    }}
 }}
 "@
 
@@ -1052,13 +1075,18 @@ $env:KEY_INTERCEPT_CONFIG_PATH = '{config}'
 {relay_env}
 
 $loopback = '{loopback}'
-$process = Start-Process -FilePath $loopback -PassThru
-for ($i = 0; $i -lt 80 -and $process.MainWindowHandle -eq 0; $i++) {{
-    Start-Sleep -Milliseconds 100
+$process = Start-Process -FilePath $loopback -WindowStyle Hidden -PassThru
+$windowHandle = [IntPtr]::Zero
+for ($i = 0; $i -lt 80 -and -not $process.HasExited; $i++) {{
     $process.Refresh()
+    $windowHandle = [Win32ShowWindow]::FindWindowForProcess($process.Id)
+    if ($windowHandle -ne [IntPtr]::Zero) {{
+        break
+    }}
+    Start-Sleep -Milliseconds 100
 }}
-if ($process.MainWindowHandle -ne 0) {{
-    [Win32ShowWindow]::ShowWindowAsync($process.MainWindowHandle, 0) | Out-Null
+if ($windowHandle -ne [IntPtr]::Zero) {{
+    [Win32ShowWindow]::ShowWindowAsync($windowHandle, 0) | Out-Null
 }}
 
 $icon = New-Object System.Windows.Forms.NotifyIcon
@@ -1074,8 +1102,11 @@ $icon.ContextMenuStrip = $menu
 $showWindow = {{
     if ($process.HasExited) {{ return }}
     $process.Refresh()
-    if ($process.MainWindowHandle -ne 0) {{
-        [Win32ShowWindow]::ShowWindowAsync($process.MainWindowHandle, 9) | Out-Null
+    if ($windowHandle -eq [IntPtr]::Zero) {{
+        $windowHandle = [Win32ShowWindow]::FindWindowForProcess($process.Id)
+    }}
+    if ($windowHandle -ne [IntPtr]::Zero) {{
+        [Win32ShowWindow]::ShowWindowAsync($windowHandle, 9) | Out-Null
     }}
 }}
 
@@ -1469,5 +1500,30 @@ mod tests {
 
         remove_existing_path(&nested).unwrap();
         assert!(!nested.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_tray_script_starts_loopback_hidden() {
+        let script = build_windows_tray_script(
+            "123456",
+            Path::new("C:\\loopback-server.exe"),
+            Path::new("C:\\Users\\me\\AppData\\Roaming\\key-intercept\\config.json"),
+            None,
+        );
+        assert!(script.contains("Start-Process -FilePath $loopback -WindowStyle Hidden -PassThru"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_tray_script_show_action_uses_cached_window_handle_lookup() {
+        let script = build_windows_tray_script(
+            "123456",
+            Path::new("C:\\loopback-server.exe"),
+            Path::new("C:\\Users\\me\\AppData\\Roaming\\key-intercept\\config.json"),
+            None,
+        );
+        assert!(script.contains("FindWindowForProcess($process.Id)"));
+        assert!(script.contains("$windowHandle -eq [IntPtr]::Zero"));
     }
 }
