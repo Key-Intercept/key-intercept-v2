@@ -467,13 +467,18 @@ function syncInAppLoopback(relayUrl, ownerId) {
         if (!response.ok) throw new Error(`Mobile relay sync failed: ${response.status}`);
         return response.json().then(payload => {
             const relayRevision = Number.isFinite(payload.revision) ? payload.revision : local.revision;
-            if (relayRevision <= local.revision) return;
+            const nextAllowedEditors = Array.isArray(payload.allowed_editors) ? payload.allowed_editors : local.allowed_editors;
+            const normalizedLocalEditors = Array.isArray(local.allowed_editors) ? local.allowed_editors.filter(validateDiscordId).sort() : [];
+            const normalizedRelayEditors = nextAllowedEditors.filter(validateDiscordId).sort();
+            const editorsChanged = normalizedRelayEditors.length !== normalizedLocalEditors.length
+                || normalizedRelayEditors.some((value, index) => value !== normalizedLocalEditors[index]);
+            if (relayRevision <= local.revision && !editorsChanged) return;
 
             writeMobileState({
                 owner_discord_id: ownerId,
-                config: mergeLocalConfig(payload.config),
-                allowed_editors: Array.isArray(payload.allowed_editors) ? payload.allowed_editors : local.allowed_editors,
-                revision: relayRevision,
+                config: relayRevision > local.revision ? mergeLocalConfig(payload.config) : local.config,
+                allowed_editors: nextAllowedEditors,
+                revision: Math.max(local.revision, relayRevision),
                 last_writer_id: typeof payload.last_writer_id === "string" ? payload.last_writer_id : ownerId
             });
         });
