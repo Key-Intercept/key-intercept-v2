@@ -101,6 +101,11 @@ type MobileSyncPayload = {
     operations: MobileSyncOperation[];
 };
 
+type LoopbackConfigUpdatePayload = {
+    revision: number;
+    config: LocalConfig;
+};
+
 const farFuture = "9999-12-31T23:59:59.000Z";
 const epoch = "1970-01-01T00:00:00.000Z";
 
@@ -189,6 +194,8 @@ function cloneDefaultConfig(): LocalConfig {
 let interceptConfig: LocalConfig = cloneDefaultConfig();
 let activeLoopbackTransport: ActiveLoopbackTransport = "desktop_http";
 const fallbackMobileStateByOwner = new Map<string, MobilePersistedState>();
+let stopDesktopConfigSync: (() => void) | null = null;
+let desktopConfigSyncGeneration = 0;
 
 function currentUser() {
     return UserStore.getCurrentUser();
@@ -398,6 +405,63 @@ async function readDesktopLoopbackConfig(userId: string): Promise<LocalConfig> {
     });
     if (!response.ok) throw new Error(`Failed reading local config: ${response.status}`);
     return mergeLocalConfig(await response.json());
+}
+
+async function waitDesktopLoopbackConfigUpdate(
+    userId: string,
+    afterRevision: number,
+): Promise<LoopbackConfigUpdatePayload | null> {
+    const response = await fetch(
+        `${LOOPBACK}/config/updates?requester_id=${encodeURIComponent(userId)}&after_revision=${Math.max(0, Math.floor(afterRevision))}&timeout_ms=25000`,
+        {
+            cache: "no-store"
+        },
+    );
+    if (response.status === 204) return null;
+    if (!response.ok) throw new Error(`Failed watching local config: ${response.status}`);
+    const payload = await response.json() as LoopbackConfigUpdatePayload;
+    return {
+        revision: Number.isFinite(payload?.revision) ? payload.revision : afterRevision,
+        config: mergeLocalConfig(payload?.config),
+    };
+}
+
+function waitMs(ms: number) {
+    return new Promise<void>(resolve => setTimeout(resolve, ms));
+}
+
+function stopDesktopConfigBackgroundSync() {
+    desktopConfigSyncGeneration += 1;
+    if (stopDesktopConfigSync) {
+        stopDesktopConfigSync();
+        stopDesktopConfigSync = null;
+    }
+}
+
+function startDesktopConfigBackgroundSync() {
+    stopDesktopConfigBackgroundSync();
+    if (activeLoopbackTransport !== "desktop_http") return;
+    const userId = currentUser()?.id;
+    if (!userId) return;
+    const runId = desktopConfigSyncGeneration;
+    let stopped = false;
+    stopDesktopConfigSync = () => {
+        stopped = true;
+    };
+    let lastRevision = -1;
+    void (async () => {
+        while (!stopped && runId === desktopConfigSyncGeneration) {
+            try {
+                const update = await waitDesktopLoopbackConfigUpdate(userId, lastRevision);
+                if (!update) continue;
+                lastRevision = Math.max(lastRevision, Math.floor(update.revision));
+                interceptConfig = update.config;
+            } catch (err) {
+                console.warn(`${LOG_PREFIX} config watch failed`, err);
+                await waitMs(2000);
+            }
+        }
+    })();
 }
 
 async function saveDesktopLoopbackConfig(userId: string, config: LocalConfig) {
@@ -2176,11 +2240,14 @@ const plugin = definePlugin({
                 await uploadMobileSnapshot(settings.store.relayUrl, userId).catch(() => {});
             }
             await readLocalConfig();
+            startDesktopConfigBackgroundSync();
         } catch (err) {
             console.error("key-intercept failed to load local config", err);
         }
     },
-    stop() {},
+    stop() {
+        stopDesktopConfigBackgroundSync();
+    },
     onBeforeMessageSend(channelId: string, msg: { content: string }) {
         const channel = ChannelStore?.getChannel?.(channelId);
         if (!channel || !interceptConfig?.config) return;

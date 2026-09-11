@@ -19,10 +19,11 @@ Self-hosted refactor split into three components:
    - Stores config locally at `~/.config/key-intercept/config.json`.
    - Tracks allowed editor Discord IDs.
    - Enforces ACLs when config is read/updated.
+   - Exposes a long-poll `/config/updates` endpoint so local plugin runtime can apply config changes in the background.
 
 4. **Relay server (Rust)** (`/relay-server`)
    - Runs on VPS and tracks online users.
-   - Queues config/access commands for connected desktop owners and returns loopback responses to requesters.
+   - Queues config/access commands for connected desktop owners and delivers them via long-poll desktop request pulls, then returns loopback responses to requesters.
    - Stores mobile snapshot state and queues remote updates for mobile owners while the app is closed.
    - Exposes `/users/:owner_id/mobile/snapshot` and `/users/:owner_id/mobile/sync` for mobile state upload/sync.
 

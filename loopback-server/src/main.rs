@@ -54,6 +54,20 @@ struct AllowedEditorsResponse {
 }
 
 #[derive(Serialize)]
+struct ConfigUpdateResponse {
+    revision: u64,
+    config: LocalConfig,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfigUpdateQuery {
+    requester_id: String,
+    after_revision: Option<u64>,
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Serialize)]
 struct RegisterRelayPeerPayload {
     owner_id: String,
     base_url: String,
@@ -135,6 +149,7 @@ async fn main() -> Result<()> {
         .route("/health", get(health))
         .route("/owner", get(owner))
         .route("/config", get(get_config).put(put_config))
+        .route("/config/updates", get(get_config_updates))
         .route(
             "/allowed-editors",
             get(get_allowed_editors).post(add_allowed_editor),
@@ -337,6 +352,48 @@ fn requester_header(headers: &HeaderMap) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+async fn get_config_updates(
+    State(state): State<AppState>,
+    Query(query): Query<ConfigUpdateQuery>,
+) -> impl IntoResponse {
+    if !is_discord_id(&query.requester_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "requester_id must be numeric".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    let stored = state.store.get().await;
+    if query.requester_id != stored.owner_discord_id
+        && !stored.allowed_editors.contains(&query.requester_id)
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "requester is not allowed to read config".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    let after_revision = query.after_revision.unwrap_or(0);
+    let timeout_ms = query.timeout_ms.unwrap_or(20_000).clamp(1_000, 30_000);
+    let wait_for = Duration::from_millis(timeout_ms);
+    if let Some(updated) = state
+        .store
+        .wait_for_config_change(after_revision, wait_for)
+        .await
+    {
+        return Json(ConfigUpdateResponse {
+            revision: updated.revision,
+            config: updated.config,
+        })
+        .into_response();
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
 fn requester_id(headers: &HeaderMap, query: &HashMap<String, String>) -> Option<String> {
     requester_header(headers).or_else(|| query.get("requester_id").cloned())
 }
@@ -451,7 +508,6 @@ async fn run_relay_bridge(
         };
 
         if requests.is_empty() {
-            sleep(Duration::from_millis(500)).await;
             continue;
         }
 
@@ -508,7 +564,7 @@ async fn pull_relay_desktop_requests(
     requests_url: &str,
     shared_token: Option<&str>,
 ) -> Result<Vec<RelayDesktopQueuedRequest>, PullRequestsError> {
-    let mut request = client.get(requests_url);
+    let mut request = client.get(requests_url).query(&[("wait_seconds", 20_u64)]);
     if let Some(token) = shared_token {
         request = request.header("x-loopback-token", token);
     }

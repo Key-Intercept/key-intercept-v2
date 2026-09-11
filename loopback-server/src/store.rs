@@ -6,11 +6,17 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use tokio::{fs, sync::RwLock};
+use tokio::{
+    fs,
+    sync::{Notify, RwLock},
+    time::{Duration, timeout},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedState {
     pub owner_discord_id: String,
+    #[serde(default)]
+    pub revision: u64,
     pub config: LocalConfig,
     pub allowed_editors: HashSet<String>,
 }
@@ -19,6 +25,7 @@ impl PersistedState {
     pub fn new(owner_discord_id: String) -> Self {
         Self {
             owner_discord_id,
+            revision: 0,
             config: LocalConfig::default(),
             allowed_editors: HashSet::new(),
         }
@@ -29,6 +36,7 @@ impl PersistedState {
 pub struct ConfigStore {
     path: PathBuf,
     state: Arc<RwLock<PersistedState>>,
+    changed_notify: Arc<Notify>,
 }
 
 impl ConfigStore {
@@ -56,6 +64,7 @@ impl ConfigStore {
         Ok(Self {
             path,
             state: Arc::new(RwLock::new(state)),
+            changed_notify: Arc::new(Notify::new()),
         })
     }
 
@@ -70,7 +79,10 @@ impl ConfigStore {
         }
 
         state.config = config;
-        self.persist(&state).await
+        state.revision = state.revision.saturating_add(1);
+        self.persist(&state).await?;
+        self.changed_notify.notify_waiters();
+        Ok(())
     }
 
     pub async fn add_editor(&self, requester_id: &str, editor_id: String) -> Result<()> {
@@ -85,6 +97,26 @@ impl ConfigStore {
         ensure_owner(&state, requester_id)?;
         state.allowed_editors.remove(editor_id);
         self.persist(&state).await
+    }
+
+    pub async fn wait_for_config_change(
+        &self,
+        after_revision: u64,
+        wait_for: Duration,
+    ) -> Option<PersistedState> {
+        let current = self.get().await;
+        if current.revision != after_revision {
+            return Some(current);
+        }
+        if timeout(wait_for, self.changed_notify.notified()).await.is_err() {
+            return None;
+        }
+        let updated = self.get().await;
+        if updated.revision != after_revision {
+            Some(updated)
+        } else {
+            None
+        }
     }
 
     async fn persist(&self, state: &PersistedState) -> Result<()> {

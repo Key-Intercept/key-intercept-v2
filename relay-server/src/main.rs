@@ -17,7 +17,7 @@ use std::{
     sync::Arc,
     sync::atomic::{AtomicU64, Ordering},
 };
-use tokio::sync::{RwLock, oneshot};
+use tokio::sync::{Notify, RwLock, oneshot};
 use tokio::time::{Duration, timeout};
 use tower_http::{
     cors::{AllowHeaders, CorsLayer},
@@ -31,6 +31,7 @@ struct AppState {
     mobile_states: Arc<RwLock<HashMap<String, MobileState>>>,
     pending_access_requests: Arc<RwLock<HashMap<String, HashSet<String>>>>,
     desktop_requests: Arc<RwLock<HashMap<String, Vec<DesktopQueuedRequest>>>>,
+    desktop_request_notifiers: Arc<RwLock<HashMap<String, Arc<Notify>>>>,
     desktop_waiters: Arc<RwLock<HashMap<u64, oneshot::Sender<DesktopCommandResponse>>>>,
     next_desktop_request_id: Arc<AtomicU64>,
 }
@@ -75,6 +76,12 @@ struct DesktopCommandResponsePayload {
     status: u16,
     body: Option<Value>,
     error: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DesktopRequestPullQuery {
+    wait_seconds: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -227,6 +234,7 @@ async fn main() -> Result<()> {
             mobile_states: Arc::new(RwLock::new(HashMap::new())),
             pending_access_requests: Arc::new(RwLock::new(HashMap::new())),
             desktop_requests: Arc::new(RwLock::new(HashMap::new())),
+            desktop_request_notifiers: Arc::new(RwLock::new(HashMap::new())),
             desktop_waiters: Arc::new(RwLock::new(HashMap::new())),
             next_desktop_request_id: Arc::new(AtomicU64::new(1)),
         });
@@ -743,6 +751,7 @@ async fn get_mobile_sync(
 async fn pull_desktop_requests(
     State(state): State<AppState>,
     Path(owner_id): Path<String>,
+    Query(query): Query<DesktopRequestPullQuery>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     if !is_discord_id(&owner_id) {
@@ -772,13 +781,26 @@ async fn pull_desktop_requests(
         )
             .into_response();
     }
-    let requests = state
-        .desktop_requests
-        .write()
-        .await
-        .remove(&owner_id)
-        .unwrap_or_default();
-    Json(DesktopRequestsResponse { requests }).into_response()
+    let notifier = get_desktop_request_notifier(&state, &owner_id).await;
+    let wait_seconds = query.wait_seconds.unwrap_or(0).min(25);
+    let mut first_attempt = true;
+
+    loop {
+        let requests = state
+            .desktop_requests
+            .write()
+            .await
+            .remove(&owner_id)
+            .unwrap_or_default();
+        if !requests.is_empty() {
+            return Json(DesktopRequestsResponse { requests }).into_response();
+        }
+        if !first_attempt || wait_seconds == 0 {
+            return Json(DesktopRequestsResponse { requests }).into_response();
+        }
+        first_attempt = false;
+        let _ = timeout(Duration::from_secs(wait_seconds), notifier.notified()).await;
+    }
 }
 
 async fn push_desktop_response(
@@ -872,6 +894,9 @@ async fn dispatch_desktop_command(
             request_id,
             command,
         });
+    get_desktop_request_notifier(state, owner_id)
+        .await
+        .notify_waiters();
 
     match timeout(Duration::from_secs(15), receiver).await {
         Ok(Ok(response)) => response,
@@ -887,6 +912,14 @@ async fn dispatch_desktop_command(
                 queue.retain(|entry| entry.request_id != request_id);
                 if queue.is_empty() {
                     requests.remove(owner_id);
+                }
+
+                async fn get_desktop_request_notifier(state: &AppState, owner_id: &str) -> Arc<Notify> {
+                    let mut notifiers = state.desktop_request_notifiers.write().await;
+                    notifiers
+                        .entry(owner_id.to_string())
+                        .or_insert_with(|| Arc::new(Notify::new()))
+                        .clone()
                 }
             }
             DesktopCommandResponse {
@@ -1048,6 +1081,7 @@ mod tests {
             mobile_states: Arc::new(RwLock::new(HashMap::new())),
             pending_access_requests: Arc::new(RwLock::new(HashMap::new())),
             desktop_requests: Arc::new(RwLock::new(HashMap::new())),
+            desktop_request_notifiers: Arc::new(RwLock::new(HashMap::new())),
             desktop_waiters: Arc::new(RwLock::new(HashMap::new())),
             next_desktop_request_id: Arc::new(AtomicU64::new(1)),
         }
