@@ -462,7 +462,7 @@ function syncInAppLoopback(relayUrl, ownerId) {
         { cache: "no-store" }
     ).then(response => {
         if (response.status === 404) {
-            return uploadMobileSnapshot(relayUrl, ownerId);
+            return;
         }
         if (!response.ok) throw new Error(`Mobile relay sync failed: ${response.status}`);
         return response.json().then(payload => {
@@ -1107,11 +1107,24 @@ function bootstrapConfig() {
     const syncForCurrentUser = () => {
         const currentUser = UserStore?.getCurrentUser?.();
         if (!validateDiscordId(currentUser?.id)) return false;
-        syncInAppLoopback(currentRelayUrl(), currentUser.id).then(() => {
+        readRemoteConfig(currentRelayUrl(), currentUser.id, currentUser.id).then(remoteConfig => {
+            interceptConfig = mergeLocalConfig(remoteConfig);
+            const previous = readMobileState(currentUser.id);
+            writeMobileState({
+                owner_discord_id: currentUser.id,
+                config: interceptConfig,
+                allowed_editors: previous.allowed_editors,
+                revision: previous.revision + 1,
+                last_writer_id: currentUser.id
+            });
+            return syncInAppLoopback(currentRelayUrl(), currentUser.id);
+        }).then(() => {
             interceptConfig = mergeLocalConfig(readMobileState(currentUser.id).config);
             console.log(`${LOG_PREFIX} config ready`);
         }).catch(err => {
-            console.log(`${LOG_PREFIX} config sync failed`, err);
+            const local = readMobileState(currentUser.id);
+            interceptConfig = mergeLocalConfig(local.config);
+            console.log(`${LOG_PREFIX} config bootstrap fallback`, err);
         });
         return true;
     };
@@ -1287,11 +1300,21 @@ function ConfigPanel(props) {
         setRelayUrl(nextRelayUrl);
         try {
             if (isOwnProfile) {
+                let loadedRemote = false;
+                try {
+                    const remote = await readRemoteConfig(nextRelayUrl, activeUserId, activeUserId);
+                    updateFromConfig(remote);
+                    loadedRemote = true;
+                    setCanViewRemote(true);
+                    setStatus("Loaded profile config");
+                } catch {}
                 try {
                     await syncInAppLoopback(nextRelayUrl, activeUserId);
                 } catch {}
-                const local = readLocalConfig(activeUserId);
-                updateFromConfig(local);
+                if (!loadedRemote) {
+                    const local = readLocalConfig(activeUserId);
+                    updateFromConfig(local);
+                }
                 setAllowedEditors(getAllowedEditors(activeUserId).allowed_editors.sort());
                 let access = { requests: [] };
                 try {
@@ -1299,7 +1322,7 @@ function ConfigPanel(props) {
                 } catch {}
                 setPendingRequests(access.requests.sort());
                 setCanViewRemote(true);
-                setStatus("Loaded local profile config");
+                if (!loadedRemote) setStatus("Loaded local profile config");
                 return;
             }
 
