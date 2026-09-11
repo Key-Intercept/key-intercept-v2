@@ -2,6 +2,8 @@ const LOG_PREFIX = "[key-intercept/kettu]";
 const MOBILE_STATE_KEY = "key-intercept/mobile-loopback-state/v1";
 const RELAY_URL_STORAGE_KEY = "key-intercept/relay-url";
 const DEFAULT_RELAY_URL = "https://kirelay.thomaslower.com";
+const BOOTSTRAP_USER_RETRY_LIMIT = 20;
+const BOOTSTRAP_USER_RETRY_DELAY_MS = 1500;
 const farFuture = "9999-12-31T23:59:59.000Z";
 const epoch = "1970-01-01T00:00:00.000Z";
 const permanentTimestamp = new Date(farFuture).getTime();
@@ -1039,14 +1041,32 @@ function shouldApplyToScope(channelId) {
 
 function bootstrapConfig() {
     const UserStore = findByProps?.("getCurrentUser", "getUser");
-    const currentUser = UserStore?.getCurrentUser?.();
-    if (!currentUser?.id) return Promise.resolve();
-    return syncInAppLoopback(currentRelayUrl(), currentUser.id).then(() => {
-        interceptConfig = mergeLocalConfig(readMobileState(currentUser.id).config);
-        console.log(`${LOG_PREFIX} config ready`);
-    }).catch(err => {
-        console.log(`${LOG_PREFIX} config sync failed`, err);
-    });
+    const syncForCurrentUser = () => {
+        const currentUser = UserStore?.getCurrentUser?.();
+        if (!validateDiscordId(currentUser?.id)) return false;
+        syncInAppLoopback(currentRelayUrl(), currentUser.id).then(() => {
+            interceptConfig = mergeLocalConfig(readMobileState(currentUser.id).config);
+            console.log(`${LOG_PREFIX} config ready`);
+        }).catch(err => {
+            console.log(`${LOG_PREFIX} config sync failed`, err);
+        });
+        return true;
+    };
+
+    if (syncForCurrentUser()) return Promise.resolve();
+    console.log(`${LOG_PREFIX} waiting for current user before initial relay sync`);
+    let attempt = 0;
+    const retry = () => {
+        if (syncForCurrentUser()) return;
+        attempt += 1;
+        if (attempt >= BOOTSTRAP_USER_RETRY_LIMIT) {
+            console.log(`${LOG_PREFIX} skipped initial relay sync: current user unavailable`);
+            return;
+        }
+        setTimeout(retry, BOOTSTRAP_USER_RETRY_DELAY_MS);
+    };
+    setTimeout(retry, BOOTSTRAP_USER_RETRY_DELAY_MS);
+    return Promise.resolve();
 }
 
 function patchSendMessage() {
