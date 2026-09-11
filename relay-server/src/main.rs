@@ -2,7 +2,10 @@ use anyhow::Result;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::{Method, StatusCode, header::CONTENT_TYPE},
+    http::{
+        HeaderName, Method, StatusCode,
+        header::{CONTENT_TYPE, ORIGIN},
+    },
     response::IntoResponse,
     routing::{delete, get, post},
 };
@@ -16,7 +19,10 @@ use std::{
 };
 use tokio::sync::{RwLock, oneshot};
 use tokio::time::{Duration, timeout};
-use tower_http::cors::CorsLayer;
+use tower_http::{
+    cors::{AllowHeaders, CorsLayer},
+    trace::TraceLayer,
+};
 use tracing::info;
 
 #[derive(Clone)]
@@ -215,6 +221,7 @@ async fn main() -> Result<()> {
             post(push_desktop_response),
         )
         .layer(discord_cors_layer())
+        .layer(TraceLayer::new_for_http())
         .with_state(AppState {
             peers: Arc::new(RwLock::new(HashMap::new())),
             mobile_states: Arc::new(RwLock::new(HashMap::new())),
@@ -933,7 +940,12 @@ fn discord_cors_layer() -> CorsLayer {
             Method::DELETE,
             Method::OPTIONS,
         ])
-        .allow_headers([CONTENT_TYPE])
+        .allow_headers(AllowHeaders::list([
+            CONTENT_TYPE,
+            HeaderName::from_static("x-loopback-token"),
+            HeaderName::from_static("x-discord-user-id"),
+            ORIGIN,
+        ]))
 }
 
 fn has_exact_keys(map: &serde_json::Map<String, Value>, expected: &[&str]) -> bool {

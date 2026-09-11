@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf};
 use store::ConfigStore;
-use tokio::time::{Duration, sleep};
+use tokio::time::{Duration, Instant, sleep};
 use tower_http::cors::CorsLayer;
 use tracing::{error, info, warn};
 
@@ -373,9 +373,11 @@ async fn run_relay_bridge(
 ) {
     let client = reqwest::Client::new();
     let register_url = format!("{relay_base_url}/register");
+    let health_url = format!("{relay_base_url}/health");
     let requests_url = format!("{relay_base_url}/users/{owner_discord_id}/desktop/requests");
     let responses_url = format!("{relay_base_url}/users/{owner_discord_id}/desktop/responses");
     let mut registered = false;
+    let mut next_health_probe = Instant::now();
 
     loop {
         if !registered {
@@ -390,15 +392,39 @@ async fn run_relay_bridge(
             {
                 Ok(()) => {
                     registered = true;
+                    next_health_probe = Instant::now();
                     info!(
                         "registered loopback relay peer for owner {}",
                         owner_discord_id
                     );
                 }
                 Err(err) => {
-                    warn!("relay registration failed: {}", err);
+                    if Instant::now() >= next_health_probe {
+                        let health = probe_relay_health(&client, &health_url).await;
+                        warn!(
+                            "relay registration failed: {}; relay health probe: {}",
+                            err, health
+                        );
+                        next_health_probe = Instant::now() + Duration::from_secs(15);
+                    } else {
+                        warn!("relay registration failed: {}", err);
+                    }
                     sleep(Duration::from_secs(3)).await;
                     continue;
+                }
+            }
+
+            async fn probe_relay_health(client: &reqwest::Client, health_url: &str) -> String {
+                match client.get(health_url).send().await {
+                    Ok(response) => {
+                        let status = response.status();
+                        if status.is_success() {
+                            "reachable".to_string()
+                        } else {
+                            format!("status {}", status)
+                        }
+                    }
+                    Err(err) => format!("request error: {err}"),
                 }
             }
         }
