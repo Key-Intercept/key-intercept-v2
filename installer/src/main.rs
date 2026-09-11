@@ -1029,6 +1029,8 @@ fn build_windows_tray_script(
     let loopback = to_powershell_single_quoted_literal(&loopback_binary.to_string_lossy());
     let owner = to_powershell_single_quoted_literal(owner_discord_id);
     let config = to_powershell_single_quoted_literal(&config_path.to_string_lossy());
+    let log_path =
+        to_powershell_single_quoted_literal(&config_path.with_file_name("loopback.log").to_string_lossy());
     let relay_env = relay_server_url
         .map(to_powershell_single_quoted_literal)
         .map(|value| format!("$env:RELAY_SERVER_URL = '{value}'\n"))
@@ -1040,34 +1042,19 @@ Add-Type -AssemblyName System.Drawing
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
-public static class Win32ShowWindow {{
-    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+public static class Win32ConsoleWindow {{
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr GetConsoleWindow();
 
     [DllImport("user32.dll")]
     public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
-
-    [DllImport("user32.dll")]
-    public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
-
-    [DllImport("user32.dll")]
-    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
-
-    public static IntPtr FindWindowForProcess(int processId) {{
-        IntPtr found = IntPtr.Zero;
-        EnumWindows(delegate (IntPtr hWnd, IntPtr lParam) {{
-            uint windowProcessId;
-            GetWindowThreadProcessId(hWnd, out windowProcessId);
-            if (windowProcessId == processId) {{
-                found = hWnd;
-                return false;
-            }}
-
-            return true;
-        }}, IntPtr.Zero);
-        return found;
-    }}
 }}
 "@
+
+$hostWindow = [Win32ConsoleWindow]::GetConsoleWindow()
+if ($hostWindow -ne [IntPtr]::Zero) {{
+    [Win32ConsoleWindow]::ShowWindowAsync($hostWindow, 0) | Out-Null
+}}
 
 $env:OWNER_DISCORD_ID = '{owner}'
 $env:LOOPBACK_PORT = '35491'
@@ -1075,19 +1062,15 @@ $env:KEY_INTERCEPT_CONFIG_PATH = '{config}'
 {relay_env}
 
 $loopback = '{loopback}'
-$process = Start-Process -FilePath $loopback -WindowStyle Hidden -PassThru
-$windowHandle = [IntPtr]::Zero
-for ($i = 0; $i -lt 80 -and -not $process.HasExited; $i++) {{
-    $process.Refresh()
-    $windowHandle = [Win32ShowWindow]::FindWindowForProcess($process.Id)
-    if ($windowHandle -ne [IntPtr]::Zero) {{
-        break
-    }}
-    Start-Sleep -Milliseconds 100
+$logPath = '{log_path}'
+$logDirectory = Split-Path -Parent $logPath
+if (-not [string]::IsNullOrWhiteSpace($logDirectory)) {{
+    New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
 }}
-if ($windowHandle -ne [IntPtr]::Zero) {{
-    [Win32ShowWindow]::ShowWindowAsync($windowHandle, 0) | Out-Null
+if (-not (Test-Path -LiteralPath $logPath)) {{
+    New-Item -ItemType File -Path $logPath -Force | Out-Null
 }}
+$process = Start-Process -FilePath $loopback -WindowStyle Hidden -RedirectStandardOutput $logPath -RedirectStandardError $logPath -PassThru
 
 $icon = New-Object System.Windows.Forms.NotifyIcon
 $icon.Icon = [System.Drawing.SystemIcons]::Application
@@ -1101,13 +1084,8 @@ $icon.ContextMenuStrip = $menu
 
 $showWindow = {{
     if ($process.HasExited) {{ return }}
-    $process.Refresh()
-    if ($windowHandle -eq [IntPtr]::Zero) {{
-        $windowHandle = [Win32ShowWindow]::FindWindowForProcess($process.Id)
-    }}
-    if ($windowHandle -ne [IntPtr]::Zero) {{
-        [Win32ShowWindow]::ShowWindowAsync($windowHandle, 9) | Out-Null
-    }}
+    $tailCommand = "powershell -NoProfile -ExecutionPolicy Bypass -NoExit -Command ""Get-Content -Path ''{log_path}'' -Tail 200 -Wait"""
+    Start-Process -FilePath 'cmd.exe' -ArgumentList '/K', $tailCommand | Out-Null
 }}
 
 $showItem.Add_Click($showWindow)
@@ -1129,6 +1107,7 @@ $process.add_Exited({{
 [System.Windows.Forms.Application]::Run()
 "#,
         relay_env = relay_env,
+        log_path = log_path,
     )
 }
 
@@ -1516,14 +1495,29 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_tray_script_show_action_uses_cached_window_handle_lookup() {
+    fn windows_tray_script_hides_host_window() {
         let script = build_windows_tray_script(
             "123456",
             Path::new("C:\\loopback-server.exe"),
             Path::new("C:\\Users\\me\\AppData\\Roaming\\key-intercept\\config.json"),
             None,
         );
-        assert!(script.contains("FindWindowForProcess($process.Id)"));
-        assert!(script.contains("$windowHandle -eq [IntPtr]::Zero"));
+        assert!(script.contains("GetConsoleWindow()"));
+        assert!(script.contains("ShowWindowAsync($hostWindow, 0)"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_tray_script_show_action_opens_log_tail_console() {
+        let script = build_windows_tray_script(
+            "123456",
+            Path::new("C:\\loopback-server.exe"),
+            Path::new("C:\\Users\\me\\AppData\\Roaming\\key-intercept\\config.json"),
+            None,
+        );
+        assert!(script.contains("Start-Process -FilePath 'cmd.exe' -ArgumentList '/K', $tailCommand"));
+        assert!(script.contains(
+            "Get-Content -Path ''C:\\Users\\me\\AppData\\Roaming\\key-intercept\\loopback.log'' -Tail 200 -Wait"
+        ));
     }
 }
