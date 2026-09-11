@@ -462,7 +462,7 @@ function syncInAppLoopback(relayUrl, ownerId) {
         { cache: "no-store" }
     ).then(response => {
         if (response.status === 404) {
-            return;
+            return null;
         }
         if (!response.ok) throw new Error(`Mobile relay sync failed: ${response.status}`);
         return response.json().then(payload => {
@@ -481,6 +481,7 @@ function syncInAppLoopback(relayUrl, ownerId) {
                 revision: Math.max(local.revision, relayRevision),
                 last_writer_id: typeof payload.last_writer_id === "string" ? payload.last_writer_id : ownerId
             });
+            return payload;
         });
     });
 }
@@ -1258,7 +1259,10 @@ function ConfigPanel(props) {
     const [relayUrl, setRelayUrl] = relayUrlState;
     const [status, setStatus] = useState("");
     const [newEditorId, setNewEditorId] = useState("");
-    const [allowedEditors, setAllowedEditors] = useState([]);
+    const [allowedEditors, setAllowedEditors] = useState(() => {
+        if (!validateDiscordId(activeUserId)) return [];
+        return getAllowedEditors(activeUserId).allowed_editors.sort();
+    });
     const [pendingRequests, setPendingRequests] = useState([]);
     const [canViewRemote, setCanViewRemote] = useState(isOwnProfile);
     const [editableConfig, setEditableConfig] = useState(() => mergeLocalConfig(interceptConfig));
@@ -1306,6 +1310,7 @@ function ConfigPanel(props) {
         try {
             if (isOwnProfile) {
                 let loadedRemote = false;
+                let syncedEditors = null;
                 try {
                     const remote = await readRemoteConfig(nextRelayUrl, activeUserId, activeUserId);
                     updateFromConfig(remote);
@@ -1314,13 +1319,16 @@ function ConfigPanel(props) {
                     setStatus("Loaded profile config");
                 } catch {}
                 try {
-                    await syncInAppLoopback(nextRelayUrl, activeUserId);
+                    const syncPayload = await syncInAppLoopback(nextRelayUrl, activeUserId);
+                    if (Array.isArray(syncPayload?.allowed_editors)) {
+                        syncedEditors = syncPayload.allowed_editors.filter(validateDiscordId);
+                    }
                 } catch {}
                 if (!loadedRemote) {
                     const local = readLocalConfig(activeUserId);
                     updateFromConfig(local);
                 }
-                setAllowedEditors(getAllowedEditors(activeUserId).allowed_editors.sort());
+                setAllowedEditors((syncedEditors ?? getAllowedEditors(activeUserId).allowed_editors).sort());
                 let access = { requests: [] };
                 try {
                     access = await getAccessRequests(nextRelayUrl, activeUserId);
