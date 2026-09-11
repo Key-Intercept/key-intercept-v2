@@ -1092,8 +1092,8 @@ $exitItem = $menu.Items.Add('Exit')
 $icon.ContextMenuStrip = $menu
 
 $showWindow = {{
-    $tailCommand = "powershell -NoProfile -ExecutionPolicy Bypass -NoExit -Command ""Get-Content -Path @(''{log_path}'',''{error_log_path}'') -Tail 200 -Wait"""
-    Start-Process -FilePath 'cmd.exe' -ArgumentList '/K', $tailCommand | Out-Null
+    $tailScript = "Get-Content -LiteralPath @('$logPath', '$errorLogPath') -Tail 200 -Wait"
+    Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit', '-Command', $tailScript) | Out-Null
 }}
 
 $showItem.Add_Click($showWindow)
@@ -1531,9 +1531,11 @@ mod tests {
             Path::new("C:\\Users\\me\\AppData\\Roaming\\key-intercept\\config.json"),
             None,
         );
-        assert!(script.contains("Start-Process -FilePath 'cmd.exe' -ArgumentList '/K', $tailCommand"));
         assert!(script.contains(
-            "Get-Content -Path @(''C:\\Users\\me\\AppData\\Roaming\\key-intercept\\loopback.log'',''C:\\Users\\me\\AppData\\Roaming\\key-intercept\\loopback-error.log'') -Tail 200 -Wait"
+            "Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit', '-Command', $tailScript)"
+        ));
+        assert!(script.contains(
+            "Get-Content -LiteralPath @('$logPath', '$errorLogPath') -Tail 200 -Wait"
         ));
     }
 }
