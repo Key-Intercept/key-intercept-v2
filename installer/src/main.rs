@@ -978,6 +978,7 @@ fn configure_loopback_startup(
 
     let launcher_file = startup_dir.join("key-intercept-loopback.cmd");
     let tray_script_file = loopback_install_dir()?.join("key-intercept-loopback-tray.ps1");
+    let tray_launcher_file = loopback_install_dir()?.join("key-intercept-loopback-tray-launcher.vbs");
     if let Some(parent) = tray_script_file.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
@@ -997,10 +998,13 @@ fn configure_loopback_startup(
     fs::write(&tray_script_file, tray_script)
         .with_context(|| format!("failed to write tray script {}", tray_script_file.display()))?;
 
-    let script = format!(
-        "@echo off\r\nstart \"\" powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{}\"\r\n",
-        tray_script_file.display()
-    );
+    fs::write(
+        &tray_launcher_file,
+        build_windows_tray_launcher_vbs(&tray_script_file),
+    )
+    .with_context(|| format!("failed to write {}", tray_launcher_file.display()))?;
+
+    let script = build_windows_startup_launcher_cmd(&tray_launcher_file);
 
     fs::write(&launcher_file, script)
         .with_context(|| format!("failed to write {}", launcher_file.display()))?;
@@ -1017,6 +1021,29 @@ fn configure_loopback_startup(
 #[cfg(windows)]
 fn to_powershell_single_quoted_literal(value: &str) -> String {
     value.replace('\'', "''")
+}
+
+#[cfg(windows)]
+fn to_vbscript_double_quoted_literal(value: &str) -> String {
+    value.replace('"', "\"\"")
+}
+
+#[cfg(windows)]
+fn build_windows_tray_launcher_vbs(tray_script_file: &Path) -> String {
+    let tray_script_path =
+        to_vbscript_double_quoted_literal(&tray_script_file.to_string_lossy());
+    format!(
+        "Set shell = CreateObject(\"WScript.Shell\")\r\nshell.Run \"powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"\"{}\"\"\", 0, False\r\n",
+        tray_script_path
+    )
+}
+
+#[cfg(windows)]
+fn build_windows_startup_launcher_cmd(tray_launcher_file: &Path) -> String {
+    format!(
+        "@echo off\r\nstart \"\" wscript.exe //B //NoLogo \"{}\"\r\n",
+        tray_launcher_file.display()
+    )
 }
 
 #[cfg(windows)]
@@ -1508,6 +1535,27 @@ mod tests {
         );
         assert!(script.contains("GetConsoleWindow()"));
         assert!(script.contains("ShowWindowAsync($hostWindow, 0)"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_startup_launcher_uses_wscript_background_mode() {
+        let script = build_windows_startup_launcher_cmd(Path::new(
+            "C:\\Users\\me\\AppData\\Local\\Programs\\key-intercept\\key-intercept-loopback-tray-launcher.vbs",
+        ));
+        assert!(script.contains("start \"\" wscript.exe //B //NoLogo"));
+        assert!(script.contains("key-intercept-loopback-tray-launcher.vbs"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_tray_launcher_vbs_runs_powershell_hidden() {
+        let script = build_windows_tray_launcher_vbs(Path::new(
+            "C:\\Users\\me\\AppData\\Local\\Programs\\key-intercept\\key-intercept-loopback-tray.ps1",
+        ));
+        assert!(script.contains("CreateObject(\"WScript.Shell\")"));
+        assert!(script.contains("powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File"));
+        assert!(script.contains("key-intercept-loopback-tray.ps1"));
     }
 
     #[cfg(windows)]
