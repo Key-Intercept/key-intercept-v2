@@ -82,6 +82,26 @@ let ReactRef = null;
 let ReactNativeRef = null;
 let pendingProfileEditorLaunch = null;
 let registeredProfileActionFallback = null;
+const fallbackMobileStateByOwner = new Map();
+let cachedStorageBackend = null;
+let cachedMMKVStore = null;
+
+function getMMKVStore() {
+    if (cachedMMKVStore && typeof cachedMMKVStore === "object") return cachedMMKVStore;
+    try {
+        const vendettaStorage = globalThis?.vendetta?.storage ?? globalThis?.vendetta?.default?.storage;
+        const createMMKVBackend = vendettaStorage?.createMMKVBackend;
+        const createStorage = vendettaStorage?.createStorage;
+        const wrapSync = vendettaStorage?.wrapSync;
+        if (!createMMKVBackend || !createStorage || !wrapSync) return null;
+        const store = wrapSync(createStorage(createMMKVBackend("key-intercept-kettu-plugin")));
+        if (!store || typeof store !== "object") return null;
+        cachedMMKVStore = store;
+        return store;
+    } catch {
+        return null;
+    }
+}
 
 function cloneDefaultConfig() {
     return JSON.parse(JSON.stringify(defaultLocalConfig));
@@ -308,6 +328,40 @@ function getStorageBackend() {
     } catch {
         // ignore
     }
+    const mmkvStore = getMMKVStore();
+    if (mmkvStore && typeof mmkvStore === "object") {
+        if (!cachedStorageBackend || cachedStorageBackend.__raw !== mmkvStore) {
+            cachedStorageBackend = {
+                __raw: mmkvStore,
+                getItem(key) {
+                    const value = mmkvStore[key];
+                    if (value === undefined || value === null) return null;
+                    return typeof value === "string" ? value : String(value);
+                },
+                setItem(key, value) {
+                    mmkvStore[key] = String(value);
+                }
+            };
+        }
+        return cachedStorageBackend;
+    }
+    const pluginStorage = globalThis?.vendetta?.plugin?.storage;
+    if (pluginStorage && typeof pluginStorage === "object") {
+        if (!cachedStorageBackend || cachedStorageBackend.__raw !== pluginStorage) {
+            cachedStorageBackend = {
+                __raw: pluginStorage,
+                getItem(key) {
+                    const value = pluginStorage[key];
+                    if (value === undefined || value === null) return null;
+                    return typeof value === "string" ? value : String(value);
+                },
+                setItem(key, value) {
+                    pluginStorage[key] = String(value);
+                }
+            };
+        }
+        return cachedStorageBackend;
+    }
     return null;
 }
 
@@ -324,7 +378,8 @@ function currentRelayUrl() {
 function readMobileState(ownerId) {
     const storage = getStorageBackend();
     const key = `${MOBILE_STATE_KEY}:${ownerId}`;
-    const raw = storage?.getItem(key);
+    const fallback = fallbackMobileStateByOwner.get(ownerId);
+    const raw = storage?.getItem(key) ?? (fallback ? JSON.stringify(fallback) : null);
     if (!raw) {
         const fresh = {
             owner_discord_id: ownerId,
@@ -333,27 +388,34 @@ function readMobileState(ownerId) {
             revision: 0,
             last_writer_id: ownerId
         };
+        fallbackMobileStateByOwner.set(ownerId, fresh);
         if (storage) storage.setItem(key, JSON.stringify(fresh));
         return fresh;
     }
 
     try {
         const parsed = JSON.parse(raw);
-        return {
+        const normalized = {
             owner_discord_id: typeof parsed.owner_discord_id === "string" ? parsed.owner_discord_id : ownerId,
             config: mergeLocalConfig(parsed.config),
-            allowed_editors: Array.isArray(parsed.allowed_editors) ? parsed.allowed_editors.filter(v => typeof v === "string") : [],
+            allowed_editors: Array.isArray(parsed.allowed_editors)
+                ? parsed.allowed_editors.filter(validateDiscordId)
+                : [],
             revision: Number.isFinite(parsed.revision) ? Math.max(0, Math.floor(parsed.revision)) : 0,
-            last_writer_id: typeof parsed.last_writer_id === "string" ? parsed.last_writer_id : ownerId
+            last_writer_id: validateDiscordId(parsed.last_writer_id) ? parsed.last_writer_id : ownerId
         };
+        fallbackMobileStateByOwner.set(ownerId, normalized);
+        return normalized;
     } catch {
-        return {
+        const fresh = {
             owner_discord_id: ownerId,
             config: cloneDefaultConfig(),
             allowed_editors: [],
             revision: 0,
             last_writer_id: ownerId
         };
+        fallbackMobileStateByOwner.set(ownerId, fresh);
+        return fresh;
     }
 }
 
@@ -363,10 +425,11 @@ function writeMobileState(state) {
     const normalized = {
         owner_discord_id: state.owner_discord_id,
         config: mergeLocalConfig(state.config),
-        allowed_editors: Array.isArray(state.allowed_editors) ? state.allowed_editors : [],
+        allowed_editors: Array.isArray(state.allowed_editors) ? state.allowed_editors.filter(validateDiscordId) : [],
         revision: Math.max(0, Math.floor(state.revision || 0)),
-        last_writer_id: state.last_writer_id || state.owner_discord_id
+        last_writer_id: validateDiscordId(state.last_writer_id) ? state.last_writer_id : state.owner_discord_id
     };
+    fallbackMobileStateByOwner.set(state.owner_discord_id, normalized);
     if (storage) storage.setItem(key, JSON.stringify(normalized));
     return normalized;
 }
@@ -399,20 +462,26 @@ function syncInAppLoopback(relayUrl, ownerId) {
         { cache: "no-store" }
     ).then(response => {
         if (response.status === 404) {
-            return uploadMobileSnapshot(relayUrl, ownerId);
+            return null;
         }
         if (!response.ok) throw new Error(`Mobile relay sync failed: ${response.status}`);
         return response.json().then(payload => {
             const relayRevision = Number.isFinite(payload.revision) ? payload.revision : local.revision;
-            if (relayRevision <= local.revision) return;
+            const nextAllowedEditors = Array.isArray(payload.allowed_editors) ? payload.allowed_editors : local.allowed_editors;
+            const normalizedLocalEditors = Array.isArray(local.allowed_editors) ? local.allowed_editors.filter(validateDiscordId).sort() : [];
+            const normalizedRelayEditors = nextAllowedEditors.filter(validateDiscordId).sort();
+            const editorsChanged = normalizedRelayEditors.length !== normalizedLocalEditors.length
+                || normalizedRelayEditors.some((value, index) => value !== normalizedLocalEditors[index]);
+            if (relayRevision <= local.revision && !editorsChanged) return;
 
             writeMobileState({
                 owner_discord_id: ownerId,
-                config: mergeLocalConfig(payload.config),
-                allowed_editors: Array.isArray(payload.allowed_editors) ? payload.allowed_editors : local.allowed_editors,
-                revision: relayRevision,
+                config: relayRevision > local.revision ? mergeLocalConfig(payload.config) : local.config,
+                allowed_editors: nextAllowedEditors,
+                revision: Math.max(local.revision, relayRevision),
                 last_writer_id: typeof payload.last_writer_id === "string" ? payload.last_writer_id : ownerId
             });
+            return payload;
         });
     });
 }
@@ -1044,11 +1113,24 @@ function bootstrapConfig() {
     const syncForCurrentUser = () => {
         const currentUser = UserStore?.getCurrentUser?.();
         if (!validateDiscordId(currentUser?.id)) return false;
-        syncInAppLoopback(currentRelayUrl(), currentUser.id).then(() => {
+        readRemoteConfig(currentRelayUrl(), currentUser.id, currentUser.id).then(remoteConfig => {
+            interceptConfig = mergeLocalConfig(remoteConfig);
+            const previous = readMobileState(currentUser.id);
+            writeMobileState({
+                owner_discord_id: currentUser.id,
+                config: interceptConfig,
+                allowed_editors: previous.allowed_editors,
+                revision: previous.revision + 1,
+                last_writer_id: currentUser.id
+            });
+            return syncInAppLoopback(currentRelayUrl(), currentUser.id);
+        }).then(() => {
             interceptConfig = mergeLocalConfig(readMobileState(currentUser.id).config);
             console.log(`${LOG_PREFIX} config ready`);
         }).catch(err => {
-            console.log(`${LOG_PREFIX} config sync failed`, err);
+            const local = readMobileState(currentUser.id);
+            interceptConfig = mergeLocalConfig(local.config);
+            console.log(`${LOG_PREFIX} config bootstrap fallback`, err);
         });
         return true;
     };
@@ -1177,7 +1259,10 @@ function ConfigPanel(props) {
     const [relayUrl, setRelayUrl] = relayUrlState;
     const [status, setStatus] = useState("");
     const [newEditorId, setNewEditorId] = useState("");
-    const [allowedEditors, setAllowedEditors] = useState([]);
+    const [allowedEditors, setAllowedEditors] = useState(() => {
+        if (!validateDiscordId(activeUserId)) return [];
+        return getAllowedEditors(activeUserId).allowed_editors.sort();
+    });
     const [pendingRequests, setPendingRequests] = useState([]);
     const [canViewRemote, setCanViewRemote] = useState(isOwnProfile);
     const [editableConfig, setEditableConfig] = useState(() => mergeLocalConfig(interceptConfig));
@@ -1224,19 +1309,33 @@ function ConfigPanel(props) {
         setRelayUrl(nextRelayUrl);
         try {
             if (isOwnProfile) {
+                let loadedRemote = false;
+                let syncedEditors = null;
                 try {
-                    await syncInAppLoopback(nextRelayUrl, activeUserId);
+                    const remote = await readRemoteConfig(nextRelayUrl, activeUserId, activeUserId);
+                    updateFromConfig(remote);
+                    loadedRemote = true;
+                    setCanViewRemote(true);
+                    setStatus("Loaded profile config");
                 } catch {}
-                const local = readLocalConfig(activeUserId);
-                updateFromConfig(local);
-                setAllowedEditors(getAllowedEditors(activeUserId).allowed_editors.sort());
+                try {
+                    const syncPayload = await syncInAppLoopback(nextRelayUrl, activeUserId);
+                    if (Array.isArray(syncPayload?.allowed_editors)) {
+                        syncedEditors = syncPayload.allowed_editors.filter(validateDiscordId);
+                    }
+                } catch {}
+                if (!loadedRemote) {
+                    const local = readLocalConfig(activeUserId);
+                    updateFromConfig(local);
+                }
+                setAllowedEditors((syncedEditors ?? getAllowedEditors(activeUserId).allowed_editors).sort());
                 let access = { requests: [] };
                 try {
                     access = await getAccessRequests(nextRelayUrl, activeUserId);
                 } catch {}
                 setPendingRequests(access.requests.sort());
                 setCanViewRemote(true);
-                setStatus("Loaded local profile config");
+                if (!loadedRemote) setStatus("Loaded local profile config");
                 return;
             }
 
@@ -1300,10 +1399,28 @@ function ConfigPanel(props) {
         if (!activeUserId) return null;
         const { merged } = buildConfigSnapshot(baseConfig, censoredWordsText);
         if (isOwnProfile) {
-            return saveLocalConfig(activeUserId, merged, activeUserId).then(() => {
+            return pushRemoteConfig(currentRelayUrl(), activeUserId, activeUserId, merged).then(() => {
+                const previous = readMobileState(activeUserId);
+                writeMobileState({
+                    owner_discord_id: activeUserId,
+                    config: merged,
+                    allowed_editors: previous.allowed_editors,
+                    revision: previous.revision + 1,
+                    last_writer_id: activeUserId
+                });
+                interceptConfig = merged;
                 lastSavedSnapshotRef.current = JSON.stringify(merged);
-                setStatus("Auto-saved local profile config");
-            }, err => setStatus(`Auto-save failed: ${String(err)}`));
+                setStatus("Auto-saved profile config");
+            }, err => {
+                const status = parseErrorStatusCode(err);
+                if (status === 404) {
+                    return saveLocalConfig(activeUserId, merged, activeUserId).then(() => {
+                        lastSavedSnapshotRef.current = JSON.stringify(merged);
+                        setStatus("Auto-saved profile config");
+                    }, fallbackErr => setStatus(`Auto-save failed: ${String(fallbackErr)}`));
+                }
+                setStatus(`Auto-save failed: ${String(err)}`);
+            });
         }
         return pushRemoteConfig(currentRelayUrl(), activeUserId, profileUserId, merged).then(() => {
             lastSavedSnapshotRef.current = JSON.stringify(merged);
@@ -1669,7 +1786,14 @@ function ConfigPanel(props) {
             }
         },
         h(Text, { style: { color: "#f2f3f5", marginBottom: 6 } }, editor),
-        button(`Remove ${editor}`, () => removeAllowedEditor(activeUserId, editor).then(refresh), { danger: true })
+        button(`Remove ${editor}`, () => Promise.resolve()
+            .then(() => removeAllowedEditor(activeUserId, editor))
+            .then(() => {
+                setAllowedEditors(prev => prev.filter(value => value !== editor));
+                setStatus(`Removed editor ${editor}`);
+                return refresh();
+            })
+            .catch(err => setStatus(String(err))), { danger: true })
     ));
 
     const requestRows = pendingRequests.map(requesterId => h(
@@ -1946,10 +2070,21 @@ function ConfigPanel(props) {
                 keyboardType: "numeric",
                 style: inputStyle
             }),
-            button("Add Editor", () => addAllowedEditor(activeUserId, newEditorId.trim()).then(() => {
-                setNewEditorId("");
-                return refresh();
-            }).catch(err => setStatus(String(err)))),
+            button("Add Editor", () => {
+                const editorId = newEditorId.trim();
+                return Promise.resolve()
+                    .then(() => addAllowedEditor(activeUserId, editorId))
+                    .then(() => {
+                        setAllowedEditors(prev => {
+                            if (prev.includes(editorId)) return prev;
+                            return [...prev, editorId].sort();
+                        });
+                        setNewEditorId("");
+                        setStatus(`Added editor ${editorId}`);
+                        return refresh();
+                    })
+                    .catch(err => setStatus(String(err)));
+            }),
             ...editorRows
         )) : null,
 
