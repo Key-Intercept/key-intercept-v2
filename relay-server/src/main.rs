@@ -14,10 +14,11 @@ use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
+    path::{Path as FsPath, PathBuf},
     sync::Arc,
     sync::atomic::{AtomicU64, Ordering},
 };
-use tokio::sync::{RwLock, oneshot};
+use tokio::sync::{Notify, RwLock, oneshot};
 use tokio::time::{Duration, timeout};
 use tower_http::{
     cors::{AllowHeaders, CorsLayer},
@@ -31,8 +32,10 @@ struct AppState {
     mobile_states: Arc<RwLock<HashMap<String, MobileState>>>,
     pending_access_requests: Arc<RwLock<HashMap<String, HashSet<String>>>>,
     desktop_requests: Arc<RwLock<HashMap<String, Vec<DesktopQueuedRequest>>>>,
+    desktop_request_notifiers: Arc<RwLock<HashMap<String, Arc<Notify>>>>,
     desktop_waiters: Arc<RwLock<HashMap<u64, oneshot::Sender<DesktopCommandResponse>>>>,
     next_desktop_request_id: Arc<AtomicU64>,
+    persisted_state_path: Option<Arc<PathBuf>>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -77,6 +80,12 @@ struct DesktopCommandResponsePayload {
     error: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DesktopRequestPullQuery {
+    wait_seconds: Option<u64>,
+}
+
 #[derive(Clone)]
 struct DesktopCommandResponse {
     status: StatusCode,
@@ -84,14 +93,14 @@ struct DesktopCommandResponse {
     error: Option<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct MobileOperation {
     revision: u64,
     editor_id: String,
     config: Value,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct MobileState {
     revision: u64,
     last_writer_id: String,
@@ -174,6 +183,39 @@ struct MobileSyncResponse {
     operations: Vec<MobileOperationResponse>,
 }
 
+#[derive(Default, Serialize, Deserialize)]
+struct PersistedRelayState {
+    mobile_states: HashMap<String, MobileState>,
+    pending_access_requests: HashMap<String, HashSet<String>>,
+}
+
+fn load_persisted_relay_state(path: &FsPath) -> PersistedRelayState {
+    let Ok(raw) = std::fs::read(path) else {
+        return PersistedRelayState::default();
+    };
+    serde_json::from_slice(&raw).unwrap_or_default()
+}
+
+async fn persist_relay_state(state: &AppState) -> Result<()> {
+    let Some(path) = state.persisted_state_path.as_deref() else {
+        return Ok(());
+    };
+    let mobile_states = state.mobile_states.read().await.clone();
+    let pending_access_requests = state.pending_access_requests.read().await.clone();
+    let payload = PersistedRelayState {
+        mobile_states,
+        pending_access_requests,
+    };
+    let encoded = serde_json::to_vec(&payload)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, encoded)?;
+    std::fs::rename(tmp, path)?;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -186,6 +228,15 @@ async fn main() -> Result<()> {
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(35491);
+    let persisted_state_path = std::env::var("RELAY_STATE_PATH")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(|| Some(PathBuf::from("relay-state.json")));
+    let initial_state = persisted_state_path
+        .as_deref()
+        .map(load_persisted_relay_state)
+        .unwrap_or_default();
 
     let app = Router::new()
         .route("/health", get(health))
@@ -224,11 +275,13 @@ async fn main() -> Result<()> {
         .layer(TraceLayer::new_for_http())
         .with_state(AppState {
             peers: Arc::new(RwLock::new(HashMap::new())),
-            mobile_states: Arc::new(RwLock::new(HashMap::new())),
-            pending_access_requests: Arc::new(RwLock::new(HashMap::new())),
+            mobile_states: Arc::new(RwLock::new(initial_state.mobile_states)),
+            pending_access_requests: Arc::new(RwLock::new(initial_state.pending_access_requests)),
             desktop_requests: Arc::new(RwLock::new(HashMap::new())),
+            desktop_request_notifiers: Arc::new(RwLock::new(HashMap::new())),
             desktop_waiters: Arc::new(RwLock::new(HashMap::new())),
             next_desktop_request_id: Arc::new(AtomicU64::new(1)),
+            persisted_state_path: persisted_state_path.map(Arc::new),
         });
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -371,6 +424,43 @@ async fn put_remote_config(
             let drain_count = mobile.operations.len().saturating_sub(512);
             mobile.operations.drain(0..drain_count);
         }
+        drop(mobile_states);
+        if let Err(err) = persist_relay_state(&state).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("failed to persist relay state: {err}"),
+                }),
+            )
+                .into_response();
+        }
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    if payload.editor_id == owner_id {
+        mobile_states.insert(
+            owner_id.clone(),
+            MobileState {
+                revision: 1,
+                last_writer_id: payload.editor_id.clone(),
+                config: payload.config.clone(),
+                allowed_editors: HashSet::new(),
+                operations: vec![MobileOperation {
+                    revision: 1,
+                    editor_id: payload.editor_id.clone(),
+                    config: payload.config,
+                }],
+            },
+        );
+        drop(mobile_states);
+        if let Err(err) = persist_relay_state(&state).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("failed to persist relay state: {err}"),
+                }),
+            )
+                .into_response();
+        }
         return StatusCode::NO_CONTENT.into_response();
     }
     drop(mobile_states);
@@ -447,7 +537,16 @@ async fn create_access_request(
         .entry(owner_id)
         .or_default()
         .insert(payload.requester_id);
-
+    drop(requests);
+    if let Err(err) = persist_relay_state(&state).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("failed to persist relay state: {err}"),
+            }),
+        )
+            .into_response();
+    }
     StatusCode::NO_CONTENT.into_response()
 }
 
@@ -527,6 +626,16 @@ async fn approve_access_request(
                 pending.remove(&owner_id);
             }
         }
+        drop(pending);
+        if let Err(err) = persist_relay_state(&state).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("failed to persist relay state: {err}"),
+                }),
+            )
+                .into_response();
+        }
         return StatusCode::NO_CONTENT.into_response();
     }
 
@@ -558,6 +667,16 @@ async fn approve_access_request(
         if entry.is_empty() {
             pending.remove(&owner_id);
         }
+    }
+    drop(pending);
+    if let Err(err) = persist_relay_state(&state).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("failed to persist relay state: {err}"),
+            }),
+        )
+            .into_response();
     }
     StatusCode::NO_CONTENT.into_response()
 }
@@ -597,7 +716,16 @@ async fn deny_access_request(
             pending.remove(&owner_id);
         }
     }
-
+    drop(pending);
+    if let Err(err) = persist_relay_state(&state).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("failed to persist relay state: {err}"),
+            }),
+        )
+            .into_response();
+    }
     StatusCode::NO_CONTENT.into_response()
 }
 
@@ -681,6 +809,16 @@ async fn upsert_mobile_snapshot(
             },
         );
     }
+    drop(mobile_states);
+    if let Err(err) = persist_relay_state(&state).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("failed to persist relay state: {err}"),
+            }),
+        )
+            .into_response();
+    }
     StatusCode::NO_CONTENT.into_response()
 }
 
@@ -743,6 +881,7 @@ async fn get_mobile_sync(
 async fn pull_desktop_requests(
     State(state): State<AppState>,
     Path(owner_id): Path<String>,
+    Query(query): Query<DesktopRequestPullQuery>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     if !is_discord_id(&owner_id) {
@@ -772,13 +911,26 @@ async fn pull_desktop_requests(
         )
             .into_response();
     }
-    let requests = state
-        .desktop_requests
-        .write()
-        .await
-        .remove(&owner_id)
-        .unwrap_or_default();
-    Json(DesktopRequestsResponse { requests }).into_response()
+    let notifier = get_desktop_request_notifier(&state, &owner_id).await;
+    let wait_seconds = query.wait_seconds.unwrap_or(0).min(25);
+    let mut first_attempt = true;
+
+    loop {
+        let requests = state
+            .desktop_requests
+            .write()
+            .await
+            .remove(&owner_id)
+            .unwrap_or_default();
+        if !requests.is_empty() {
+            return Json(DesktopRequestsResponse { requests }).into_response();
+        }
+        if !first_attempt || wait_seconds == 0 {
+            return Json(DesktopRequestsResponse { requests }).into_response();
+        }
+        first_attempt = false;
+        let _ = timeout(Duration::from_secs(wait_seconds), notifier.notified()).await;
+    }
 }
 
 async fn push_desktop_response(
@@ -872,6 +1024,9 @@ async fn dispatch_desktop_command(
             request_id,
             command,
         });
+    get_desktop_request_notifier(state, owner_id)
+        .await
+        .notify_waiters();
 
     match timeout(Duration::from_secs(15), receiver).await {
         Ok(Ok(response)) => response,
@@ -896,6 +1051,14 @@ async fn dispatch_desktop_command(
             }
         }
     }
+}
+
+async fn get_desktop_request_notifier(state: &AppState, owner_id: &str) -> Arc<Notify> {
+    let mut notifiers = state.desktop_request_notifiers.write().await;
+    notifiers
+        .entry(owner_id.to_string())
+        .or_insert_with(|| Arc::new(Notify::new()))
+        .clone()
 }
 
 fn desktop_command_to_http_response(response: DesktopCommandResponse) -> axum::response::Response {
@@ -1048,8 +1211,10 @@ mod tests {
             mobile_states: Arc::new(RwLock::new(HashMap::new())),
             pending_access_requests: Arc::new(RwLock::new(HashMap::new())),
             desktop_requests: Arc::new(RwLock::new(HashMap::new())),
+            desktop_request_notifiers: Arc::new(RwLock::new(HashMap::new())),
             desktop_waiters: Arc::new(RwLock::new(HashMap::new())),
             next_desktop_request_id: Arc::new(AtomicU64::new(1)),
+            persisted_state_path: None,
         }
     }
 
@@ -1239,6 +1404,34 @@ mod tests {
             Query(MobileSyncQuery {
                 requester_id: "123".to_string(),
                 after_revision: Some(2),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(sync_response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn owner_put_remote_config_bootstraps_mobile_state() {
+        let state = test_state();
+        let update_response = put_remote_config(
+            State(state.clone()),
+            Path("123".to_string()),
+            Json(RemoteUpdatePayload {
+                editor_id: "123".to_string(),
+                config: sample_config(),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(update_response.status(), StatusCode::NO_CONTENT);
+
+        let sync_response = get_mobile_sync(
+            State(state),
+            Path("123".to_string()),
+            Query(MobileSyncQuery {
+                requester_id: "123".to_string(),
+                after_revision: Some(0),
             }),
         )
         .await

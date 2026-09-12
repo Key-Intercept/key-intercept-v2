@@ -978,6 +978,7 @@ fn configure_loopback_startup(
 
     let launcher_file = startup_dir.join("key-intercept-loopback.cmd");
     let tray_script_file = loopback_install_dir()?.join("key-intercept-loopback-tray.ps1");
+    let tray_launcher_file = loopback_install_dir()?.join("key-intercept-loopback-tray-launcher.vbs");
     if let Some(parent) = tray_script_file.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
@@ -997,10 +998,13 @@ fn configure_loopback_startup(
     fs::write(&tray_script_file, tray_script)
         .with_context(|| format!("failed to write tray script {}", tray_script_file.display()))?;
 
-    let script = format!(
-        "@echo off\r\nstart \"\" powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{}\"\r\n",
-        tray_script_file.display()
-    );
+    fs::write(
+        &tray_launcher_file,
+        build_windows_tray_launcher_vbs(&tray_script_file),
+    )
+    .with_context(|| format!("failed to write {}", tray_launcher_file.display()))?;
+
+    let script = build_windows_startup_launcher_cmd(&tray_launcher_file);
 
     fs::write(&launcher_file, script)
         .with_context(|| format!("failed to write {}", launcher_file.display()))?;
@@ -1020,6 +1024,29 @@ fn to_powershell_single_quoted_literal(value: &str) -> String {
 }
 
 #[cfg(windows)]
+fn to_vbscript_double_quoted_literal(value: &str) -> String {
+    value.replace('"', "\"\"")
+}
+
+#[cfg(windows)]
+fn build_windows_tray_launcher_vbs(tray_script_file: &Path) -> String {
+    let tray_script_path =
+        to_vbscript_double_quoted_literal(&tray_script_file.to_string_lossy());
+    format!(
+        "Set shell = CreateObject(\"WScript.Shell\")\r\nshell.Run \"powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"\"{}\"\"\", 0, False\r\n",
+        tray_script_path
+    )
+}
+
+#[cfg(windows)]
+fn build_windows_startup_launcher_cmd(tray_launcher_file: &Path) -> String {
+    format!(
+        "@echo off\r\nstart \"\" wscript.exe //B //NoLogo \"{}\"\r\n",
+        tray_launcher_file.display()
+    )
+}
+
+#[cfg(windows)]
 fn build_windows_tray_script(
     owner_discord_id: &str,
     loopback_binary: &Path,
@@ -1029,6 +1056,13 @@ fn build_windows_tray_script(
     let loopback = to_powershell_single_quoted_literal(&loopback_binary.to_string_lossy());
     let owner = to_powershell_single_quoted_literal(owner_discord_id);
     let config = to_powershell_single_quoted_literal(&config_path.to_string_lossy());
+    let log_path =
+        to_powershell_single_quoted_literal(&config_path.with_file_name("loopback.log").to_string_lossy());
+    let error_log_path = to_powershell_single_quoted_literal(
+        &config_path
+            .with_file_name("loopback-error.log")
+            .to_string_lossy(),
+    );
     let relay_env = relay_server_url
         .map(to_powershell_single_quoted_literal)
         .map(|value| format!("$env:RELAY_SERVER_URL = '{value}'\n"))
@@ -1040,11 +1074,19 @@ Add-Type -AssemblyName System.Drawing
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
-public static class Win32ShowWindow {{
+public static class Win32ConsoleWindow {{
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr GetConsoleWindow();
+
     [DllImport("user32.dll")]
     public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
 }}
 "@
+
+$hostWindow = [Win32ConsoleWindow]::GetConsoleWindow()
+if ($hostWindow -ne [IntPtr]::Zero) {{
+    [Win32ConsoleWindow]::ShowWindowAsync($hostWindow, 0) | Out-Null
+}}
 
 $env:OWNER_DISCORD_ID = '{owner}'
 $env:LOOPBACK_PORT = '35491'
@@ -1052,14 +1094,19 @@ $env:KEY_INTERCEPT_CONFIG_PATH = '{config}'
 {relay_env}
 
 $loopback = '{loopback}'
-$process = Start-Process -FilePath $loopback -PassThru
-for ($i = 0; $i -lt 80 -and $process.MainWindowHandle -eq 0; $i++) {{
-    Start-Sleep -Milliseconds 100
-    $process.Refresh()
+$logPath = '{log_path}'
+$errorLogPath = '{error_log_path}'
+$logDirectory = Split-Path -Parent $logPath
+if (-not [string]::IsNullOrWhiteSpace($logDirectory)) {{
+    New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
 }}
-if ($process.MainWindowHandle -ne 0) {{
-    [Win32ShowWindow]::ShowWindowAsync($process.MainWindowHandle, 0) | Out-Null
+if (-not (Test-Path -LiteralPath $logPath)) {{
+    New-Item -ItemType File -Path $logPath -Force | Out-Null
 }}
+if (-not (Test-Path -LiteralPath $errorLogPath)) {{
+    New-Item -ItemType File -Path $errorLogPath -Force | Out-Null
+}}
+$process = Start-Process -FilePath $loopback -WindowStyle Hidden -RedirectStandardOutput $logPath -RedirectStandardError $errorLogPath -PassThru
 
 $icon = New-Object System.Windows.Forms.NotifyIcon
 $icon.Icon = [System.Drawing.SystemIcons]::Application
@@ -1072,24 +1119,14 @@ $exitItem = $menu.Items.Add('Exit')
 $icon.ContextMenuStrip = $menu
 
 $showWindow = {{
-    if ($process.HasExited) {{ return }}
-    $process.Refresh()
-    if ($process.MainWindowHandle -ne 0) {{
-        [Win32ShowWindow]::ShowWindowAsync($process.MainWindowHandle, 9) | Out-Null
-    }}
+    $tailScript = "Get-Content -LiteralPath @('$logPath', '$errorLogPath') -Tail 200 -Wait"
+    Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit', '-Command', $tailScript) | Out-Null
 }}
 
 $showItem.Add_Click($showWindow)
 $icon.Add_DoubleClick($showWindow)
 $exitItem.Add_Click({{
-    if (-not $process.HasExited) {{ $process.Kill() }}
-    $icon.Visible = $false
-    $icon.Dispose()
-    [System.Windows.Forms.Application]::Exit()
-}})
-
-$process.EnableRaisingEvents = $true
-$process.add_Exited({{
+    if ($process -and -not $process.HasExited) {{ $process.Kill() }}
     $icon.Visible = $false
     $icon.Dispose()
     [System.Windows.Forms.Application]::Exit()
@@ -1098,6 +1135,8 @@ $process.add_Exited({{
 [System.Windows.Forms.Application]::Run()
 "#,
         relay_env = relay_env,
+        log_path = log_path,
+        error_log_path = error_log_path,
     )
 }
 
@@ -1469,5 +1508,82 @@ mod tests {
 
         remove_existing_path(&nested).unwrap();
         assert!(!nested.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_tray_script_starts_loopback_hidden() {
+        let script = build_windows_tray_script(
+            "123456",
+            Path::new("C:\\loopback-server.exe"),
+            Path::new("C:\\Users\\me\\AppData\\Roaming\\key-intercept\\config.json"),
+            None,
+        );
+        assert!(
+            script.contains("Start-Process -FilePath $loopback -WindowStyle Hidden -RedirectStandardOutput $logPath -RedirectStandardError $errorLogPath -PassThru")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_tray_script_hides_host_window() {
+        let script = build_windows_tray_script(
+            "123456",
+            Path::new("C:\\loopback-server.exe"),
+            Path::new("C:\\Users\\me\\AppData\\Roaming\\key-intercept\\config.json"),
+            None,
+        );
+        assert!(script.contains("GetConsoleWindow()"));
+        assert!(script.contains("ShowWindowAsync($hostWindow, 0)"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_startup_launcher_uses_wscript_background_mode() {
+        let script = build_windows_startup_launcher_cmd(Path::new(
+            "C:\\Users\\me\\AppData\\Local\\Programs\\key-intercept\\key-intercept-loopback-tray-launcher.vbs",
+        ));
+        assert!(script.contains("start \"\" wscript.exe //B //NoLogo"));
+        assert!(script.contains("key-intercept-loopback-tray-launcher.vbs"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_tray_launcher_vbs_runs_powershell_hidden() {
+        let script = build_windows_tray_launcher_vbs(Path::new(
+            "C:\\Users\\me\\AppData\\Local\\Programs\\key-intercept\\key-intercept-loopback-tray.ps1",
+        ));
+        assert!(script.contains("CreateObject(\"WScript.Shell\")"));
+        assert!(script.contains("powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File"));
+        assert!(script.contains("key-intercept-loopback-tray.ps1"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_tray_script_does_not_auto_exit_when_loopback_stops() {
+        let script = build_windows_tray_script(
+            "123456",
+            Path::new("C:\\loopback-server.exe"),
+            Path::new("C:\\Users\\me\\AppData\\Roaming\\key-intercept\\config.json"),
+            None,
+        );
+        assert!(!script.contains("$process.add_Exited"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_tray_script_show_action_opens_log_tail_console() {
+        let script = build_windows_tray_script(
+            "123456",
+            Path::new("C:\\loopback-server.exe"),
+            Path::new("C:\\Users\\me\\AppData\\Roaming\\key-intercept\\config.json"),
+            None,
+        );
+        assert!(script.contains(
+            "Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit', '-Command', $tailScript)"
+        ));
+        assert!(script.contains(
+            "Get-Content -LiteralPath @('$logPath', '$errorLogPath') -Tail 200 -Wait"
+        ));
     }
 }

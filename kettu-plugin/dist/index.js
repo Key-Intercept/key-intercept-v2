@@ -2,6 +2,8 @@
 const MOBILE_STATE_KEY = "key-intercept/mobile-loopback-state/v1";
 const RELAY_URL_STORAGE_KEY = "key-intercept/relay-url";
 const DEFAULT_RELAY_URL = "https://kirelay.thomaslower.com";
+const BOOTSTRAP_USER_RETRY_LIMIT = 20;
+const BOOTSTRAP_USER_RETRY_DELAY_MS = 1500;
 const farFuture = "9999-12-31T23:59:59.000Z";
 const epoch = "1970-01-01T00:00:00.000Z";
 const permanentTimestamp = new Date(farFuture).getTime();
@@ -558,6 +560,27 @@ function deriveRelayConfigReadStatus(status, payload) {
     return Number.isFinite(parsed) ? parsed : status;
 }
 
+function parseErrorStatusCode(error) {
+    const status = Number(error?.status);
+    if (Number.isFinite(status)) return status;
+    const message = String(error?.message ?? error ?? "");
+    const match = /(?:failed|status)\D+(\d{3})/i.exec(message);
+    if (!match) return null;
+    const parsed = Number(match[1]);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatConfigAccessError(error, targetUserId) {
+    const status = parseErrorStatusCode(error);
+    if (status === 403) return "You do not have access to this user's config.";
+    if (status === 404) return "This user is not using Key Intercept.";
+    if (status === 400) return "This config request was invalid. Please try again.";
+    if (status === 429) return "Too many requests. Please wait and try again.";
+    if (status !== null && status >= 500) return "Key Intercept relay is unavailable right now. Please try again later.";
+    if (status !== null) return `Unable to load ${targetUserId}'s profile config (error ${status}).`;
+    return "Unable to load this profile config.";
+}
+
 function readRemoteConfig(relayUrl, requesterId, targetUserId) {
     return fetch(
         `${relayBaseUrl(relayUrl)}/users/${targetUserId}/config?requester_id=${encodeURIComponent(requesterId)}`,
@@ -1018,14 +1041,32 @@ function shouldApplyToScope(channelId) {
 
 function bootstrapConfig() {
     const UserStore = findByProps?.("getCurrentUser", "getUser");
-    const currentUser = UserStore?.getCurrentUser?.();
-    if (!currentUser?.id) return Promise.resolve();
-    return syncInAppLoopback(currentRelayUrl(), currentUser.id).then(() => {
-        interceptConfig = mergeLocalConfig(readMobileState(currentUser.id).config);
-        console.log(`${LOG_PREFIX} config ready`);
-    }).catch(err => {
-        console.log(`${LOG_PREFIX} config sync failed`, err);
-    });
+    const syncForCurrentUser = () => {
+        const currentUser = UserStore?.getCurrentUser?.();
+        if (!validateDiscordId(currentUser?.id)) return false;
+        syncInAppLoopback(currentRelayUrl(), currentUser.id).then(() => {
+            interceptConfig = mergeLocalConfig(readMobileState(currentUser.id).config);
+            console.log(`${LOG_PREFIX} config ready`);
+        }).catch(err => {
+            console.log(`${LOG_PREFIX} config sync failed`, err);
+        });
+        return true;
+    };
+
+    if (syncForCurrentUser()) return Promise.resolve();
+    console.log(`${LOG_PREFIX} waiting for current user before initial relay sync`);
+    let attempt = 0;
+    const retry = () => {
+        if (syncForCurrentUser()) return;
+        attempt += 1;
+        if (attempt >= BOOTSTRAP_USER_RETRY_LIMIT) {
+            console.log(`${LOG_PREFIX} skipped initial relay sync: current user unavailable`);
+            return;
+        }
+        setTimeout(retry, BOOTSTRAP_USER_RETRY_DELAY_MS);
+    };
+    setTimeout(retry, BOOTSTRAP_USER_RETRY_DELAY_MS);
+    return Promise.resolve();
 }
 
 function patchSendMessage() {
@@ -1205,11 +1246,7 @@ function ConfigPanel(props) {
             setStatus(`Loaded ${profileUserId}'s profile config`);
         } catch (err) {
             setCanViewRemote(false);
-            if (err?.status === 403) {
-                setStatus(`No access to ${profileUserId}'s config. Request permission below.`);
-            } else {
-                setStatus(String(err));
-            }
+            setStatus(formatConfigAccessError(err, profileUserId));
         } finally {
             refreshInFlightRef.current = false;
         }
@@ -1219,10 +1256,10 @@ function ConfigPanel(props) {
         try {
             const pending = refresh();
             if (pending && typeof pending.then === "function") {
-                pending.then(undefined, err => setStatus(String(err)));
+                pending.then(undefined, err => setStatus(formatConfigAccessError(err, profileUserId)));
             }
         } catch (err) {
-            setStatus(String(err));
+            setStatus(formatConfigAccessError(err, profileUserId));
         }
     }, [refresh, isPanelOpen]);
 
@@ -1234,10 +1271,10 @@ function ConfigPanel(props) {
             try {
                 const pending = refresh();
                 if (pending && typeof pending.then === "function") {
-                    pending.then(undefined, err => setStatus(String(err)));
+                    pending.then(undefined, err => setStatus(formatConfigAccessError(err, profileUserId)));
                 }
             } catch (err) {
-                setStatus(String(err));
+                setStatus(formatConfigAccessError(err, profileUserId));
             }
         }, 1500);
         return () => clearInterval(handle);
@@ -1684,9 +1721,9 @@ function ConfigPanel(props) {
             View,
             null,
             h(Text, { style: { color: "#f2f3f5", marginTop: 6 } }, "You do not currently have permission to view this profile config."),
-            button("Request Access via Relay", () => requestRemoteAccess(currentRelayUrl(), activeUserId, profileUserId).then(() => {
+            button("Request Access", () => requestRemoteAccess(currentRelayUrl(), activeUserId, profileUserId).then(() => {
                 setStatus(`Access request sent to ${profileUserId}`);
-            }, err => setStatus(`Access request failed: ${String(err)}`)))
+            }, err => setStatus(formatConfigAccessError(err, profileUserId))))
         )) : null,
 
         (isOwnProfile || canViewRemote) ? section("gag", "Gag", renderTimeoutControls("gag_end", "Gag timeout")) : null,
@@ -1889,10 +1926,10 @@ function ConfigPanel(props) {
                     try {
                         const pending = refresh();
                         if (pending && typeof pending.then === "function") {
-                            pending.then(undefined, err => setStatus(String(err)));
+                            pending.then(undefined, err => setStatus(formatConfigAccessError(err, profileUserId)));
                         }
                     } catch (err) {
-                        setStatus(String(err));
+                        setStatus(formatConfigAccessError(err, profileUserId));
                     }
                 }, { noTopMargin: true, key: "reload-config" })
             )
