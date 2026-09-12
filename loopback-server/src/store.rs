@@ -1,4 +1,4 @@
-use crate::schema::LocalConfig;
+use crate::schema::{Config, DroneConfig, LocalConfig, Rule, RuleGroup, ScopeFilterMode, WhitelistItem};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -51,6 +51,70 @@ fn file_content_fingerprint(raw: &str) -> u64 {
     hasher.finish()
 }
 
+fn apply_legacy_top_level_overrides(raw: &str, state: &mut PersistedState) {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return;
+    };
+    let Some(object) = value.as_object() else {
+        return;
+    };
+
+    if let Some(config) = object
+        .get("config")
+        .and_then(|entry| serde_json::from_value::<Config>(entry.clone()).ok())
+    {
+        state.config.config = config;
+    }
+    if let Some(rules) = object
+        .get("rules")
+        .and_then(|entry| serde_json::from_value::<Vec<Rule>>(entry.clone()).ok())
+    {
+        state.config.rules = rules;
+    }
+    if let Some(groups) = object
+        .get("rules_groups")
+        .and_then(|entry| serde_json::from_value::<Vec<RuleGroup>>(entry.clone()).ok())
+    {
+        state.config.rules_groups = groups;
+    }
+    if let Some(whitelist) = object
+        .get("whitelist")
+        .and_then(|entry| serde_json::from_value::<Vec<WhitelistItem>>(entry.clone()).ok())
+    {
+        state.config.whitelist = whitelist;
+    }
+    if let Some(blacklist) = object
+        .get("blacklist")
+        .and_then(|entry| serde_json::from_value::<Vec<WhitelistItem>>(entry.clone()).ok())
+    {
+        state.config.blacklist = blacklist;
+    }
+    if let Some(filter_mode) = object
+        .get("filter_mode")
+        .and_then(|entry| serde_json::from_value::<ScopeFilterMode>(entry.clone()).ok())
+    {
+        state.config.filter_mode = filter_mode;
+    }
+    if let Some(pet_words) = object
+        .get("pet_words")
+        .and_then(|entry| serde_json::from_value::<Vec<String>>(entry.clone()).ok())
+    {
+        state.config.pet_words = pet_words;
+    }
+    if let Some(censored_words) = object
+        .get("censored_words")
+        .and_then(|entry| serde_json::from_value::<Vec<String>>(entry.clone()).ok())
+    {
+        state.config.censored_words = censored_words;
+    }
+    if let Some(drone_config) = object
+        .get("drone_config")
+        .and_then(|entry| serde_json::from_value::<DroneConfig>(entry.clone()).ok())
+    {
+        state.config.drone_config = drone_config;
+    }
+}
+
 impl ConfigStore {
     pub async fn load_or_create(path: impl AsRef<Path>, owner_discord_id: String) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
@@ -59,7 +123,10 @@ impl ConfigStore {
                 .await
                 .with_context(|| format!("failed to read {}", path.display()))?;
             match serde_json::from_str::<PersistedState>(&existing) {
-                Ok(state) => state,
+                Ok(mut state) => {
+                    apply_legacy_top_level_overrides(&existing, &mut state);
+                    state
+                }
                 Err(err) => match serde_json::from_str::<LocalConfig>(&existing) {
                     Ok(config) => {
                         let migrated = PersistedState {
@@ -231,6 +298,7 @@ impl ConfigStore {
                 if parsed.owner_discord_id.trim().is_empty() {
                     parsed.owner_discord_id = state.owner_discord_id.clone();
                 }
+                apply_legacy_top_level_overrides(&raw, &mut parsed);
                 parsed.revision = state.revision.saturating_add(1);
                 parsed
             }
@@ -270,6 +338,7 @@ fn ensure_owner(state: &PersistedState, requester_id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use tempfile::tempdir;
     use tokio::time::sleep;
 
@@ -447,5 +516,54 @@ mod tests {
 
         assert_eq!(updated.config.config.censored_replacement, "!");
         assert!(updated.revision > after_revision);
+    }
+
+    #[tokio::test]
+    async fn refresh_from_disk_applies_legacy_top_level_rules_in_persisted_state() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let store = ConfigStore::load_or_create(&path, "owner".to_string())
+            .await
+            .unwrap();
+        sleep(Duration::from_millis(20)).await;
+
+        let mut raw: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&path).await.unwrap(),
+        )
+        .unwrap();
+        let object = raw.as_object_mut().unwrap();
+        object.insert(
+            "rules_groups".to_string(),
+            json!([{
+                "id": 9,
+                "timeout_end": "9999-12-31T23:59:59.000Z",
+                "enabled": true,
+                "order": 0
+            }]),
+        );
+        object.insert(
+            "rules".to_string(),
+            json!([{
+                "rule_regex": "cat",
+                "rule_replacement": "dog",
+                "regex_normalize": false,
+                "enabled": true,
+                "chance_to_apply": 1.0,
+                "order": 0,
+                "group_id": 9
+            }]),
+        );
+        fs::write(&path, serde_json::to_vec_pretty(&raw).unwrap())
+            .await
+            .unwrap();
+
+        let changed = store.refresh_from_disk_if_changed().await.unwrap();
+        let refreshed = store.get().await;
+
+        assert!(changed);
+        assert_eq!(refreshed.config.rules_groups.len(), 1);
+        assert_eq!(refreshed.config.rules_groups[0].id, 9);
+        assert_eq!(refreshed.config.rules.len(), 1);
+        assert_eq!(refreshed.config.rules[0].group_id, 9);
     }
 }
