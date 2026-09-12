@@ -5,11 +5,12 @@ use std::{
     collections::HashSet,
     path::{Path, PathBuf},
     sync::Arc,
+    time::SystemTime,
 };
 use tokio::{
     fs,
     sync::{Notify, RwLock},
-    time::{Duration, timeout},
+    time::{Duration, Instant},
 };
 use tracing::warn;
 
@@ -38,6 +39,7 @@ impl PersistedState {
 pub struct ConfigStore {
     path: PathBuf,
     state: Arc<RwLock<PersistedState>>,
+    file_modified_at: Arc<RwLock<Option<SystemTime>>>,
     changed_notify: Arc<Notify>,
 }
 
@@ -95,9 +97,15 @@ impl ConfigStore {
             fresh
         };
 
+        let file_modified_at = fs::metadata(&path)
+            .await
+            .ok()
+            .and_then(|metadata| metadata.modified().ok());
+
         Ok(Self {
             path,
             state: Arc::new(RwLock::new(state)),
+            file_modified_at: Arc::new(RwLock::new(file_modified_at)),
             changed_notify: Arc::new(Notify::new()),
         })
     }
@@ -138,25 +146,96 @@ impl ConfigStore {
         after_revision: u64,
         wait_for: Duration,
     ) -> Option<PersistedState> {
-        let current = self.get().await;
-        if current.revision != after_revision {
-            return Some(current);
-        }
-        if timeout(wait_for, self.changed_notify.notified()).await.is_err() {
-            return None;
-        }
-        let updated = self.get().await;
-        if updated.revision != after_revision {
-            Some(updated)
-        } else {
-            None
+        let deadline = Instant::now() + wait_for;
+
+        loop {
+            if let Err(err) = self.refresh_from_disk_if_changed().await {
+                warn!(
+                    "failed to refresh config store from disk {}: {}",
+                    self.path.display(),
+                    err
+                );
+            }
+
+            let current = self.get().await;
+            if current.revision != after_revision {
+                return Some(current);
+            }
+
+            let now = Instant::now();
+            if now >= deadline {
+                return None;
+            }
+
+            let remaining = deadline.saturating_duration_since(now);
+            let wait_step = std::cmp::min(remaining, Duration::from_secs(1));
+
+            tokio::select! {
+                _ = self.changed_notify.notified() => {}
+                _ = tokio::time::sleep(wait_step) => {}
+            }
         }
     }
 
     async fn persist(&self, state: &PersistedState) -> Result<()> {
         fs::write(&self.path, serde_json::to_vec_pretty(state)?)
             .await
-            .with_context(|| format!("failed to write {}", self.path.display()))
+            .with_context(|| format!("failed to write {}", self.path.display()))?;
+        let modified = fs::metadata(&self.path)
+            .await
+            .ok()
+            .and_then(|metadata| metadata.modified().ok());
+        *self.file_modified_at.write().await = modified;
+        Ok(())
+    }
+
+    pub async fn refresh_from_disk_if_changed(&self) -> Result<bool> {
+        let current_modified = fs::metadata(&self.path)
+            .await
+            .ok()
+            .and_then(|metadata| metadata.modified().ok());
+
+        if current_modified.is_none() {
+            return Ok(false);
+        }
+
+        {
+            let known_modified = self.file_modified_at.read().await;
+            if *known_modified == current_modified {
+                return Ok(false);
+            }
+        }
+
+        let raw = fs::read_to_string(&self.path)
+            .await
+            .with_context(|| format!("failed to read {}", self.path.display()))?;
+        let mut state = self.state.write().await;
+        let reloaded = match serde_json::from_str::<PersistedState>(&raw) {
+            Ok(mut parsed) => {
+                if parsed.owner_discord_id.trim().is_empty() {
+                    parsed.owner_discord_id = state.owner_discord_id.clone();
+                }
+                parsed.revision = state.revision.saturating_add(1);
+                parsed
+            }
+            Err(_) => match serde_json::from_str::<LocalConfig>(&raw) {
+                Ok(parsed_config) => PersistedState {
+                    owner_discord_id: state.owner_discord_id.clone(),
+                    revision: state.revision.saturating_add(1),
+                    config: parsed_config,
+                    allowed_editors: state.allowed_editors.clone(),
+                },
+                Err(err) => {
+                    bail!("failed parsing config file after disk change: {err}");
+                }
+            },
+        };
+        *state = reloaded;
+        drop(state);
+
+        *self.file_modified_at.write().await = current_modified;
+        self.changed_notify.notify_waiters();
+        Ok(true)
     }
 }
 
@@ -175,6 +254,7 @@ fn ensure_owner(state: &PersistedState, requester_id: &str) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+    use tokio::time::sleep;
 
     #[tokio::test]
     async fn owner_can_update_config() {
@@ -295,5 +375,60 @@ mod tests {
 
         let backup_path = path.with_extension("corrupt.json");
         assert!(backup_path.exists());
+    }
+
+    #[tokio::test]
+    async fn refresh_from_disk_applies_manual_local_config_edits() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let store = ConfigStore::load_or_create(&path, "owner".to_string())
+            .await
+            .unwrap();
+
+        let initial = store.get().await;
+        sleep(Duration::from_millis(20)).await;
+
+        let mut edited = LocalConfig::default();
+        edited.config.censored_replacement = "#".to_string();
+        fs::write(&path, serde_json::to_vec_pretty(&edited).unwrap())
+            .await
+            .unwrap();
+
+        let changed = store.refresh_from_disk_if_changed().await.unwrap();
+        let refreshed = store.get().await;
+
+        assert!(changed);
+        assert_eq!(refreshed.config.config.censored_replacement, "#");
+        assert_eq!(refreshed.owner_discord_id, initial.owner_discord_id);
+        assert_eq!(refreshed.allowed_editors, initial.allowed_editors);
+        assert!(refreshed.revision > initial.revision);
+    }
+
+    #[tokio::test]
+    async fn wait_for_config_change_detects_manual_disk_edit() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let store = ConfigStore::load_or_create(&path, "owner".to_string())
+            .await
+            .unwrap();
+        let after_revision = store.get().await.revision;
+
+        let path_for_write = path.clone();
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(100)).await;
+            let mut edited = LocalConfig::default();
+            edited.config.censored_replacement = "!".to_string();
+            fs::write(&path_for_write, serde_json::to_vec_pretty(&edited).unwrap())
+                .await
+                .unwrap();
+        });
+
+        let updated = store
+            .wait_for_config_change(after_revision, Duration::from_secs(2))
+            .await
+            .expect("manual edit should trigger config update");
+
+        assert_eq!(updated.config.config.censored_replacement, "!");
+        assert!(updated.revision > after_revision);
     }
 }
