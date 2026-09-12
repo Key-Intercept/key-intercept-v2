@@ -115,6 +115,49 @@ fn apply_legacy_top_level_overrides(raw: &str, state: &mut PersistedState) {
     }
 }
 
+fn migrate_legacy_state(raw: &str, default_owner_discord_id: &str) -> Option<PersistedState> {
+    let value = serde_json::from_str::<serde_json::Value>(raw).ok()?;
+    let object = value.as_object()?;
+    let has_legacy_config_keys = [
+        "config",
+        "rules",
+        "rules_groups",
+        "whitelist",
+        "blacklist",
+        "filter_mode",
+        "pet_words",
+        "censored_words",
+        "drone_config",
+    ]
+    .iter()
+    .any(|key| object.contains_key(*key));
+
+    let mut state = PersistedState::new(default_owner_discord_id.to_string());
+    let mut migrated = has_legacy_config_keys;
+
+    if let Some(owner_discord_id) = object
+        .get("owner_discord_id")
+        .and_then(|entry| entry.as_str())
+    {
+        state.owner_discord_id = owner_discord_id.to_string();
+        migrated = true;
+    }
+    if let Some(revision) = object.get("revision").and_then(|entry| entry.as_u64()) {
+        state.revision = revision;
+        migrated = true;
+    }
+    if let Some(allowed_editors) = object
+        .get("allowed_editors")
+        .and_then(|entry| serde_json::from_value::<HashSet<String>>(entry.clone()).ok())
+    {
+        state.allowed_editors = allowed_editors;
+        migrated = true;
+    }
+
+    apply_legacy_top_level_overrides(raw, &mut state);
+    migrated.then_some(state)
+}
+
 impl ConfigStore {
     pub async fn load_or_create(path: impl AsRef<Path>, owner_discord_id: String) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
@@ -141,6 +184,28 @@ impl ConfigStore {
                         migrated
                     }
                     Err(_) => {
+                        if let Some(migrated) = migrate_legacy_state(&existing, &owner_discord_id) {
+                            fs::write(&path, serde_json::to_vec_pretty(&migrated)?)
+                                .await
+                                .with_context(|| format!("failed to migrate {}", path.display()))?;
+                            return Ok(Self {
+                                path: path.clone(),
+                                state: Arc::new(RwLock::new(migrated)),
+                                file_modified_at: Arc::new(RwLock::new(
+                                    fs::metadata(&path)
+                                        .await
+                                        .ok()
+                                        .and_then(|metadata| metadata.modified().ok()),
+                                )),
+                                file_fingerprint: Arc::new(RwLock::new(
+                                    fs::read_to_string(&path)
+                                        .await
+                                        .ok()
+                                        .map(|raw| file_content_fingerprint(&raw)),
+                                )),
+                                changed_notify: Arc::new(Notify::new()),
+                            });
+                        }
                         let backup_path = path.with_extension("corrupt.json");
                         warn!(
                             "failed to parse {}; backing up to {} and recreating default config: {}",
@@ -440,6 +505,34 @@ mod tests {
         assert_eq!(state.revision, 0);
         assert!(state.allowed_editors.is_empty());
         assert_eq!(state.config.config.censored_replacement, "*");
+    }
+
+    #[tokio::test]
+    async fn load_or_create_migrates_legacy_top_level_state_format() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+
+        let mut legacy_local = LocalConfig::default();
+        legacy_local.config.censored_replacement = "#".to_string();
+        let mut legacy: serde_json::Value = serde_json::to_value(&legacy_local).unwrap();
+        let object = legacy.as_object_mut().unwrap();
+        object.insert("owner_discord_id".to_string(), json!("legacy-owner"));
+        object.insert("revision".to_string(), json!(7));
+        object.insert("allowed_editors".to_string(), json!(["editor-1"]));
+
+        fs::write(&path, serde_json::to_vec_pretty(&legacy).unwrap())
+            .await
+            .unwrap();
+
+        let store = ConfigStore::load_or_create(&path, "fallback-owner".to_string())
+            .await
+            .unwrap();
+        let state = store.get().await;
+
+        assert_eq!(state.owner_discord_id, "legacy-owner");
+        assert_eq!(state.revision, 7);
+        assert!(state.allowed_editors.contains("editor-1"));
+        assert_eq!(state.config.config.censored_replacement, "#");
     }
 
     #[tokio::test]
