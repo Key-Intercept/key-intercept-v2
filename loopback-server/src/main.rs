@@ -189,6 +189,9 @@ async fn get_config(
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
+    if let Err(err) = state.store.refresh_from_disk_if_changed().await {
+        warn!("GET /config disk refresh failed: {}", err);
+    }
     let stored = state.store.get().await;
 
     let Some(requester) = requester_id(&headers, &query) else {

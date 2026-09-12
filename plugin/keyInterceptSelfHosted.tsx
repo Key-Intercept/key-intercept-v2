@@ -2047,7 +2047,10 @@ function ConfigPanel(props: any) {
                                         <input
                                             type="checkbox"
                                             checked={group.enabled}
-                                            onChange={e => updateRuleGroup(group.id, current => ({ ...current, enabled: e.currentTarget.checked }))}
+                                            onChange={e => {
+                                                const nextEnabled = e.currentTarget.checked;
+                                                updateRuleGroup(group.id, current => ({ ...current, enabled: nextEnabled }));
+                                            }}
                                         />
                                         Enabled
                                     </label>
@@ -2067,7 +2070,10 @@ function ConfigPanel(props: any) {
                                                 type="number"
                                                 min={1}
                                                 value={groupTimeoutAdjustments[group.id] ?? "1"}
-                                                onChange={e => setGroupTimeoutAdjustments(prev => ({ ...prev, [group.id]: e.currentTarget.value }))}
+                                                onChange={e => {
+                                                    const nextAdjustment = e.currentTarget.value;
+                                                    setGroupTimeoutAdjustments(prev => ({ ...prev, [group.id]: nextAdjustment }));
+                                                }}
                                             />
                                             <button style={buttonStyle} onClick={() => addGroupTimeoutAmount(group.id, 1)}>Add Seconds</button>
                                             <button style={buttonStyle} onClick={() => addGroupTimeoutAmount(group.id, 60)}>Add Minutes</button>
@@ -2084,8 +2090,14 @@ function ConfigPanel(props: any) {
                                     )}
                                     {groupRules.map(({ rule, index }) => (
                                         <div key={`${group.id}-${index}`} style={{ border: "1px solid #3f4147", borderRadius: "8px", padding: "8px", display: "grid", gap: "8px" }}>
-                                            <label>Regex rule<input style={inputStyle} value={rule.rule_regex} onChange={e => updateRuleAtIndex(index, current => ({ ...current, rule_regex: e.currentTarget.value }))} /></label>
-                                            <label>Replacement<input style={inputStyle} value={rule.rule_replacement} onChange={e => updateRuleAtIndex(index, current => ({ ...current, rule_replacement: e.currentTarget.value }))} /></label>
+                                            <label>Regex rule<input style={inputStyle} value={rule.rule_regex} onChange={e => {
+                                                const nextRegex = e.currentTarget.value;
+                                                updateRuleAtIndex(index, current => ({ ...current, rule_regex: nextRegex }));
+                                            }} /></label>
+                                            <label>Replacement<input style={inputStyle} value={rule.rule_replacement} onChange={e => {
+                                                const nextReplacement = e.currentTarget.value;
+                                                updateRuleAtIndex(index, current => ({ ...current, rule_replacement: nextReplacement }));
+                                            }} /></label>
                                             <label>Trigger chance ({Math.round(rule.chance_to_apply * 100)}%)<input style={inputStyle} type="range" min={0} max={100} step={1} value={Math.round(rule.chance_to_apply * 100)} onChange={e => {
                                                 const nextValue = parseNumericInput(e.currentTarget.value, 100, { min: 0, max: 100 });
                                                 updateRuleAtIndex(index, current => ({ ...current, chance_to_apply: nextValue / 100 }));
@@ -2096,11 +2108,17 @@ function ConfigPanel(props: any) {
                                             }} /></label>
                                             <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
                                                 <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                                                    <input type="checkbox" checked={rule.enabled} onChange={e => updateRuleAtIndex(index, current => ({ ...current, enabled: e.currentTarget.checked }))} />
+                                                    <input type="checkbox" checked={rule.enabled} onChange={e => {
+                                                        const nextEnabled = e.currentTarget.checked;
+                                                        updateRuleAtIndex(index, current => ({ ...current, enabled: nextEnabled }));
+                                                    }} />
                                                     Enabled
                                                 </label>
                                                 <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                                                    <input type="checkbox" checked={rule.regex_normalize} onChange={e => updateRuleAtIndex(index, current => ({ ...current, regex_normalize: e.currentTarget.checked }))} />
+                                                    <input type="checkbox" checked={rule.regex_normalize} onChange={e => {
+                                                        const nextNormalize = e.currentTarget.checked;
+                                                        updateRuleAtIndex(index, current => ({ ...current, regex_normalize: nextNormalize }));
+                                                    }} />
                                                     Normalize regex
                                                 </label>
                                             </div>
