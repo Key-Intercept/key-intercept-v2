@@ -2,7 +2,8 @@ use crate::schema::LocalConfig;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
+    collections::{HashSet, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
     path::{Path, PathBuf},
     sync::Arc,
     time::SystemTime,
@@ -40,7 +41,14 @@ pub struct ConfigStore {
     path: PathBuf,
     state: Arc<RwLock<PersistedState>>,
     file_modified_at: Arc<RwLock<Option<SystemTime>>>,
+    file_fingerprint: Arc<RwLock<Option<u64>>>,
     changed_notify: Arc<Notify>,
+}
+
+fn file_content_fingerprint(raw: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    raw.hash(&mut hasher);
+    hasher.finish()
 }
 
 impl ConfigStore {
@@ -101,11 +109,16 @@ impl ConfigStore {
             .await
             .ok()
             .and_then(|metadata| metadata.modified().ok());
+        let file_fingerprint = fs::read_to_string(&path)
+            .await
+            .ok()
+            .map(|raw| file_content_fingerprint(&raw));
 
         Ok(Self {
             path,
             state: Arc::new(RwLock::new(state)),
             file_modified_at: Arc::new(RwLock::new(file_modified_at)),
+            file_fingerprint: Arc::new(RwLock::new(file_fingerprint)),
             changed_notify: Arc::new(Notify::new()),
         })
     }
@@ -178,14 +191,19 @@ impl ConfigStore {
     }
 
     async fn persist(&self, state: &PersistedState) -> Result<()> {
-        fs::write(&self.path, serde_json::to_vec_pretty(state)?)
+        let encoded = serde_json::to_vec_pretty(state)?;
+        fs::write(&self.path, &encoded)
             .await
             .with_context(|| format!("failed to write {}", self.path.display()))?;
         let modified = fs::metadata(&self.path)
             .await
             .ok()
             .and_then(|metadata| metadata.modified().ok());
+        let fingerprint = std::str::from_utf8(&encoded)
+            .ok()
+            .map(file_content_fingerprint);
         *self.file_modified_at.write().await = modified;
+        *self.file_fingerprint.write().await = fingerprint;
         Ok(())
     }
 
@@ -194,21 +212,19 @@ impl ConfigStore {
             .await
             .ok()
             .and_then(|metadata| metadata.modified().ok());
-
-        if current_modified.is_none() {
-            return Ok(false);
-        }
+        let raw = match fs::read_to_string(&self.path).await {
+            Ok(raw) => raw,
+            Err(_) => return Ok(false),
+        };
+        let current_fingerprint = file_content_fingerprint(&raw);
 
         {
-            let known_modified = self.file_modified_at.read().await;
-            if *known_modified == current_modified {
+            let known_modified = *self.file_modified_at.read().await;
+            let known_fingerprint = *self.file_fingerprint.read().await;
+            if known_modified == current_modified && known_fingerprint == Some(current_fingerprint) {
                 return Ok(false);
             }
         }
-
-        let raw = fs::read_to_string(&self.path)
-            .await
-            .with_context(|| format!("failed to read {}", self.path.display()))?;
         let mut state = self.state.write().await;
         let reloaded = match serde_json::from_str::<PersistedState>(&raw) {
             Ok(mut parsed) => {
@@ -234,6 +250,7 @@ impl ConfigStore {
         drop(state);
 
         *self.file_modified_at.write().await = current_modified;
+        *self.file_fingerprint.write().await = Some(current_fingerprint);
         self.changed_notify.notify_waiters();
         Ok(true)
     }
