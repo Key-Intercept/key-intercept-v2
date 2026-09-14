@@ -37,6 +37,7 @@ type Rule = {
 
 type RuleGroup = {
     id: number;
+    name: string;
     timeout_end: string;
     enabled: boolean;
     order: number;
@@ -273,6 +274,7 @@ function mergeLocalConfig(raw: unknown): LocalConfig {
             const fallbackTimeout = typeof group.disabled_at === "string" ? group.disabled_at : farFuture;
             return {
                 id: parseNumericInput(String(group.id ?? index + 1), index + 1, { min: 1 }),
+                name: typeof group.name === "string" ? group.name : `Group ${index + 1}`,
                 timeout_end: typeof group.timeout_end === "string" ? group.timeout_end : fallbackTimeout,
                 enabled: group.enabled === undefined
                     ? (typeof group.disabled_at === "string" ? Date.parse(group.disabled_at) > Date.now() : true)
@@ -2040,7 +2042,18 @@ function ConfigPanel(props: any) {
                             return (
                                 <div key={group.id} style={{ border: "1px solid #3f4147", borderRadius: "10px", padding: "10px", display: "grid", gap: "8px" }}>
                                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-                                        <strong>Group #{group.id}</strong>
+                                        <strong>
+                                            {group.id}:
+                                            <input
+                                                type="text"
+                                                style={inputStyle}
+                                                value={group.name}
+                                                onChange={(e) => {
+                                                    const newname = e.target.value;
+                                                    updateRuleGroup(group.id, current => ({ ...current, name: newname }));
+                                                    }}
+                                            />
+                                        </strong>
                                         <button style={{ ...buttonStyle, background: "#da373c", borderColor: "#da373c" }} onClick={() => removeRuleGroup(group.id)}>Remove Group</button>
                                     </div>
                                     <label style={{ display: "flex", alignItems: "center", gap: "8px" }}>
