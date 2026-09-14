@@ -618,6 +618,11 @@ fn ensure_installer_tools() -> Result<InstallerTools> {
     let npm_install_args = vec![
         "install".to_string(),
         "--no-save".to_string(),
+        "--force".to_string(),
+        "--no-audit".to_string(),
+        "--no-fund".to_string(),
+        "--prefix".to_string(),
+        tools_dir.to_string_lossy().into_owned(),
         pnpm_spec,
         "dugite".to_string(),
     ];
