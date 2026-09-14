@@ -5,12 +5,13 @@ use serde::Deserialize;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::{
-    env,
-    env::consts::EXE_SUFFIX,
+    env::{self, consts::EXE_SUFFIX},
     fs,
     io::Cursor,
     path::{Path, PathBuf},
     process::Command,
+    thread::sleep,
+    time::Duration,
 };
 use tempfile::TempDir;
 use walkdir::WalkDir;
@@ -629,6 +630,12 @@ fn ensure_installer_tools() -> Result<InstallerTools> {
         .join("pnpm")
         .join("bin")
         .join("pnpm.cjs");
+
+    let mut attempts = 0;
+    while !pnpm_cli.is_file() && attempts < 5 {
+        sleep(Duration::from_millis(400));
+        attempts += 1;
+    }
     if !pnpm_cli.is_file() {
         bail!(
             "sandboxed pnpm executable not found at {}; provisioning did not complete",
@@ -978,7 +985,8 @@ fn configure_loopback_startup(
 
     let launcher_file = startup_dir.join("key-intercept-loopback.cmd");
     let tray_script_file = loopback_install_dir()?.join("key-intercept-loopback-tray.ps1");
-    let tray_launcher_file = loopback_install_dir()?.join("key-intercept-loopback-tray-launcher.vbs");
+    let tray_launcher_file =
+        loopback_install_dir()?.join("key-intercept-loopback-tray-launcher.vbs");
     if let Some(parent) = tray_script_file.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
@@ -1030,8 +1038,7 @@ fn to_vbscript_double_quoted_literal(value: &str) -> String {
 
 #[cfg(windows)]
 fn build_windows_tray_launcher_vbs(tray_script_file: &Path) -> String {
-    let tray_script_path =
-        to_vbscript_double_quoted_literal(&tray_script_file.to_string_lossy());
+    let tray_script_path = to_vbscript_double_quoted_literal(&tray_script_file.to_string_lossy());
     format!(
         "Set shell = CreateObject(\"WScript.Shell\")\r\nshell.Run \"powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"\"{}\"\"\", 0, False\r\n",
         tray_script_path
@@ -1056,8 +1063,9 @@ fn build_windows_tray_script(
     let loopback = to_powershell_single_quoted_literal(&loopback_binary.to_string_lossy());
     let owner = to_powershell_single_quoted_literal(owner_discord_id);
     let config = to_powershell_single_quoted_literal(&config_path.to_string_lossy());
-    let log_path =
-        to_powershell_single_quoted_literal(&config_path.with_file_name("loopback.log").to_string_lossy());
+    let log_path = to_powershell_single_quoted_literal(
+        &config_path.with_file_name("loopback.log").to_string_lossy(),
+    );
     let error_log_path = to_powershell_single_quoted_literal(
         &config_path
             .with_file_name("loopback-error.log")
@@ -1554,7 +1562,11 @@ mod tests {
             "C:\\Users\\me\\AppData\\Local\\Programs\\key-intercept\\key-intercept-loopback-tray.ps1",
         ));
         assert!(script.contains("CreateObject(\"WScript.Shell\")"));
-        assert!(script.contains("powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File"));
+        assert!(
+            script.contains(
+                "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File"
+            )
+        );
         assert!(script.contains("key-intercept-loopback-tray.ps1"));
     }
 
@@ -1582,8 +1594,10 @@ mod tests {
         assert!(script.contains(
             "Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit', '-Command', $tailScript)"
         ));
-        assert!(script.contains(
-            "Get-Content -LiteralPath @('$logPath', '$errorLogPath') -Tail 200 -Wait"
-        ));
+        assert!(
+            script.contains(
+                "Get-Content -LiteralPath @('$logPath', '$errorLogPath') -Tail 200 -Wait"
+            )
+        );
     }
 }
