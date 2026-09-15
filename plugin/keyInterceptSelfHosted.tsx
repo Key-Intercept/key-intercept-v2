@@ -1972,47 +1972,6 @@ function ConfigPanel(props: any) {
                     </div>
 
                     <div style={sectionStyle}>
-                        <h4 style={sectionHeaderStyle}>Scope Filter</h4>
-                        <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
-                            <label>
-                                Filter mode
-                                <select
-                                    style={inputStyle}
-                                    value={editableConfig.filter_mode}
-                                    onChange={e => {
-                                        const nextMode: ScopeFilterMode = e.currentTarget.value === "blacklist" ? "blacklist" : "whitelist";
-                                        setEditableConfig(prev => ({ ...prev, filter_mode: nextMode }));
-                                    }}
-                                >
-                                    <option value="whitelist">Whitelist mode (only listed servers/DMs are transformed)</option>
-                                    <option value="blacklist">Blacklist mode (listed servers/DMs are skipped)</option>
-                                </select>
-                            </label>
-                            <p style={{ margin: 0, color: "#b5bac1" }}>
-                                Use the server or DM right-click menu to add/remove entries from the shared scope list.
-                            </p>
-                            <ul style={{ marginBottom: 0 }}>
-                                {getSharedScopeList(editableConfig).map((item, index) => (
-                                    <li key={`${item.discord_id}-${item.server_name}-${index}`} style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
-                                        <span>{item.server_name || item.discord_id}</span>
-                                        <button
-                                            style={{ ...buttonStyle, background: "#da373c", borderColor: "#da373c" }}
-                                            onClick={() => {
-                                                setEditableConfig(prev => {
-                                                    const nextList = getSharedScopeList(prev).filter((_, itemIndex) => itemIndex !== index);
-                                                    return { ...prev, whitelist: nextList, blacklist: nextList };
-                                                });
-                                            }}
-                                        >
-                                            Remove
-                                        </button>
-                                    </li>
-                                ))}
-                            </ul>
-                        </div>
-                    </div>
-
-                    <div style={sectionStyle}>
                         <h4 style={sectionHeaderStyle}>Custom Rules</h4>
                         <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
                             <p style={{ margin: 0, color: "#b5bac1" }}>{editableConfig.rules_groups.length} group(s), {editableConfig.rules.length} rule(s)</p>
@@ -2164,7 +2123,47 @@ function ConfigPanel(props: any) {
             )}
 
             {isOwnProfile && (
-                <>
+            <>
+                <div style={sectionStyle}>
+                        <h4 style={sectionHeaderStyle}>Scope Filter</h4>
+                        <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
+                            <label>
+                                Filter mode
+                                <select
+                                    style={inputStyle}
+                                    value={editableConfig.filter_mode}
+                                    onChange={e => {
+                                        const nextMode: ScopeFilterMode = e.currentTarget.value === "blacklist" ? "blacklist" : "whitelist";
+                                        setEditableConfig(prev => ({ ...prev, filter_mode: nextMode }));
+                                    }}
+                                >
+                                    <option value="whitelist">Whitelist mode (only listed servers/DMs are transformed)</option>
+                                    <option value="blacklist">Blacklist mode (listed servers/DMs are skipped)</option>
+                                </select>
+                            </label>
+                            <p style={{ margin: 0, color: "#b5bac1" }}>
+                                Use the server or DM right-click menu to add/remove entries from the shared scope list.
+                            </p>
+                            <ul style={{ marginBottom: 0 }}>
+                                {getSharedScopeList(editableConfig).map((item, index) => (
+                                    <li key={`${item.discord_id}-${item.server_name}-${index}`} style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
+                                        <span>{item.server_name || item.discord_id}</span>
+                                        <button
+                                            style={{ ...buttonStyle, background: "#da373c", borderColor: "#da373c" }}
+                                            onClick={() => {
+                                                setEditableConfig(prev => {
+                                                    const nextList = getSharedScopeList(prev).filter((_, itemIndex) => itemIndex !== index);
+                                                    return { ...prev, whitelist: nextList, blacklist: nextList };
+                                                });
+                                            }}
+                                        >
+                                            Remove
+                                        </button>
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    </div>
                     <div style={sectionStyle}>
                         <h4 style={sectionHeaderStyle}>Allowed Editors</h4>
                         <div style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
