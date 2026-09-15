@@ -16,6 +16,7 @@ pub struct Config {
     pub censored_end: String,
     pub censored_replacement: String,
     pub debug: bool,
+    pub blocked_by_dom: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,6 +116,7 @@ impl Default for LocalConfig {
                 censored_end: "1970-01-01T00:00:00.000Z".to_string(),
                 censored_replacement: "*".to_string(),
                 debug: false,
+                blocked_by_dom: false,
             },
             rules: vec![],
             rules_groups: vec![],
