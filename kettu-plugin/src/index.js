@@ -726,12 +726,26 @@ function addAllowedEditor(ownerId, editorId) {
     if (!validateDiscordId(editorId)) throw new Error("Editor ID must be a numeric Discord ID");
     const state = readMobileState(ownerId);
     if (state.allowed_editors.includes(editorId)) return Promise.resolve();
-    return writeMobileState({
+    writeMobileState({
         ...state,
         allowed_editors: [...state.allowed_editors, editorId],
         revision: state.revision + 1,
         last_writer_id: ownerId
-    }) && uploadMobileSnapshot(currentRelayUrl(), ownerId);
+    });
+    return uploadMobileSnapshot(currentRelayUrl(), ownerId).catch(err => {
+        if (parseErrorStatusCode(err) !== 409) throw err;
+        return syncInAppLoopback(currentRelayUrl(), ownerId).catch(() => null).then(() => {
+            const latest = readMobileState(ownerId);
+            if (latest.allowed_editors.includes(editorId)) return;
+            writeMobileState({
+                ...latest,
+                allowed_editors: [...latest.allowed_editors, editorId],
+                revision: latest.revision + 1,
+                last_writer_id: ownerId
+            });
+            return uploadMobileSnapshot(currentRelayUrl(), ownerId);
+        });
+    });
 }
 
 function removeAllowedEditor(ownerId, editorId) {
@@ -1231,7 +1245,7 @@ function resolveReactHook(React, hookName) {
 function ConfigPanel(props) {
     const { React, ReactNative } = getReactTools();
     if (!React || !ReactNative) return null;
-    const { ScrollView, View, Text, TextInput, Pressable } = ReactNative;
+    const { ScrollView, View, Text, TextInput, Pressable, Dimensions } = ReactNative;
     if (!ScrollView || !View || !Text || !TextInput || !Pressable) return null;
     const h = resolveReactHook(React, "createElement");
     const useState = resolveReactHook(React, "useState");
@@ -1249,6 +1263,14 @@ function ConfigPanel(props) {
     const panelOpenInfo = getProfilePanelOpenInfo(props);
     const isPanelOpen = panelOpenInfo.isOpen;
     const hasExplicitPanelOpenState = panelOpenInfo.hasExplicitState;
+    const requestedPanelHeight = Number(props?.maxPanelHeight);
+    const windowHeight = Number(Dimensions?.get?.("window")?.height);
+    const defaultMaxPanelHeight = Number.isFinite(windowHeight)
+        ? Math.max(300, Math.floor(windowHeight * 0.82))
+        : 720;
+    const maxPanelHeight = Number.isFinite(requestedPanelHeight) && requestedPanelHeight > 0
+        ? Math.floor(requestedPanelHeight)
+        : defaultMaxPanelHeight;
 
     let relayUrlState;
     try {
@@ -1816,11 +1838,13 @@ function ConfigPanel(props) {
     return h(
         ScrollView,
         {
-            style: { maxHeight: 720, width: "100%" },
+            style: { maxHeight: maxPanelHeight, width: "100%", flexShrink: 1 },
+            keyboardShouldPersistTaps: "handled",
             contentContainerStyle: {
                 backgroundColor: "#313338",
                 borderRadius: 12,
-                padding: 12
+                padding: 12,
+                paddingBottom: 20
             }
         },
         h(Text, { style: { color: "#f2f3f5", fontSize: 16, fontWeight: "700" } }, "key-intercept control center"),
@@ -2099,7 +2123,7 @@ function ConfigPanel(props) {
 function ConfigLauncherPanel(props) {
     const { React, ReactNative } = getReactTools();
     if (!React || !ReactNative) return ConfigPanel(props);
-    const { View, Text, TextInput, Pressable } = ReactNative;
+    const { View, Text, TextInput, Pressable, Dimensions } = ReactNative;
     if (!View || !Text || !TextInput || !Pressable) return ConfigPanel(props);
     const h = resolveReactHook(React, "createElement");
     const useState = resolveReactHook(React, "useState");
@@ -2119,6 +2143,10 @@ function ConfigLauncherPanel(props) {
     const [launcherStatus, setLauncherStatus] = useState("");
     const [launcherRevision, setLauncherRevision] = useState(0);
     const lastConsumedLaunchRef = useRef("");
+    const windowHeight = Number(Dimensions?.get?.("window")?.height);
+    const launcherPanelHeight = Number.isFinite(windowHeight)
+        ? Math.max(260, Math.floor(windowHeight - 260))
+        : 560;
 
     useEffect(() => {
         const pending = consumePendingProfileEditorLaunch();
@@ -2206,6 +2234,7 @@ function ConfigLauncherPanel(props) {
             ...props,
             forcedProfileUserId: selectedUserId,
             entrypoint: `settings-launcher:${launcherRevision}`,
+            maxPanelHeight: launcherPanelHeight,
             isOpen: true
         })
     );
