@@ -1815,7 +1815,7 @@ function ConfigPanel(props: any) {
                             setEditableConfig(prev => ({ ...prev, config: { ...prev.config, blocked_by_dom: nextValue } }));
                         }}
                     />
-                    Block_subs_control
+                    Block subs control
                 </label>
                 )}
             </div>
