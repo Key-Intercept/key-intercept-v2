@@ -1281,6 +1281,7 @@ function ConfigPanel(props) {
     const [relayUrl, setRelayUrl] = relayUrlState;
     const [status, setStatus] = useState("");
     const [newEditorId, setNewEditorId] = useState("");
+    const [manualScopeId, setManualScopeId] = useState("");
     const [allowedEditors, setAllowedEditors] = useState(() => {
         if (!validateDiscordId(activeUserId)) return [];
         return getAllowedEditors(activeUserId).allowed_editors.sort();
@@ -1660,6 +1661,30 @@ function ConfigPanel(props) {
 
     const scopeList = getSharedScopeList(editableConfig);
 
+    const addManualScopeId = useCallback(() => {
+        const nextId = manualScopeId.trim();
+        if (!validateDiscordId(nextId)) {
+            setStatus("Enter a numeric server/channel ID");
+            return;
+        }
+        let duplicate = false;
+        setEditableConfig(prev => {
+            const nextList = getSharedScopeList(prev);
+            if (nextList.some(item => item.discord_id === nextId)) {
+                duplicate = true;
+                return prev;
+            }
+            const updated = [...nextList, { server_name: "", discord_id: nextId }];
+            return { ...prev, whitelist: updated, blacklist: updated };
+        });
+        if (duplicate) {
+            setStatus(`Scope ID already added: ${nextId}`);
+            return;
+        }
+        setManualScopeId("");
+        setStatus(`Added scope ID ${nextId}`);
+    }, [manualScopeId]);
+
     const rulesEditor = !isRulesEditorOpen ? null : h(
         View,
         { style: cardStyle },
@@ -2020,7 +2045,17 @@ function ConfigPanel(props) {
                 button("Whitelist", () => setEditableConfig(prev => ({ ...prev, filter_mode: "whitelist" })), { active: editableConfig.filter_mode === "whitelist", noTopMargin: true, key: "scope-whitelist" }),
                 button("Blacklist", () => setEditableConfig(prev => ({ ...prev, filter_mode: "blacklist" })), { active: editableConfig.filter_mode === "blacklist", noTopMargin: true, key: "scope-blacklist" })
             ),
-            h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, "Use server/DM context menu for quick add/remove. You can remove entries here."),
+            h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, "Use server/DM context menu for quick add/remove. On mobile you can also add a server ID manually."),
+            h(TextInput, {
+                value: manualScopeId,
+                onChangeText: setManualScopeId,
+                placeholder: "Server or channel ID",
+                keyboardType: "numeric",
+                autoCapitalize: "none",
+                autoCorrect: false,
+                style: inputStyle
+            }),
+            button("Add ID", addManualScopeId, { key: "scope-add-id" }),
             scopeList.length
                 ? scopeList.map((item, index) => h(
                     View,
