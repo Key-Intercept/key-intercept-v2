@@ -34,6 +34,8 @@ pub struct Rule {
 #[serde(deny_unknown_fields)]
 pub struct RuleGroup {
     pub id: i64,
+    #[serde(default = "default_group_name")]
+    pub name: String,
     #[serde(default = "default_group_timeout_end")]
     pub timeout_end: String,
     #[serde(default = "default_true")]
@@ -188,6 +190,10 @@ pub fn is_discord_id(value: &str) -> bool {
 
 fn default_group_timeout_end() -> String {
     "9999-12-31T23:59:59.000Z".to_string()
+}
+
+fn default_group_name() -> String {
+    "Unnamed Group".to_string()
 }
 
 fn default_true() -> bool {
