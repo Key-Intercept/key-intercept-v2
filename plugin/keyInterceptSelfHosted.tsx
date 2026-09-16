@@ -487,6 +487,21 @@ function normalizeDiscordId(value: unknown): string {
     return isDiscordId(normalized) ? normalized : "";
 }
 
+function resolveSessionUserId(props: any): string {
+    const candidates = [
+        currentUser()?.id,
+        props?.currentUserId,
+        props?.viewerId,
+        props?.requesterId,
+        props?.account?.id
+    ];
+    for (const candidate of candidates) {
+        const normalized = normalizeDiscordId(candidate);
+        if (normalized) return normalized;
+    }
+    return "";
+}
+
 function getStorageBackend() {
     try {
         if (typeof window !== "undefined" && window.localStorage) return window.localStorage;
@@ -691,15 +706,30 @@ function formatConfigAccessError(error: unknown, targetUserId: string): string {
     return "Unable to load this profile config.";
 }
 
+function getIdentityValidationError(requesterId: string, targetUserId: string, isOwnProfile: boolean): string | null {
+    if (!isDiscordId(requesterId)) {
+        return "Unable to determine your Discord account for this session. Close and reopen the profile, then try again.";
+    }
+    if (!isOwnProfile && !isDiscordId(targetUserId)) {
+        return "Unable to determine the viewed profile. Reopen the target profile and try again.";
+    }
+    return null;
+}
+
 async function readRemoteConfig(relayUrl: string, requesterId: string, targetUserId: string): Promise<LocalConfig> {
     const normalizedRequesterId = normalizeDiscordId(requesterId);
     const normalizedTargetUserId = normalizeDiscordId(targetUserId);
     if (!normalizedRequesterId || !normalizedTargetUserId) {
+        console.warn(`${LOG_PREFIX} readRemoteConfig:invalid_ids`, { requesterId, targetUserId });
         const err = new Error("Relay config read failed: 400") as Error & { status?: number };
         err.status = 400;
         throw err;
     }
-    console.info(`${LOG_PREFIX} readRemoteConfig:start`, { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId });
+    console.info(`${LOG_PREFIX} readRemoteConfig:start`, {
+        requesterId: normalizedRequesterId,
+        targetUserId: normalizedTargetUserId,
+        relayUrl: relayBaseUrl(relayUrl)
+    });
     const response = await fetch(
         `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/config?requester_id=${encodeURIComponent(normalizedRequesterId)}`,
         { cache: "no-store" }
@@ -733,10 +763,16 @@ async function requestRemoteAccess(relayUrl: string, requesterId: string, target
     const normalizedRequesterId = normalizeDiscordId(requesterId);
     const normalizedTargetUserId = normalizeDiscordId(targetUserId);
     if (!normalizedRequesterId || !normalizedTargetUserId) {
+        console.warn(`${LOG_PREFIX} requestRemoteAccess:invalid_ids`, { requesterId, targetUserId });
         const err = new Error("Relay access request failed: 400") as Error & { status?: number };
         err.status = 400;
         throw err;
     }
+    console.info(`${LOG_PREFIX} requestRemoteAccess:start`, {
+        requesterId: normalizedRequesterId,
+        targetUserId: normalizedTargetUserId,
+        relayUrl: relayBaseUrl(relayUrl)
+    });
     const response = await fetch(`${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/access-requests`, {
         method: "POST",
         headers: {
@@ -744,7 +780,19 @@ async function requestRemoteAccess(relayUrl: string, requesterId: string, target
         },
         body: JSON.stringify({ requester_id: normalizedRequesterId })
     });
-    if (!response.ok) throw new Error(`Relay access request failed: ${response.status}`);
+    if (!response.ok) {
+        console.error(`${LOG_PREFIX} requestRemoteAccess:failed`, {
+            requesterId: normalizedRequesterId,
+            targetUserId: normalizedTargetUserId,
+            status: response.status
+        });
+        throw new Error(`Relay access request failed: ${response.status}`);
+    }
+    console.info(`${LOG_PREFIX} requestRemoteAccess:success`, {
+        requesterId: normalizedRequesterId,
+        targetUserId: normalizedTargetUserId,
+        status: response.status
+    });
 }
 
 async function getAccessRequests(relayUrl: string, ownerId: string) {
@@ -912,12 +960,20 @@ function formatTimeoutStatus(endIso: string, nowMs: number): string {
 function getProfileUserId(props: any): string | null {
     const candidates = [
         props?.user?.id,
+        props?.user?.user?.id,
         props?.profileUserId,
         props?.userId,
+        props?.profile?.id,
+        props?.profile?.user?.id,
         props?.profile?.userId,
-        props?.displayProfile?.userId
+        props?.displayProfile?.userId,
+        props?.account?.id
     ];
-    return candidates.find((id: unknown): id is string => typeof id === "string" && id.length > 0) ?? null;
+    for (const candidate of candidates) {
+        const normalized = normalizeDiscordId(candidate);
+        if (normalized) return normalized;
+    }
+    return null;
 }
 
 function getProfilePanelOpenInfo(props: any): { isOpen: boolean; hasExplicitState: boolean } {
@@ -1517,9 +1573,9 @@ function buildScopeTargetFromContext(props: any): ScopeTarget | null {
 }
 
 function ConfigPanel(props: any) {
-    const activeUserId = currentUser().id;
+    const activeUserId = resolveSessionUserId(props);
     const profileUserId = getProfileUserId(props) ?? activeUserId;
-    const isOwnProfile = profileUserId === activeUserId;
+    const isOwnProfile = isDiscordId(profileUserId) && profileUserId === activeUserId;
     const panelOpenInfo = getProfilePanelOpenInfo(props);
     const isPanelOpen = panelOpenInfo.isOpen;
     const hasExplicitPanelOpenState = panelOpenInfo.hasExplicitState;
@@ -1591,6 +1647,13 @@ function ConfigPanel(props: any) {
         refreshInFlightRef.current = true;
         console.info(`${LOG_PREFIX} refresh:start`, { activeUserId, profileUserId, isOwnProfile });
         try {
+            const identityError = getIdentityValidationError(activeUserId, profileUserId, isOwnProfile);
+            if (identityError) {
+                setCanViewRemote(false);
+                setStatus(identityError);
+                console.warn(`${LOG_PREFIX} refresh:blocked_invalid_identity`, { activeUserId, profileUserId, isOwnProfile });
+                return;
+            }
             if (isOwnProfile) {
                 if (activeLoopbackTransport === "in_app_mobile") {
                     await syncInAppLoopback(settings.store.relayUrl, activeUserId).catch(() => {});
@@ -1897,6 +1960,11 @@ function ConfigPanel(props: any) {
                     <button
                         style={buttonStyle}
                         onClick={async () => {
+                            const identityError = getIdentityValidationError(activeUserId, profileUserId, false);
+                            if (identityError) {
+                                setStatus(identityError);
+                                return;
+                            }
                             try {
                                 await requestRemoteAccess(settings.store.relayUrl, activeUserId, profileUserId);
                                 setStatus(`Requested config access from ${profileUserId}`);

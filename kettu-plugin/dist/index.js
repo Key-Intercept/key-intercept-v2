@@ -532,6 +532,26 @@ function validateDiscordId(value) {
     return typeof value === "string" && /^\d+$/.test(value);
 }
 
+function normalizeDiscordId(value) {
+    const normalized = String(value ?? "").trim();
+    return validateDiscordId(normalized) ? normalized : "";
+}
+
+function resolveSessionUserId(props) {
+    const candidates = [
+        currentUser()?.id,
+        props?.currentUserId,
+        props?.viewerId,
+        props?.requesterId,
+        props?.account?.id
+    ];
+    for (let i = 0; i < candidates.length; i++) {
+        const normalized = normalizeDiscordId(candidates[i]);
+        if (normalized) return normalized;
+    }
+    return "";
+}
+
 function requestProfileEditorLaunch(targetUserId, source) {
     if (!validateDiscordId(targetUserId)) {
         console.log(`${LOG_PREFIX} launcher ignored invalid target`, { targetUserId, source });
@@ -646,17 +666,24 @@ function saveLocalConfig(ownerId, config, editorId = ownerId) {
 }
 
 function pushRemoteConfig(relayUrl, editorId, targetUserId, config) {
-    debugLog("pushRemoteConfig:start", { editorId, targetUserId, relayUrl: relayBaseUrl(relayUrl) });
-    return fetch(`${relayBaseUrl(relayUrl)}/users/${targetUserId}/config`, {
+    const normalizedEditorId = normalizeDiscordId(editorId);
+    const normalizedTargetUserId = normalizeDiscordId(targetUserId);
+    if (!normalizedEditorId || !normalizedTargetUserId) {
+        const err = new Error("Relay update failed: 400");
+        err.status = 400;
+        return Promise.reject(err);
+    }
+    debugLog("pushRemoteConfig:start", { editorId: normalizedEditorId, targetUserId: normalizedTargetUserId, relayUrl: relayBaseUrl(relayUrl) });
+    return fetch(`${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/config`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-            editor_id: editorId,
+            editor_id: normalizedEditorId,
             config: mergeLocalConfig(config)
         })
     }).then(response => {
         if (!response.ok) throw new Error(`Relay update failed: ${response.status}`);
-        debugLog("pushRemoteConfig:success", { editorId, targetUserId, status: response.status });
+        debugLog("pushRemoteConfig:success", { editorId: normalizedEditorId, targetUserId: normalizedTargetUserId, status: response.status });
     });
 }
 
@@ -689,10 +716,27 @@ function formatConfigAccessError(error, targetUserId) {
     return "Unable to load this profile config.";
 }
 
+function getIdentityValidationError(requesterId, targetUserId, isOwnProfile) {
+    if (!validateDiscordId(requesterId)) {
+        return "Unable to determine your Discord account for this session. Close and reopen the profile, then try again.";
+    }
+    if (!isOwnProfile && !validateDiscordId(targetUserId)) {
+        return "Unable to determine the viewed profile. Reopen the target profile and try again.";
+    }
+    return null;
+}
+
 function readRemoteConfig(relayUrl, requesterId, targetUserId) {
-    debugLog("readRemoteConfig:start", { requesterId, targetUserId, relayUrl: relayBaseUrl(relayUrl) });
+    const normalizedRequesterId = normalizeDiscordId(requesterId);
+    const normalizedTargetUserId = normalizeDiscordId(targetUserId);
+    if (!normalizedRequesterId || !normalizedTargetUserId) {
+        const err = new Error("Relay config read failed: 400");
+        err.status = 400;
+        return Promise.reject(err);
+    }
+    debugLog("readRemoteConfig:start", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, relayUrl: relayBaseUrl(relayUrl) });
     return fetch(
-        `${relayBaseUrl(relayUrl)}/users/${targetUserId}/config?requester_id=${encodeURIComponent(requesterId)}`,
+        `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/config?requester_id=${encodeURIComponent(normalizedRequesterId)}`,
         { cache: "no-store" }
     ).then(response => {
         if (!response.ok) {
@@ -704,35 +748,52 @@ function readRemoteConfig(relayUrl, requesterId, targetUserId) {
                 const status = deriveRelayConfigReadStatus(response.status, payload);
                 const err = new Error(`Relay config read failed: ${status}`);
                 err.status = status;
-                debugLog("readRemoteConfig:failed", { requesterId, targetUserId, status });
+                debugLog("readRemoteConfig:failed", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, status });
                 throw err;
             });
         }
-        debugLog("readRemoteConfig:success", { requesterId, targetUserId, status: response.status });
+        debugLog("readRemoteConfig:success", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, status: response.status });
         return response.json();
     }).then(payload => mergeLocalConfig(payload?.config ?? payload));
 }
 
 function requestRemoteAccess(relayUrl, requesterId, targetUserId) {
-    debugLog("requestRemoteAccess:start", { requesterId, targetUserId, relayUrl: relayBaseUrl(relayUrl) });
-    return fetch(`${relayBaseUrl(relayUrl)}/users/${targetUserId}/access-requests`, {
+    const normalizedRequesterId = normalizeDiscordId(requesterId);
+    const normalizedTargetUserId = normalizeDiscordId(targetUserId);
+    if (!normalizedRequesterId || !normalizedTargetUserId) {
+        debugLog("requestRemoteAccess:invalid_ids", { requesterId, targetUserId });
+        const err = new Error("Relay access request failed: 400");
+        err.status = 400;
+        return Promise.reject(err);
+    }
+    debugLog("requestRemoteAccess:start", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, relayUrl: relayBaseUrl(relayUrl) });
+    return fetch(`${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/access-requests`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ requester_id: requesterId })
+        body: JSON.stringify({ requester_id: normalizedRequesterId })
     }).then(response => {
-        if (!response.ok) throw new Error(`Relay access request failed: ${response.status}`);
-        debugLog("requestRemoteAccess:success", { requesterId, targetUserId, status: response.status });
+        if (!response.ok) {
+            debugLog("requestRemoteAccess:failed", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, status: response.status });
+            throw new Error(`Relay access request failed: ${response.status}`);
+        }
+        debugLog("requestRemoteAccess:success", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, status: response.status });
     });
 }
 
 function getAccessRequests(relayUrl, ownerId) {
-    debugLog("getAccessRequests:start", { ownerId, relayUrl: relayBaseUrl(relayUrl) });
+    const normalizedOwnerId = normalizeDiscordId(ownerId);
+    if (!normalizedOwnerId) {
+        const err = new Error("Failed loading access requests: 400");
+        err.status = 400;
+        return Promise.reject(err);
+    }
+    debugLog("getAccessRequests:start", { ownerId: normalizedOwnerId, relayUrl: relayBaseUrl(relayUrl) });
     return fetch(
-        `${relayBaseUrl(relayUrl)}/users/${ownerId}/access-requests?requester_id=${encodeURIComponent(ownerId)}`,
+        `${relayBaseUrl(relayUrl)}/users/${normalizedOwnerId}/access-requests?requester_id=${encodeURIComponent(normalizedOwnerId)}`,
         { cache: "no-store" }
     ).then(response => {
         if (!response.ok) throw new Error(`Failed loading access requests: ${response.status}`);
-        debugLog("getAccessRequests:success", { ownerId, status: response.status });
+        debugLog("getAccessRequests:success", { ownerId: normalizedOwnerId, status: response.status });
         return response.json();
     }).then(payload => ({
         requests: Array.isArray(payload?.requests) ? payload.requests.filter(validateDiscordId) : []
@@ -740,28 +801,42 @@ function getAccessRequests(relayUrl, ownerId) {
 }
 
 function approveAccessRequest(relayUrl, ownerId, requesterId) {
-    debugLog("approveAccessRequest:start", { ownerId, requesterId, relayUrl: relayBaseUrl(relayUrl) });
+    const normalizedOwnerId = normalizeDiscordId(ownerId);
+    const normalizedRequesterId = normalizeDiscordId(requesterId);
+    if (!normalizedOwnerId || !normalizedRequesterId) {
+        const err = new Error("Failed approving access request: 400");
+        err.status = 400;
+        return Promise.reject(err);
+    }
+    debugLog("approveAccessRequest:start", { ownerId: normalizedOwnerId, requesterId: normalizedRequesterId, relayUrl: relayBaseUrl(relayUrl) });
     return fetch(
-        `${relayBaseUrl(relayUrl)}/users/${ownerId}/access-requests/${encodeURIComponent(requesterId)}/approve`,
+        `${relayBaseUrl(relayUrl)}/users/${normalizedOwnerId}/access-requests/${encodeURIComponent(normalizedRequesterId)}/approve`,
         {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ owner_id: ownerId })
+            body: JSON.stringify({ owner_id: normalizedOwnerId })
         }
     ).then(response => {
         if (!response.ok) throw new Error(`Failed approving access request: ${response.status}`);
-        debugLog("approveAccessRequest:success", { ownerId, requesterId, status: response.status });
+        debugLog("approveAccessRequest:success", { ownerId: normalizedOwnerId, requesterId: normalizedRequesterId, status: response.status });
     });
 }
 
 function denyAccessRequest(relayUrl, ownerId, requesterId) {
-    debugLog("denyAccessRequest:start", { ownerId, requesterId, relayUrl: relayBaseUrl(relayUrl) });
+    const normalizedOwnerId = normalizeDiscordId(ownerId);
+    const normalizedRequesterId = normalizeDiscordId(requesterId);
+    if (!normalizedOwnerId || !normalizedRequesterId) {
+        const err = new Error("Failed denying access request: 400");
+        err.status = 400;
+        return Promise.reject(err);
+    }
+    debugLog("denyAccessRequest:start", { ownerId: normalizedOwnerId, requesterId: normalizedRequesterId, relayUrl: relayBaseUrl(relayUrl) });
     return fetch(
-        `${relayBaseUrl(relayUrl)}/users/${ownerId}/access-requests/${encodeURIComponent(requesterId)}?requester_id=${encodeURIComponent(ownerId)}`,
+        `${relayBaseUrl(relayUrl)}/users/${normalizedOwnerId}/access-requests/${encodeURIComponent(normalizedRequesterId)}?requester_id=${encodeURIComponent(normalizedOwnerId)}`,
         { method: "DELETE" }
     ).then(response => {
         if (!response.ok) throw new Error(`Failed denying access request: ${response.status}`);
-        debugLog("denyAccessRequest:success", { ownerId, requesterId, status: response.status });
+        debugLog("denyAccessRequest:success", { ownerId: normalizedOwnerId, requesterId: normalizedRequesterId, status: response.status });
     });
 }
 
@@ -1289,8 +1364,8 @@ function getProfileUserId(props) {
         props?.account?.id
     ];
     for (let i = 0; i < candidates.length; i++) {
-        const value = candidates[i];
-        if (typeof value === "string" && value.length > 0) return value;
+        const normalized = normalizeDiscordId(candidates[i]);
+        if (normalized) return normalized;
     }
     return null;
 }
@@ -1343,13 +1418,13 @@ function ConfigPanel(props) {
     const useRef = resolveReactHook(React, "useRef");
     const useCallback = resolveReactHook(React, "useCallback") ?? (callback => callback);
     if (!h || !useState || !useEffect || !useRef) return null;
-    const activeUserId = currentUser().id;
+    const activeUserId = resolveSessionUserId(props);
     const forcedProfileUserId = typeof props?.forcedProfileUserId === "string" && props.forcedProfileUserId.length > 0
         ? props.forcedProfileUserId
         : null;
     const profileUserId = forcedProfileUserId ?? getProfileUserId(props) ?? activeUserId;
     const entrypoint = typeof props?.entrypoint === "string" ? props.entrypoint : "unknown";
-    const isOwnProfile = profileUserId === activeUserId;
+    const isOwnProfile = validateDiscordId(profileUserId) && profileUserId === activeUserId;
     const panelOpenInfo = getProfilePanelOpenInfo(props);
     const isPanelOpen = panelOpenInfo.isOpen;
     const hasExplicitPanelOpenState = panelOpenInfo.hasExplicitState;
@@ -1417,11 +1492,18 @@ function ConfigPanel(props) {
     }, []);
 
     const refresh = useCallback(async () => {
-        if (refreshInFlightRef.current || !isPanelOpen || !activeUserId) return;
+        if (refreshInFlightRef.current || !isPanelOpen) return;
         refreshInFlightRef.current = true;
         const nextRelayUrl = currentRelayUrl();
         setRelayUrl(nextRelayUrl);
         try {
+            const identityError = getIdentityValidationError(activeUserId, profileUserId, isOwnProfile);
+            if (identityError) {
+                setCanViewRemote(false);
+                setStatus(identityError);
+                debugLog("refresh:blocked_invalid_identity", { activeUserId, profileUserId, isOwnProfile });
+                return;
+            }
             if (isOwnProfile) {
                 let loadedRemote = false;
                 let syncedEditors = null;
@@ -2018,9 +2100,16 @@ function ConfigPanel(props) {
             View,
             null,
             h(Text, { style: { color: "#f2f3f5", marginTop: 6 } }, "You do not currently have permission to view this profile config."),
-            button("Request Access", () => requestRemoteAccess(currentRelayUrl(), activeUserId, profileUserId).then(() => {
-                setStatus(`Access request sent to ${profileUserId}. Ask them to open Key Intercept and approve the request.`);
-            }, err => setStatus(formatConfigAccessError(err, profileUserId))))
+            button("Request Access", () => {
+                const identityError = getIdentityValidationError(activeUserId, profileUserId, false);
+                if (identityError) {
+                    setStatus(identityError);
+                    return Promise.resolve();
+                }
+                return requestRemoteAccess(currentRelayUrl(), activeUserId, profileUserId).then(() => {
+                    setStatus(`Access request sent to ${profileUserId}. Ask them to open Key Intercept and approve the request.`);
+                }, err => setStatus(formatConfigAccessError(err, profileUserId)));
+            })
         )) : null,
 
         (isOwnProfile || canViewRemote) ? section("gag", "Gag", renderTimeoutControls("gag_end", "Gag timeout")) : null,
