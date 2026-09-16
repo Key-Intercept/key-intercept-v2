@@ -1845,7 +1845,7 @@ function ConfigPanel(props) {
             button("Save Relay URL", saveRelayUrl)
         )) : null,
         
-        (isOwnProfile && canViewRemote) ? section("Sub Contol", "Sub Control", h(
+        (!isOwnProfile && canViewRemote) ? section("Sub Contol", "Sub Control", h(
             View,
             null,
             h(View, { style: { marginTop: 6, flexDirection: "row", flexWrap: "wrap" } },
