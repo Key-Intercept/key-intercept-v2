@@ -1844,17 +1844,8 @@ function ConfigPanel(props) {
             }),
             button("Save Relay URL", saveRelayUrl)
         )) : null,
-
-        !isOwnProfile && !canViewRemote ? section("access-request", "Access", h(
-            View,
-            null,
-            h(Text, { style: { color: "#f2f3f5", marginTop: 6 } }, "You do not currently have permission to view this profile config."),
-            button("Request Access", () => requestRemoteAccess(currentRelayUrl(), activeUserId, profileUserId).then(() => {
-                setStatus(`Access request sent to ${profileUserId}`);
-            }, err => setStatus(formatConfigAccessError(err, profileUserId))))
-        )) : null,
         
-        (!isOwnProfile && canViewRemote) ? section("custom-rules", "Custom Rules", h(
+        /*(!isOwnProfile && canViewRemote) ? section("Sub Contol", "Sub Control", h(
             View,
             null,
             h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, `${editableConfig.rules_groups.length} group(s), ${editableConfig.rules.length} rule(s)`),
@@ -1869,7 +1860,16 @@ function ConfigPanel(props) {
                     }));
                 }, { active: editableConfig.config.blocked_by_dom, noTopMargin: true, key: "blocked_by_dom-toggle" })
             )
-        )
+        )*/
+
+        !isOwnProfile && !canViewRemote ? section("access-request", "Access", h(
+            View,
+            null,
+            h(Text, { style: { color: "#f2f3f5", marginTop: 6 } }, "You do not currently have permission to view this profile config."),
+            button("Request Access", () => requestRemoteAccess(currentRelayUrl(), activeUserId, profileUserId).then(() => {
+                setStatus(`Access request sent to ${profileUserId}`);
+            }, err => setStatus(formatConfigAccessError(err, profileUserId))))
+        )) : null,
 
         (isOwnProfile && !blocked_by_dom) || (!isOwnProfile && canViewRemote) ? section("gag", "Gag", renderTimeoutControls("gag_end", "Gag timeout")) : null,
 
