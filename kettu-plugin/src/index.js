@@ -1854,7 +1854,23 @@ function ConfigPanel(props) {
             }, err => setStatus(formatConfigAccessError(err, profileUserId))))
         )) : null,
         
-        
+        (!isOwnProfile && canViewRemote) ? section("custom-rules", "Custom Rules", h(
+            View,
+            null,
+            h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, `${editableConfig.rules_groups.length} group(s), ${editableConfig.rules.length} rule(s)`),
+            h(View, { style: { marginTop: 6, flexDirection: "row", flexWrap: "wrap" } },
+                button(editableConfig.config.blocked_by_dom ? "Sub Control Blocked" : "Sub Control Allowed", () => {
+                    setEditableConfig(prev => ({
+                        ...prev,
+                        config: {
+                            ...prev.config,
+                            blocked_by_dom: !prev.config.blocked_by_dom
+                        }
+                    }));
+                }, { active: editableConfig.config.blocked_by_dom, noTopMargin: true, key: "blocked_by_dom-toggle" })
+            )
+        )
+
         (isOwnProfile && !blocked_by_dom) || (!isOwnProfile && canViewRemote) ? section("gag", "Gag", renderTimeoutControls("gag_end", "Gag timeout")) : null,
 
         (isOwnProfile && !blocked_by_dom) || (!isOwnProfile && canViewRemote) ? section("pet", "Pet", h(
