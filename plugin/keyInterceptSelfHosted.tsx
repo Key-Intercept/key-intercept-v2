@@ -825,6 +825,15 @@ function parseNumericInput(
     return output;
 }
 
+function isDebugEnabled(): boolean {
+    return Boolean(interceptConfig?.config?.debug);
+}
+
+function debugLog(event: string, payload: unknown): void {
+    if (!isDebugEnabled()) return;
+    console.info(`${LOG_PREFIX} ${event}`, payload);
+}
+
 function createTimeoutAdjustmentDefaults(): Record<ModeTimeoutFieldKey, string> {
     return modeTimeoutFields.reduce((acc, field) => {
         acc[field.key] = "1";
@@ -1299,16 +1308,40 @@ function applyReplacements(msg: string, channelId: string): string {
     if (!interceptConfig?.config) return msg;
 
     const originalMsg = msg;
-    msg = applyRules(msg);
-    msg = applyUWU(msg);
-    msg = applyHorny(msg);
-    msg = applyPet(msg);
-    msg = applyBimbo(msg);
-    msg = applyCensored(msg);
-    msg = applyGag(msg);
+    const modeEligibility = {
+        rules: shouldApplyRules(interceptConfig.config),
+        uwu: shouldApplyUWU(interceptConfig.config),
+        horny: shouldApplyHorny(interceptConfig.config),
+        pet: shouldApplyPet(interceptConfig.config),
+        bimbo: shouldApplyBimbo(interceptConfig.config),
+        censored: shouldApplyCensored(interceptConfig.config),
+        gag: shouldApplyGag(interceptConfig.config),
+        drone: shouldApplyDrone(interceptConfig.config)
+    };
+    const modeResults: Array<{ name: string; eligible: boolean; changed: boolean }> = [];
+
+    const applyStep = (name: keyof typeof modeEligibility, transformer: (input: string) => string) => {
+        const before = msg;
+        msg = transformer(msg);
+        modeResults.push({
+            name,
+            eligible: modeEligibility[name],
+            changed: msg !== before
+        });
+    };
+
+    applyStep("rules", applyRules);
+    applyStep("uwu", applyUWU);
+    applyStep("horny", applyHorny);
+    applyStep("pet", applyPet);
+    applyStep("bimbo", applyBimbo);
+    applyStep("censored", applyCensored);
+    applyStep("gag", applyGag);
 
     const droneResult = applyDrone(msg, channelId);
+    const beforeDrone = msg;
     msg = droneResult.message;
+    modeResults.push({ name: "drone", eligible: modeEligibility.drone, changed: msg !== beforeDrone });
 
     if (droneResult.editPreviousMessage) {
         editPreviousMessage(
@@ -1317,6 +1350,16 @@ function applyReplacements(msg: string, channelId: string): string {
             droneResult.editPreviousMessage.newContent
         );
     }
+
+    debugLog("applyReplacements:result", {
+        channelId,
+        eligibility: modeEligibility,
+        modeResults,
+        petType: interceptConfig.config.pet_type,
+        petAmount: interceptConfig.config.pet_amount,
+        original: originalMsg,
+        transformed: msg
+    });
 
     if (interceptConfig.config.debug) {
         return `${msg}\n(original message: ${originalMsg})`;
@@ -2292,14 +2335,23 @@ const plugin = definePlugin({
 
         const scopeList = getSharedScopeList(interceptConfig);
         if (interceptConfig.filter_mode === "blacklist") {
-            if (scopeList.some(item => scopeItemMatches(item, scopeName, scopeId))) return;
+            if (scopeList.some(item => scopeItemMatches(item, scopeName, scopeId))) {
+                debugLog("onBeforeMessageSend:blocked_blacklist_scope", { channelId, scopeName, scopeId });
+                return;
+            }
         } else if (scopeList.length > 0) {
             const whitelistMatch = scopeList.some(item => scopeItemMatches(item, scopeName, scopeId));
-            if (scopeKnown && !whitelistMatch) return;
+            if (scopeKnown && !whitelistMatch) {
+                debugLog("onBeforeMessageSend:blocked_whitelist_scope", { channelId, scopeName, scopeId });
+                return;
+            }
         }
 
         const channelName = channel?.name?.toLowerCase?.() ?? "";
-        if (channelName.includes("sfw") && !channelName.includes("nsfw")) return;
+        if (channelName.includes("sfw") && !channelName.includes("nsfw")) {
+            debugLog("onBeforeMessageSend:blocked_sfw_channel", { channelId, channelName });
+            return;
+        }
 
         msg.content = applyReplacements(msg.content, channelId);
     },
