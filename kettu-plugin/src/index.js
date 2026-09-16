@@ -1860,7 +1860,7 @@ function ConfigPanel(props) {
                     }));
                 }, { active: editableConfig.config.blocked_by_dom, noTopMargin: true, key: "blocked_by_dom-toggle" })
             )
-        ),
+        )) : null,
 
         !isOwnProfile && !canViewRemote ? section("access-request", "Access", h(
             View,
