@@ -16,6 +16,7 @@ pub struct Config {
     pub censored_end: String,
     pub censored_replacement: String,
     pub debug: bool,
+    #[serde(default)]
     pub blocked_by_dom: bool,
 }
 
