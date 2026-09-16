@@ -537,6 +537,21 @@ function normalizeDiscordId(value) {
     return validateDiscordId(normalized) ? normalized : "";
 }
 
+function resolveSessionUserId(props) {
+    const candidates = [
+        currentUser()?.id,
+        props?.currentUserId,
+        props?.viewerId,
+        props?.requesterId,
+        props?.account?.id
+    ];
+    for (let i = 0; i < candidates.length; i++) {
+        const normalized = normalizeDiscordId(candidates[i]);
+        if (normalized) return normalized;
+    }
+    return "";
+}
+
 function requestProfileEditorLaunch(targetUserId, source) {
     if (!validateDiscordId(targetUserId)) {
         console.log(`${LOG_PREFIX} launcher ignored invalid target`, { targetUserId, source });
@@ -701,6 +716,16 @@ function formatConfigAccessError(error, targetUserId) {
     return "Unable to load this profile config.";
 }
 
+function getIdentityValidationError(requesterId, targetUserId, isOwnProfile) {
+    if (!validateDiscordId(requesterId)) {
+        return "Unable to determine your Discord account for this session. Close and reopen the profile, then try again.";
+    }
+    if (!isOwnProfile && !validateDiscordId(targetUserId)) {
+        return "Unable to determine the viewed profile. Reopen the target profile and try again.";
+    }
+    return null;
+}
+
 function readRemoteConfig(relayUrl, requesterId, targetUserId) {
     const normalizedRequesterId = normalizeDiscordId(requesterId);
     const normalizedTargetUserId = normalizeDiscordId(targetUserId);
@@ -736,6 +761,7 @@ function requestRemoteAccess(relayUrl, requesterId, targetUserId) {
     const normalizedRequesterId = normalizeDiscordId(requesterId);
     const normalizedTargetUserId = normalizeDiscordId(targetUserId);
     if (!normalizedRequesterId || !normalizedTargetUserId) {
+        debugLog("requestRemoteAccess:invalid_ids", { requesterId, targetUserId });
         const err = new Error("Relay access request failed: 400");
         err.status = 400;
         return Promise.reject(err);
@@ -746,7 +772,10 @@ function requestRemoteAccess(relayUrl, requesterId, targetUserId) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ requester_id: normalizedRequesterId })
     }).then(response => {
-        if (!response.ok) throw new Error(`Relay access request failed: ${response.status}`);
+        if (!response.ok) {
+            debugLog("requestRemoteAccess:failed", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, status: response.status });
+            throw new Error(`Relay access request failed: ${response.status}`);
+        }
         debugLog("requestRemoteAccess:success", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, status: response.status });
     });
 }
@@ -1335,8 +1364,8 @@ function getProfileUserId(props) {
         props?.account?.id
     ];
     for (let i = 0; i < candidates.length; i++) {
-        const value = candidates[i];
-        if (typeof value === "string" && value.length > 0) return value;
+        const normalized = normalizeDiscordId(candidates[i]);
+        if (normalized) return normalized;
     }
     return null;
 }
@@ -1389,13 +1418,13 @@ function ConfigPanel(props) {
     const useRef = resolveReactHook(React, "useRef");
     const useCallback = resolveReactHook(React, "useCallback") ?? (callback => callback);
     if (!h || !useState || !useEffect || !useRef) return null;
-    const activeUserId = currentUser().id;
+    const activeUserId = resolveSessionUserId(props);
     const forcedProfileUserId = typeof props?.forcedProfileUserId === "string" && props.forcedProfileUserId.length > 0
         ? props.forcedProfileUserId
         : null;
     const profileUserId = forcedProfileUserId ?? getProfileUserId(props) ?? activeUserId;
     const entrypoint = typeof props?.entrypoint === "string" ? props.entrypoint : "unknown";
-    const isOwnProfile = profileUserId === activeUserId;
+    const isOwnProfile = validateDiscordId(profileUserId) && profileUserId === activeUserId;
     const panelOpenInfo = getProfilePanelOpenInfo(props);
     const isPanelOpen = panelOpenInfo.isOpen;
     const hasExplicitPanelOpenState = panelOpenInfo.hasExplicitState;
@@ -1463,11 +1492,18 @@ function ConfigPanel(props) {
     }, []);
 
     const refresh = useCallback(async () => {
-        if (refreshInFlightRef.current || !isPanelOpen || !activeUserId) return;
+        if (refreshInFlightRef.current || !isPanelOpen) return;
         refreshInFlightRef.current = true;
         const nextRelayUrl = currentRelayUrl();
         setRelayUrl(nextRelayUrl);
         try {
+            const identityError = getIdentityValidationError(activeUserId, profileUserId, isOwnProfile);
+            if (identityError) {
+                setCanViewRemote(false);
+                setStatus(identityError);
+                debugLog("refresh:blocked_invalid_identity", { activeUserId, profileUserId, isOwnProfile });
+                return;
+            }
             if (isOwnProfile) {
                 let loadedRemote = false;
                 let syncedEditors = null;
@@ -2064,9 +2100,16 @@ function ConfigPanel(props) {
             View,
             null,
             h(Text, { style: { color: "#f2f3f5", marginTop: 6 } }, "You do not currently have permission to view this profile config."),
-            button("Request Access", () => requestRemoteAccess(currentRelayUrl(), activeUserId, profileUserId).then(() => {
-                setStatus(`Access request sent to ${profileUserId}. Ask them to open Key Intercept and approve the request.`);
-            }, err => setStatus(formatConfigAccessError(err, profileUserId))))
+            button("Request Access", () => {
+                const identityError = getIdentityValidationError(activeUserId, profileUserId, false);
+                if (identityError) {
+                    setStatus(identityError);
+                    return Promise.resolve();
+                }
+                return requestRemoteAccess(currentRelayUrl(), activeUserId, profileUserId).then(() => {
+                    setStatus(`Access request sent to ${profileUserId}. Ask them to open Key Intercept and approve the request.`);
+                }, err => setStatus(formatConfigAccessError(err, profileUserId)));
+            })
         )) : null,
 
         (isOwnProfile || canViewRemote) ? section("gag", "Gag", renderTimeoutControls("gag_end", "Gag timeout")) : null,
