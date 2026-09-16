@@ -1251,8 +1251,7 @@ function ConfigPanel(props) {
     const isPanelOpen = panelOpenInfo.isOpen;
     const hasExplicitPanelOpenState = panelOpenInfo.hasExplicitState;
 
-    const blocked_by_dom = editableConfig.config.blocked_by_dom;
-
+    
     let relayUrlState;
     try {
         relayUrlState = useState(currentRelayUrl());
@@ -1279,6 +1278,8 @@ function ConfigPanel(props) {
     const saveQueueRef = useRef(null);
     const refreshInFlightRef = useRef(false);
     const profileDebugRef = useRef("");
+
+    const blocked_by_dom = editableConfig.config.blocked_by_dom;
 
     useEffect(() => {
         const nextDebug = `${entrypoint}:${activeUserId}:${profileUserId}:${isPanelOpen ? "open" : "closed"}`;
