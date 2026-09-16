@@ -16,13 +16,13 @@ const requiredSnippets = [
     "function shouldApplyDrone(config: Config): boolean {",
     "function shouldApplyUWU(config: Config): boolean {",
     "function shouldApplyCensored(config: Config): boolean {",
-    "msg = applyRules(msg);",
-    "msg = applyUWU(msg);",
-    "msg = applyHorny(msg);",
-    "msg = applyPet(msg);",
-    "msg = applyBimbo(msg);",
-    "msg = applyCensored(msg);",
-    "msg = applyGag(msg);",
+    "applyStep(\"rules\", applyRules);",
+    "applyStep(\"uwu\", applyUWU);",
+    "applyStep(\"horny\", applyHorny);",
+    "applyStep(\"pet\", applyPet);",
+    "applyStep(\"bimbo\", applyBimbo);",
+    "applyStep(\"censored\", applyCensored);",
+    "applyStep(\"gag\", applyGag);",
     "const droneResult = applyDrone(msg, channelId);"
 ];
 
