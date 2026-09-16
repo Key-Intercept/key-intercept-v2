@@ -1848,7 +1848,6 @@ function ConfigPanel(props) {
         (isOwnProfile && canViewRemote) ? section("Sub Contol", "Sub Control", h(
             View,
             null,
-            h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, `${editableConfig.rules_groups.length} group(s), ${editableConfig.rules.length} rule(s)`),
             h(View, { style: { marginTop: 6, flexDirection: "row", flexWrap: "wrap" } },
                 button(editableConfig.config.blocked_by_dom ? "Sub Control Blocked" : "Sub Control Allowed", () => {
                     setEditableConfig(prev => ({
