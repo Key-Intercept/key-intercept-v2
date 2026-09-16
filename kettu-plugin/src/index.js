@@ -1845,7 +1845,7 @@ function ConfigPanel(props) {
             button("Save Relay URL", saveRelayUrl)
         )) : null,
         
-        /*(!isOwnProfile && canViewRemote) ? section("Sub Contol", "Sub Control", h(
+        (!isOwnProfile && canViewRemote) ? section("Sub Contol", "Sub Control", h(
             View,
             null,
             h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, `${editableConfig.rules_groups.length} group(s), ${editableConfig.rules.length} rule(s)`),
@@ -1860,7 +1860,7 @@ function ConfigPanel(props) {
                     }));
                 }, { active: editableConfig.config.blocked_by_dom, noTopMargin: true, key: "blocked_by_dom-toggle" })
             )
-        )*/
+        ),
 
         !isOwnProfile && !canViewRemote ? section("access-request", "Access", h(
             View,
