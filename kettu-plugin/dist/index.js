@@ -116,6 +116,15 @@ function parseNumericInput(raw, fallback, options = {}) {
     return output;
 }
 
+function isDebugEnabled() {
+    return Boolean(interceptConfig?.config?.debug);
+}
+
+function debugLog(event, payload) {
+    if (!isDebugEnabled()) return;
+    console.log(`${LOG_PREFIX} ${event}`, payload);
+}
+
 function toLines(values) {
     return values.join("\n");
 }
@@ -436,6 +445,7 @@ function writeMobileState(state) {
 
 function uploadMobileSnapshot(relayUrl, ownerId) {
     const state = readMobileState(ownerId);
+    debugLog("uploadMobileSnapshot:start", { ownerId, revision: state.revision, relayUrl: relayBaseUrl(relayUrl) });
     return fetch(`${relayBaseUrl(relayUrl)}/users/${ownerId}/mobile/snapshot`, {
         method: "POST",
         headers: {
@@ -450,18 +460,22 @@ function uploadMobileSnapshot(relayUrl, ownerId) {
         })
     }).then(response => {
         if (!response.ok && response.status !== 404) {
+            debugLog("uploadMobileSnapshot:failed", { ownerId, status: response.status });
             throw new Error(`Mobile snapshot sync failed: ${response.status}`);
         }
+        debugLog("uploadMobileSnapshot:success", { ownerId, status: response.status });
     });
 }
 
 function syncInAppLoopback(relayUrl, ownerId) {
     const local = readMobileState(ownerId);
+    debugLog("syncInAppLoopback:start", { ownerId, localRevision: local.revision, relayUrl: relayBaseUrl(relayUrl) });
     return fetch(
         `${relayBaseUrl(relayUrl)}/users/${ownerId}/mobile/sync?requester_id=${encodeURIComponent(ownerId)}&after_revision=${local.revision}`,
         { cache: "no-store" }
     ).then(response => {
         if (response.status === 404) {
+            debugLog("syncInAppLoopback:not_found", { ownerId });
             return null;
         }
         if (!response.ok) throw new Error(`Mobile relay sync failed: ${response.status}`);
@@ -472,7 +486,10 @@ function syncInAppLoopback(relayUrl, ownerId) {
             const normalizedRelayEditors = nextAllowedEditors.filter(validateDiscordId).sort();
             const editorsChanged = normalizedRelayEditors.length !== normalizedLocalEditors.length
                 || normalizedRelayEditors.some((value, index) => value !== normalizedLocalEditors[index]);
-            if (relayRevision <= local.revision && !editorsChanged) return;
+            if (relayRevision <= local.revision && !editorsChanged) {
+                debugLog("syncInAppLoopback:no_change", { ownerId, relayRevision, localRevision: local.revision });
+                return;
+            }
 
             writeMobileState({
                 owner_discord_id: ownerId,
@@ -481,9 +498,29 @@ function syncInAppLoopback(relayUrl, ownerId) {
                 revision: Math.max(local.revision, relayRevision),
                 last_writer_id: typeof payload.last_writer_id === "string" ? payload.last_writer_id : ownerId
             });
+            debugLog("syncInAppLoopback:applied", {
+                ownerId,
+                relayRevision,
+                localRevision: local.revision,
+                editorsChanged
+            });
             return payload;
         });
     });
+}
+
+function ensureMobileRelayPresence(relayUrl, ownerId, reason) {
+    if (!validateDiscordId(ownerId)) return Promise.resolve(false);
+    return uploadMobileSnapshot(relayUrl, ownerId).then(
+        () => {
+            debugLog("ensureMobileRelayPresence:success", { ownerId, reason });
+            return true;
+        },
+        err => {
+            debugLog("ensureMobileRelayPresence:failed", { ownerId, reason, error: String(err) });
+            return false;
+        }
+    );
 }
 
 function currentUser() {
@@ -609,6 +646,7 @@ function saveLocalConfig(ownerId, config, editorId = ownerId) {
 }
 
 function pushRemoteConfig(relayUrl, editorId, targetUserId, config) {
+    debugLog("pushRemoteConfig:start", { editorId, targetUserId, relayUrl: relayBaseUrl(relayUrl) });
     return fetch(`${relayBaseUrl(relayUrl)}/users/${targetUserId}/config`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
@@ -618,6 +656,7 @@ function pushRemoteConfig(relayUrl, editorId, targetUserId, config) {
         })
     }).then(response => {
         if (!response.ok) throw new Error(`Relay update failed: ${response.status}`);
+        debugLog("pushRemoteConfig:success", { editorId, targetUserId, status: response.status });
     });
 }
 
@@ -642,7 +681,7 @@ function parseErrorStatusCode(error) {
 function formatConfigAccessError(error, targetUserId) {
     const status = parseErrorStatusCode(error);
     if (status === 403) return "You do not have access to this user's config.";
-    if (status === 404) return "This user is not using Key Intercept.";
+    if (status === 404) return "This user is not using Key Intercept yet, or has not opened Key Intercept on mobile to publish their profile config.";
     if (status === 400) return "This config request was invalid. Please try again.";
     if (status === 429) return "Too many requests. Please wait and try again.";
     if (status !== null && status >= 500) return "Key Intercept relay is unavailable right now. Please try again later.";
@@ -651,6 +690,7 @@ function formatConfigAccessError(error, targetUserId) {
 }
 
 function readRemoteConfig(relayUrl, requesterId, targetUserId) {
+    debugLog("readRemoteConfig:start", { requesterId, targetUserId, relayUrl: relayBaseUrl(relayUrl) });
     return fetch(
         `${relayBaseUrl(relayUrl)}/users/${targetUserId}/config?requester_id=${encodeURIComponent(requesterId)}`,
         { cache: "no-store" }
@@ -664,29 +704,35 @@ function readRemoteConfig(relayUrl, requesterId, targetUserId) {
                 const status = deriveRelayConfigReadStatus(response.status, payload);
                 const err = new Error(`Relay config read failed: ${status}`);
                 err.status = status;
+                debugLog("readRemoteConfig:failed", { requesterId, targetUserId, status });
                 throw err;
             });
         }
+        debugLog("readRemoteConfig:success", { requesterId, targetUserId, status: response.status });
         return response.json();
     }).then(payload => mergeLocalConfig(payload?.config ?? payload));
 }
 
 function requestRemoteAccess(relayUrl, requesterId, targetUserId) {
+    debugLog("requestRemoteAccess:start", { requesterId, targetUserId, relayUrl: relayBaseUrl(relayUrl) });
     return fetch(`${relayBaseUrl(relayUrl)}/users/${targetUserId}/access-requests`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ requester_id: requesterId })
     }).then(response => {
         if (!response.ok) throw new Error(`Relay access request failed: ${response.status}`);
+        debugLog("requestRemoteAccess:success", { requesterId, targetUserId, status: response.status });
     });
 }
 
 function getAccessRequests(relayUrl, ownerId) {
+    debugLog("getAccessRequests:start", { ownerId, relayUrl: relayBaseUrl(relayUrl) });
     return fetch(
         `${relayBaseUrl(relayUrl)}/users/${ownerId}/access-requests?requester_id=${encodeURIComponent(ownerId)}`,
         { cache: "no-store" }
     ).then(response => {
         if (!response.ok) throw new Error(`Failed loading access requests: ${response.status}`);
+        debugLog("getAccessRequests:success", { ownerId, status: response.status });
         return response.json();
     }).then(payload => ({
         requests: Array.isArray(payload?.requests) ? payload.requests.filter(validateDiscordId) : []
@@ -694,6 +740,7 @@ function getAccessRequests(relayUrl, ownerId) {
 }
 
 function approveAccessRequest(relayUrl, ownerId, requesterId) {
+    debugLog("approveAccessRequest:start", { ownerId, requesterId, relayUrl: relayBaseUrl(relayUrl) });
     return fetch(
         `${relayBaseUrl(relayUrl)}/users/${ownerId}/access-requests/${encodeURIComponent(requesterId)}/approve`,
         {
@@ -703,15 +750,18 @@ function approveAccessRequest(relayUrl, ownerId, requesterId) {
         }
     ).then(response => {
         if (!response.ok) throw new Error(`Failed approving access request: ${response.status}`);
+        debugLog("approveAccessRequest:success", { ownerId, requesterId, status: response.status });
     });
 }
 
 function denyAccessRequest(relayUrl, ownerId, requesterId) {
+    debugLog("denyAccessRequest:start", { ownerId, requesterId, relayUrl: relayBaseUrl(relayUrl) });
     return fetch(
         `${relayBaseUrl(relayUrl)}/users/${ownerId}/access-requests/${encodeURIComponent(requesterId)}?requester_id=${encodeURIComponent(ownerId)}`,
         { method: "DELETE" }
     ).then(response => {
         if (!response.ok) throw new Error(`Failed denying access request: ${response.status}`);
+        debugLog("denyAccessRequest:success", { ownerId, requesterId, status: response.status });
     });
 }
 
@@ -1043,15 +1093,40 @@ function applyDrone(msg, channelId) {
 function applyReplacements(msg, channelId) {
     if (!interceptConfig?.config) return msg;
     const originalMsg = msg;
+    const modeEligibility = {
+        rules: shouldApplyRules(interceptConfig.config),
+        uwu: shouldApply(interceptConfig.config.uwu_end),
+        horny: shouldApply(interceptConfig.config.horny_end),
+        pet: shouldApply(interceptConfig.config.pet_end) && interceptConfig.config.pet_amount !== 0,
+        bimbo: shouldApply(interceptConfig.config.bimbo_end),
+        censored: shouldApply(interceptConfig.config.censored_end),
+        gag: shouldApply(interceptConfig.config.gag_end),
+        drone: shouldApply(interceptConfig.config.drone_end)
+    };
+    const modeResults = [];
+
+    const applyStep = (name, transformer) => {
+        const before = msg;
+        msg = transformer(msg);
+        modeResults.push({
+            name,
+            eligible: modeEligibility[name],
+            changed: msg !== before
+        });
+    };
+
     msg = applyRules(msg);
-    msg = applyUWU(msg);
-    msg = applyHorny(msg);
-    msg = applyPet(msg);
-    msg = applyBimbo(msg);
-    msg = applyCensored(msg);
-    msg = applyGag(msg);
+    modeResults.push({ name: "rules", eligible: modeEligibility.rules, changed: msg !== originalMsg });
+    applyStep("uwu", applyUWU);
+    applyStep("horny", applyHorny);
+    applyStep("pet", applyPet);
+    applyStep("bimbo", applyBimbo);
+    applyStep("censored", applyCensored);
+    applyStep("gag", applyGag);
     const droneResult = applyDrone(msg, channelId);
+    const beforeDrone = msg;
     msg = droneResult.message;
+    modeResults.push({ name: "drone", eligible: modeEligibility.drone, changed: msg !== beforeDrone });
     if (droneResult.editPreviousMessage) {
         editPreviousMessage(
             droneResult.editPreviousMessage.channelId,
@@ -1059,6 +1134,15 @@ function applyReplacements(msg, channelId) {
             droneResult.editPreviousMessage.newContent
         );
     }
+    debugLog("applyReplacements:result", {
+        channelId,
+        eligibility: modeEligibility,
+        modeResults,
+        petType: interceptConfig.config.pet_type,
+        petAmount: interceptConfig.config.pet_amount,
+        original: originalMsg,
+        transformed: msg
+    });
     if (interceptConfig.config.debug) {
         return `${msg}\n(original message: ${originalMsg})`;
     }
@@ -1137,13 +1221,16 @@ function bootstrapConfig() {
                 revision: previous.revision + 1,
                 last_writer_id: currentUser.id
             });
-            return syncInAppLoopback(currentRelayUrl(), currentUser.id);
+            return ensureMobileRelayPresence(currentRelayUrl(), currentUser.id, "bootstrap").then(
+                () => syncInAppLoopback(currentRelayUrl(), currentUser.id)
+            );
         }).then(() => {
             interceptConfig = mergeLocalConfig(readMobileState(currentUser.id).config);
             console.log(`${LOG_PREFIX} config ready`);
         }).catch(err => {
             const local = readMobileState(currentUser.id);
             interceptConfig = mergeLocalConfig(local.config);
+            ensureMobileRelayPresence(currentRelayUrl(), currentUser.id, "bootstrap-fallback").catch(() => null);
             console.log(`${LOG_PREFIX} config bootstrap fallback`, err);
         });
         return true;
@@ -1176,7 +1263,10 @@ function patchSendMessage() {
         try {
             const [channelId, messageData] = args;
             if (!channelId || !messageData || typeof messageData.content !== "string") return args;
-            if (!shouldApplyToScope(channelId)) return args;
+            if (!shouldApplyToScope(channelId)) {
+                debugLog("patchSendMessage:skipped_scope", { channelId });
+                return args;
+            }
             messageData.content = applyReplacements(messageData.content, channelId);
             return args;
         } catch (err) {
@@ -1293,6 +1383,7 @@ function ConfigPanel(props) {
     const [timeoutAdjustments, setTimeoutAdjustments] = useState(() => createTimeoutAdjustmentDefaults());
     const [groupTimeoutAdjustments, setGroupTimeoutAdjustments] = useState({});
     const [isRulesEditorOpen, setIsRulesEditorOpen] = useState(false);
+    const [isPetTypeDropdownOpen, setIsPetTypeDropdownOpen] = useState(false);
     const [nowMs, setNowMs] = useState(() => Date.now());
     const skipAutosaveRef = useRef(true);
     const lastSavedSnapshotRef = useRef("");
@@ -1342,7 +1433,12 @@ function ConfigPanel(props) {
                     setStatus("Loaded profile config");
                 } catch {}
                 try {
-                    const syncPayload = await syncInAppLoopback(nextRelayUrl, activeUserId);
+                    await ensureMobileRelayPresence(nextRelayUrl, activeUserId, "refresh-self");
+                    let syncPayload = await syncInAppLoopback(nextRelayUrl, activeUserId);
+                    if (!syncPayload) {
+                        await ensureMobileRelayPresence(nextRelayUrl, activeUserId, "refresh-self-retry");
+                        syncPayload = await syncInAppLoopback(nextRelayUrl, activeUserId);
+                    }
                     if (Array.isArray(syncPayload?.allowed_editors)) {
                         syncedEditors = syncPayload.allowed_editors.filter(validateDiscordId);
                     }
@@ -1403,9 +1499,29 @@ function ConfigPanel(props) {
     }, [censoredWordsText, editableConfig, hasExplicitPanelOpenState, isPanelOpen, refresh]);
 
     useEffect(() => {
+        if (!isPanelOpen || isOwnProfile || canViewRemote) return;
+        const handle = setInterval(() => {
+            try {
+                const pending = refresh();
+                if (pending && typeof pending.then === "function") {
+                    pending.then(undefined, err => setStatus(formatConfigAccessError(err, profileUserId)));
+                }
+            } catch (err) {
+                setStatus(formatConfigAccessError(err, profileUserId));
+            }
+        }, 5000);
+        return () => clearInterval(handle);
+    }, [canViewRemote, isOwnProfile, isPanelOpen, profileUserId, refresh]);
+
+    useEffect(() => {
         const handle = setInterval(() => setNowMs(Date.now()), 1000);
         return () => clearInterval(handle);
     }, []);
+
+    useEffect(() => {
+        if (!isPetTypeDropdownOpen) return;
+        if (!isPanelOpen) setIsPetTypeDropdownOpen(false);
+    }, [isPanelOpen, isPetTypeDropdownOpen]);
 
     const saveRelayUrl = useCallback(() => {
         const next = relayUrl.trim();
@@ -1860,6 +1976,14 @@ function ConfigPanel(props) {
         button(`Deny ${requesterId}`, () => denyAccessRequest(currentRelayUrl(), activeUserId, requesterId).then(refresh), { danger: true })
     ));
 
+    let selectedPetType = petTypeOptions[0];
+    for (let i = 0; i < petTypeOptions.length; i++) {
+        if (petTypeOptions[i].value === editableConfig.config.pet_type) {
+            selectedPetType = petTypeOptions[i];
+            break;
+        }
+    }
+
     return h(
         ScrollView,
         {
@@ -1895,7 +2019,7 @@ function ConfigPanel(props) {
             null,
             h(Text, { style: { color: "#f2f3f5", marginTop: 6 } }, "You do not currently have permission to view this profile config."),
             button("Request Access", () => requestRemoteAccess(currentRelayUrl(), activeUserId, profileUserId).then(() => {
-                setStatus(`Access request sent to ${profileUserId}`);
+                setStatus(`Access request sent to ${profileUserId}. Ask them to open Key Intercept and approve the request.`);
             }, err => setStatus(formatConfigAccessError(err, profileUserId))))
         )) : null,
 
@@ -1905,23 +2029,34 @@ function ConfigPanel(props) {
             View,
             null,
             renderTimeoutControls("pet_end", "Pet timeout"),
-            h(Text, { style: { color: "#f2f3f5", marginTop: 6 } }, "Pet type (1-7)"),
-            h(TextInput, {
-                value: String(editableConfig.config.pet_type),
-                onChangeText: value => {
-                    const nextValue = parseNumericInput(value, editableConfig.config.pet_type, { min: 1, max: petTypeOptions.length });
-                    setEditableConfig(prev => ({
-                        ...prev,
-                        config: {
-                            ...prev.config,
-                            pet_type: nextValue
-                        }
-                    }));
-                },
-                keyboardType: "numeric",
-                style: inputStyle
-            }),
-            h(Text, { style: { color: "#b5bac1", marginTop: 4 } }, petTypeOptions.map(option => `${option.value}:${option.label}`).join(" • ")),
+            h(Text, { style: { color: "#f2f3f5", marginTop: 6 } }, "Pet type"),
+            button(
+                `Type: ${selectedPetType.label} (${selectedPetType.value}) ${isPetTypeDropdownOpen ? "▲" : "▼"}`,
+                () => setIsPetTypeDropdownOpen(open => !open),
+                { key: "pet-type-toggle" }
+            ),
+            isPetTypeDropdownOpen ? h(
+                View,
+                { style: { marginTop: 4 } },
+                ...petTypeOptions.map(option => button(
+                    `${option.value}. ${option.label}`,
+                    () => {
+                        setEditableConfig(prev => ({
+                            ...prev,
+                            config: {
+                                ...prev.config,
+                                pet_type: option.value
+                            }
+                        }));
+                        setIsPetTypeDropdownOpen(false);
+                    },
+                    {
+                        key: `pet-type-${option.value}`,
+                        active: editableConfig.config.pet_type === option.value,
+                        noTopMargin: true
+                    }
+                ))
+            ) : null,
             h(Text, { style: { color: "#f2f3f5", marginTop: 6 } }, `Pet amount (${Math.round(editableConfig.config.pet_amount * 100)}%)`),
             h(TextInput, {
                 value: String(Math.round(editableConfig.config.pet_amount * 100)),
