@@ -482,6 +482,11 @@ function isDiscordId(value: string): boolean {
     return /^\d+$/.test(value);
 }
 
+function normalizeDiscordId(value: unknown): string {
+    const normalized = String(value ?? "").trim();
+    return isDiscordId(normalized) ? normalized : "";
+}
+
 function getStorageBackend() {
     try {
         if (typeof window !== "undefined" && window.localStorage) return window.localStorage;
@@ -635,13 +640,20 @@ function relayBaseUrl(relayUrl: string): string {
 }
 
 async function pushRemoteConfig(relayUrl: string, editorId: string, targetUserId: string, config: LocalConfig) {
-    const response = await fetch(`${relayBaseUrl(relayUrl)}/users/${targetUserId}/config`, {
+    const normalizedEditorId = normalizeDiscordId(editorId);
+    const normalizedTargetUserId = normalizeDiscordId(targetUserId);
+    if (!normalizedEditorId || !normalizedTargetUserId) {
+        const err = new Error("Relay update failed: 400") as Error & { status?: number };
+        err.status = 400;
+        throw err;
+    }
+    const response = await fetch(`${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/config`, {
         method: "PUT",
         headers: {
             "content-type": "application/json"
         },
         body: JSON.stringify({
-            editor_id: editorId,
+            editor_id: normalizedEditorId,
             config
         })
     });
@@ -680,9 +692,16 @@ function formatConfigAccessError(error: unknown, targetUserId: string): string {
 }
 
 async function readRemoteConfig(relayUrl: string, requesterId: string, targetUserId: string): Promise<LocalConfig> {
-    console.info(`${LOG_PREFIX} readRemoteConfig:start`, { requesterId, targetUserId });
+    const normalizedRequesterId = normalizeDiscordId(requesterId);
+    const normalizedTargetUserId = normalizeDiscordId(targetUserId);
+    if (!normalizedRequesterId || !normalizedTargetUserId) {
+        const err = new Error("Relay config read failed: 400") as Error & { status?: number };
+        err.status = 400;
+        throw err;
+    }
+    console.info(`${LOG_PREFIX} readRemoteConfig:start`, { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId });
     const response = await fetch(
-        `${relayBaseUrl(relayUrl)}/users/${targetUserId}/config?requester_id=${encodeURIComponent(requesterId)}`,
+        `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/config?requester_id=${encodeURIComponent(normalizedRequesterId)}`,
         { cache: "no-store" }
     );
     if (!response.ok) {
@@ -692,8 +711,8 @@ async function readRemoteConfig(relayUrl: string, requesterId: string, targetUse
         } catch {}
         const status = deriveRelayConfigReadStatus(response.status, payload);
         console.error(`${LOG_PREFIX} readRemoteConfig:failed`, {
-            requesterId,
-            targetUserId,
+            requesterId: normalizedRequesterId,
+            targetUserId: normalizedTargetUserId,
             status,
             relayStatus: response.status
         });
@@ -703,27 +722,40 @@ async function readRemoteConfig(relayUrl: string, requesterId: string, targetUse
     }
     const payload = mergeLocalConfig(await response.json());
     console.info(`${LOG_PREFIX} readRemoteConfig:success`, {
-        requesterId,
-        targetUserId,
+        requesterId: normalizedRequesterId,
+        targetUserId: normalizedTargetUserId,
         summary: configLogSummary(payload)
     });
     return payload;
 }
 
 async function requestRemoteAccess(relayUrl: string, requesterId: string, targetUserId: string) {
-    const response = await fetch(`${relayBaseUrl(relayUrl)}/users/${targetUserId}/access-requests`, {
+    const normalizedRequesterId = normalizeDiscordId(requesterId);
+    const normalizedTargetUserId = normalizeDiscordId(targetUserId);
+    if (!normalizedRequesterId || !normalizedTargetUserId) {
+        const err = new Error("Relay access request failed: 400") as Error & { status?: number };
+        err.status = 400;
+        throw err;
+    }
+    const response = await fetch(`${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/access-requests`, {
         method: "POST",
         headers: {
             "content-type": "application/json"
         },
-        body: JSON.stringify({ requester_id: requesterId })
+        body: JSON.stringify({ requester_id: normalizedRequesterId })
     });
     if (!response.ok) throw new Error(`Relay access request failed: ${response.status}`);
 }
 
 async function getAccessRequests(relayUrl: string, ownerId: string) {
+    const normalizedOwnerId = normalizeDiscordId(ownerId);
+    if (!normalizedOwnerId) {
+        const err = new Error("Failed loading access requests: 400") as Error & { status?: number };
+        err.status = 400;
+        throw err;
+    }
     const response = await fetch(
-        `${relayBaseUrl(relayUrl)}/users/${ownerId}/access-requests?requester_id=${encodeURIComponent(ownerId)}`,
+        `${relayBaseUrl(relayUrl)}/users/${normalizedOwnerId}/access-requests?requester_id=${encodeURIComponent(normalizedOwnerId)}`,
         { cache: "no-store" }
     );
     if (!response.ok) throw new Error(`Failed loading access requests: ${response.status}`);
@@ -731,22 +763,36 @@ async function getAccessRequests(relayUrl: string, ownerId: string) {
 }
 
 async function approveAccessRequest(relayUrl: string, ownerId: string, requesterId: string) {
+    const normalizedOwnerId = normalizeDiscordId(ownerId);
+    const normalizedRequesterId = normalizeDiscordId(requesterId);
+    if (!normalizedOwnerId || !normalizedRequesterId) {
+        const err = new Error("Failed approving access request: 400") as Error & { status?: number };
+        err.status = 400;
+        throw err;
+    }
     const response = await fetch(
-        `${relayBaseUrl(relayUrl)}/users/${ownerId}/access-requests/${encodeURIComponent(requesterId)}/approve`,
+        `${relayBaseUrl(relayUrl)}/users/${normalizedOwnerId}/access-requests/${encodeURIComponent(normalizedRequesterId)}/approve`,
         {
             method: "POST",
             headers: {
                 "content-type": "application/json"
             },
-            body: JSON.stringify({ owner_id: ownerId })
+            body: JSON.stringify({ owner_id: normalizedOwnerId })
         }
     );
     if (!response.ok) throw new Error(`Failed approving access request: ${response.status}`);
 }
 
 async function denyAccessRequest(relayUrl: string, ownerId: string, requesterId: string) {
+    const normalizedOwnerId = normalizeDiscordId(ownerId);
+    const normalizedRequesterId = normalizeDiscordId(requesterId);
+    if (!normalizedOwnerId || !normalizedRequesterId) {
+        const err = new Error("Failed denying access request: 400") as Error & { status?: number };
+        err.status = 400;
+        throw err;
+    }
     const response = await fetch(
-        `${relayBaseUrl(relayUrl)}/users/${ownerId}/access-requests/${encodeURIComponent(requesterId)}?requester_id=${encodeURIComponent(ownerId)}`,
+        `${relayBaseUrl(relayUrl)}/users/${normalizedOwnerId}/access-requests/${encodeURIComponent(normalizedRequesterId)}?requester_id=${encodeURIComponent(normalizedOwnerId)}`,
         { method: "DELETE" }
     );
     if (!response.ok) throw new Error(`Failed denying access request: ${response.status}`);
