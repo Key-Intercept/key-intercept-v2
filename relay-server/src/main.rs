@@ -340,6 +340,20 @@ async fn get_remote_config(
     Path(owner_id): Path<String>,
     Query(query): Query<ConfigReadQuery>,
 ) -> impl IntoResponse {
+    if state.peers.read().await.contains_key(&owner_id) {
+        let response = dispatch_desktop_command(
+            &state,
+            &owner_id,
+            DesktopCommand::ReadConfig {
+                requester_id: query.requester_id.clone(),
+            },
+        )
+        .await;
+        if response.status != StatusCode::NOT_FOUND {
+            return desktop_command_to_http_response(response);
+        }
+    }
+
     if let Some(mobile) = state.mobile_states.read().await.get(&owner_id).cloned() {
         if query.requester_id != owner_id && !mobile.allowed_editors.contains(&query.requester_id) {
             return (
@@ -353,25 +367,13 @@ async fn get_remote_config(
         return Json(mobile.config).into_response();
     }
 
-    let Some(peer) = state.peers.read().await.get(&owner_id).cloned() else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: "target user is offline or unknown".to_string(),
-            }),
-        )
-            .into_response();
-    };
-    let _ = peer;
-    let response = dispatch_desktop_command(
-        &state,
-        &owner_id,
-        DesktopCommand::ReadConfig {
-            requester_id: query.requester_id,
-        },
+    (
+        StatusCode::NOT_FOUND,
+        Json(ErrorResponse {
+            error: "target user is offline or unknown".to_string(),
+        }),
     )
-    .await;
-    desktop_command_to_http_response(response)
+        .into_response()
 }
 
 fn relay_passthrough_status(target_status: StatusCode) -> StatusCode {
@@ -397,6 +399,21 @@ async fn put_remote_config(
     }
     if let Err(err) = validate_config_shape(&payload.config) {
         return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: err })).into_response();
+    }
+
+    if state.peers.read().await.contains_key(&owner_id) {
+        let response = dispatch_desktop_command(
+            &state,
+            &owner_id,
+            DesktopCommand::PutConfig {
+                editor_id: payload.editor_id.clone(),
+                config: payload.config.clone(),
+            },
+        )
+        .await;
+        if response.status != StatusCode::NOT_FOUND {
+            return desktop_command_to_http_response(response);
+        }
     }
 
     let mut mobile_states = state.mobile_states.write().await;
@@ -465,26 +482,13 @@ async fn put_remote_config(
     }
     drop(mobile_states);
 
-    let Some(peer) = state.peers.read().await.get(&owner_id).cloned() else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: "target user is offline or unknown".to_string(),
-            }),
-        )
-            .into_response();
-    };
-    let _ = peer;
-    let response = dispatch_desktop_command(
-        &state,
-        &owner_id,
-        DesktopCommand::PutConfig {
-            editor_id: payload.editor_id,
-            config: payload.config,
-        },
+    (
+        StatusCode::NOT_FOUND,
+        Json(ErrorResponse {
+            error: "target user is offline or unknown".to_string(),
+        }),
     )
-    .await;
-    desktop_command_to_http_response(response)
+        .into_response()
 }
 
 async fn create_access_request(
@@ -617,29 +621,31 @@ async fn approve_access_request(
             .into_response();
     }
 
-    if let Some(mobile) = state.mobile_states.write().await.get_mut(&owner_id) {
-        mobile.allowed_editors.insert(requester_id.clone());
-        let mut pending = state.pending_access_requests.write().await;
-        if let Some(entry) = pending.get_mut(&owner_id) {
-            entry.remove(&requester_id);
-            if entry.is_empty() {
-                pending.remove(&owner_id);
+    let mut approved = false;
+    if state.peers.read().await.contains_key(&owner_id) {
+        let response = dispatch_desktop_command(
+            &state,
+            &owner_id,
+            DesktopCommand::AddAllowedEditor {
+                owner_id: owner_id.clone(),
+                editor_id: requester_id.clone(),
+            },
+        )
+        .await;
+        if response.status != StatusCode::NOT_FOUND {
+            if !response.status.is_success() {
+                return desktop_command_to_http_response(response);
             }
+            approved = true;
         }
-        drop(pending);
-        if let Err(err) = persist_relay_state(&state).await {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("failed to persist relay state: {err}"),
-                }),
-            )
-                .into_response();
-        }
-        return StatusCode::NO_CONTENT.into_response();
     }
 
-    let Some(peer) = state.peers.read().await.get(&owner_id).cloned() else {
+    if let Some(mobile) = state.mobile_states.write().await.get_mut(&owner_id) {
+        mobile.allowed_editors.insert(requester_id.clone());
+        approved = true;
+    }
+
+    if !approved {
         return (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -647,20 +653,8 @@ async fn approve_access_request(
             }),
         )
             .into_response();
-    };
-    let _ = peer;
-    let response = dispatch_desktop_command(
-        &state,
-        &owner_id,
-        DesktopCommand::AddAllowedEditor {
-            owner_id: owner_id.clone(),
-            editor_id: requester_id.clone(),
-        },
-    )
-    .await;
-    if !response.status.is_success() {
-        return desktop_command_to_http_response(response);
     }
+
     let mut pending = state.pending_access_requests.write().await;
     if let Some(entry) = pending.get_mut(&owner_id) {
         entry.remove(&requester_id);
@@ -1437,6 +1431,184 @@ mod tests {
         .await
         .into_response();
         assert_eq!(sync_response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn get_remote_config_prefers_desktop_permissions_when_peer_is_online() {
+        let state = test_state();
+        state
+            .mobile_states
+            .write()
+            .await
+            .insert(
+                "123".to_string(),
+                MobileState {
+                    revision: 1,
+                    last_writer_id: "123".to_string(),
+                    config: sample_config(),
+                    allowed_editors: HashSet::from(["999".to_string()]),
+                    operations: Vec::new(),
+                },
+            );
+        state
+            .peers
+            .write()
+            .await
+            .insert("123".to_string(), RegisteredPeer { shared_token: None });
+
+        let cloned = state.clone();
+        tokio::spawn(async move {
+            for _ in 0..40 {
+                if let Some(requests) = cloned.desktop_requests.write().await.remove("123") {
+                    if let Some(request) = requests.first() {
+                        if let Some(sender) = cloned
+                            .desktop_waiters
+                            .write()
+                            .await
+                            .remove(&request.request_id)
+                        {
+                            let _ = sender.send(DesktopCommandResponse {
+                                status: StatusCode::FORBIDDEN,
+                                body: None,
+                                error: Some("requester is not allowed to read config".to_string()),
+                            });
+                        }
+                    }
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        });
+
+        let response = get_remote_config(
+            State(state),
+            Path("123".to_string()),
+            Query(ConfigReadQuery {
+                requester_id: "999".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn put_remote_config_prefers_desktop_permissions_when_peer_is_online() {
+        let state = test_state();
+        state
+            .mobile_states
+            .write()
+            .await
+            .insert(
+                "123".to_string(),
+                MobileState {
+                    revision: 1,
+                    last_writer_id: "123".to_string(),
+                    config: sample_config(),
+                    allowed_editors: HashSet::from(["999".to_string()]),
+                    operations: Vec::new(),
+                },
+            );
+        state
+            .peers
+            .write()
+            .await
+            .insert("123".to_string(), RegisteredPeer { shared_token: None });
+
+        let cloned = state.clone();
+        tokio::spawn(async move {
+            for _ in 0..40 {
+                if let Some(requests) = cloned.desktop_requests.write().await.remove("123") {
+                    if let Some(request) = requests.first() {
+                        if let Some(sender) = cloned
+                            .desktop_waiters
+                            .write()
+                            .await
+                            .remove(&request.request_id)
+                        {
+                            let _ = sender.send(DesktopCommandResponse {
+                                status: StatusCode::FORBIDDEN,
+                                body: None,
+                                error: Some("editor is not allowed to update config".to_string()),
+                            });
+                        }
+                    }
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        });
+
+        let response = put_remote_config(
+            State(state),
+            Path("123".to_string()),
+            Json(RemoteUpdatePayload {
+                editor_id: "999".to_string(),
+                config: sample_config(),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn approve_access_request_prefers_desktop_when_peer_and_mobile_exist() {
+        let state = test_state();
+        state
+            .mobile_states
+            .write()
+            .await
+            .insert(
+                "123".to_string(),
+                MobileState {
+                    revision: 1,
+                    last_writer_id: "123".to_string(),
+                    config: sample_config(),
+                    allowed_editors: HashSet::new(),
+                    operations: Vec::new(),
+                },
+            );
+        state
+            .peers
+            .write()
+            .await
+            .insert("123".to_string(), RegisteredPeer { shared_token: None });
+
+        let cloned = state.clone();
+        tokio::spawn(async move {
+            for _ in 0..40 {
+                if let Some(requests) = cloned.desktop_requests.write().await.remove("123") {
+                    if let Some(request) = requests.first() {
+                        if let Some(sender) = cloned
+                            .desktop_waiters
+                            .write()
+                            .await
+                            .remove(&request.request_id)
+                        {
+                            let _ = sender.send(DesktopCommandResponse {
+                                status: StatusCode::FORBIDDEN,
+                                body: None,
+                                error: Some("owner mismatch".to_string()),
+                            });
+                        }
+                    }
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        });
+
+        let response = approve_access_request(
+            State(state),
+            Path(("123".to_string(), "999".to_string())),
+            Json(AccessRequestApprovalPayload {
+                owner_id: "123".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
