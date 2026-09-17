@@ -654,7 +654,13 @@ function relayBaseUrl(relayUrl: string): string {
     }
 }
 
-async function pushRemoteConfig(relayUrl: string, editorId: string, targetUserId: string, config: LocalConfig) {
+async function pushRemoteConfig(
+    relayUrl: string,
+    editorId: string,
+    targetUserId: string,
+    config: LocalConfig,
+    expectedRevision?: number
+) {
     const normalizedEditorId = normalizeDiscordId(editorId);
     const normalizedTargetUserId = normalizeDiscordId(targetUserId);
     if (!normalizedEditorId || !normalizedTargetUserId) {
@@ -669,7 +675,8 @@ async function pushRemoteConfig(relayUrl: string, editorId: string, targetUserId
         },
         body: JSON.stringify({
             editor_id: normalizedEditorId,
-            config
+            config,
+            expected_revision: Number.isFinite(expectedRevision) ? expectedRevision : null
         })
     });
 
@@ -700,6 +707,7 @@ function formatConfigAccessError(error: unknown, targetUserId: string): string {
     if (status === 403) return "You do not have access to this user's config.";
     if (status === 404) return "This user is not using Key Intercept.";
     if (status === 400) return "This config request was invalid. Please try again.";
+    if (status === 409) return "This config changed elsewhere. Reload and try again.";
     if (status === 429) return "Too many requests. Please wait and try again.";
     if (status !== null && status >= 500) return "Key Intercept relay is unavailable right now. Please try again later.";
     if (status !== null) return `Unable to load ${targetUserId}'s profile config (error ${status}).`;
@@ -730,10 +738,14 @@ async function readRemoteConfig(relayUrl: string, requesterId: string, targetUse
         targetUserId: normalizedTargetUserId,
         relayUrl: relayBaseUrl(relayUrl)
     });
-    const response = await fetch(
-        `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/config?requester_id=${encodeURIComponent(normalizedRequesterId)}`,
-        { cache: "no-store" }
-    );
+    const profileStateUrl = `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/profile-state?requester_id=${encodeURIComponent(normalizedRequesterId)}`;
+    const legacyConfigUrl = `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/config?requester_id=${encodeURIComponent(normalizedRequesterId)}`;
+    let response = await fetch(profileStateUrl, { cache: "no-store" });
+    let endpoint = "profile-state";
+    if (response.status === 404) {
+        response = await fetch(legacyConfigUrl, { cache: "no-store" });
+        endpoint = "legacy-config";
+    }
     if (!response.ok) {
         let payload: unknown = null;
         try {
@@ -744,7 +756,8 @@ async function readRemoteConfig(relayUrl: string, requesterId: string, targetUse
             requesterId: normalizedRequesterId,
             targetUserId: normalizedTargetUserId,
             status,
-            relayStatus: response.status
+            relayStatus: response.status,
+            endpoint
         });
         const err = new Error(`Relay config read failed: ${status}`) as Error & { status?: number };
         err.status = status;
