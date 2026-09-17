@@ -52,7 +52,8 @@ const defaultLocalConfig = {
         uwu_end: epoch,
         censored_end: epoch,
         censored_replacement: "*",
-        debug: false
+        debug: false,
+        blocked_by_dom: false
     },
     rules: [],
     rules_groups: [],
@@ -1437,6 +1438,7 @@ function ConfigPanel(props) {
         ? Math.floor(requestedPanelHeight)
         : defaultMaxPanelHeight;
 
+    
     let relayUrlState;
     try {
         relayUrlState = useState(currentRelayUrl());
@@ -1465,6 +1467,8 @@ function ConfigPanel(props) {
     const saveQueueRef = useRef(null);
     const refreshInFlightRef = useRef(false);
     const profileDebugRef = useRef("");
+
+    const blocked_by_dom = editableConfig.config.blocked_by_dom;
 
     useEffect(() => {
         const nextDebug = `${entrypoint}:${activeUserId}:${profileUserId}:${isPanelOpen ? "open" : "closed"}`;
@@ -2095,6 +2099,22 @@ function ConfigPanel(props) {
             }),
             button("Save Relay URL", saveRelayUrl)
         )) : null,
+        
+        (!isOwnProfile && canViewRemote) ? section("Sub Contol", "Sub Control", h(
+            View,
+            null,
+            h(View, { style: { marginTop: 6, flexDirection: "row", flexWrap: "wrap" } },
+                button(editableConfig.config.blocked_by_dom ? "Sub Control Blocked" : "Sub Control Allowed", () => {
+                    setEditableConfig(prev => ({
+                        ...prev,
+                        config: {
+                            ...prev.config,
+                            blocked_by_dom: !prev.config.blocked_by_dom
+                        }
+                    }));
+                }, { active: editableConfig.config.blocked_by_dom, noTopMargin: true, key: "blocked_by_dom-toggle" })
+            )
+        )) : null,
 
         !isOwnProfile && !canViewRemote ? section("access-request", "Access", h(
             View,
@@ -2112,9 +2132,9 @@ function ConfigPanel(props) {
             })
         )) : null,
 
-        (isOwnProfile || canViewRemote) ? section("gag", "Gag", renderTimeoutControls("gag_end", "Gag timeout")) : null,
+        (isOwnProfile && !blocked_by_dom) || (!isOwnProfile && canViewRemote) ? section("gag", "Gag", renderTimeoutControls("gag_end", "Gag timeout")) : null,
 
-        (isOwnProfile || canViewRemote) ? section("pet", "Pet", h(
+        (isOwnProfile && !blocked_by_dom) || (!isOwnProfile && canViewRemote) ? section("pet", "Pet", h(
             View,
             null,
             renderTimeoutControls("pet_end", "Pet timeout"),
@@ -2164,7 +2184,7 @@ function ConfigPanel(props) {
             })
         )) : null,
 
-        (isOwnProfile || canViewRemote) ? section("bimbo", "Bimbo", h(
+        (isOwnProfile && !blocked_by_dom) || (!isOwnProfile && canViewRemote) ? section("bimbo", "Bimbo", h(
             View,
             null,
             renderTimeoutControls("bimbo_end", "Bimbo timeout"),
@@ -2186,9 +2206,9 @@ function ConfigPanel(props) {
             })
         )) : null,
 
-        (isOwnProfile || canViewRemote) ? section("horny", "Horny", renderTimeoutControls("horny_end", "Horny timeout")) : null,
+        (isOwnProfile && !blocked_by_dom) || (!isOwnProfile && canViewRemote) ? section("horny", "Horny", renderTimeoutControls("horny_end", "Horny timeout")) : null,
 
-        (isOwnProfile || canViewRemote) ? section("drone", "Drone", h(
+        (isOwnProfile && !blocked_by_dom) || (!isOwnProfile && canViewRemote) ? section("drone", "Drone", h(
             View,
             null,
             renderTimeoutControls("drone_end", "Drone timeout"),
@@ -2224,9 +2244,9 @@ function ConfigPanel(props) {
             ))
         )) : null,
 
-        (isOwnProfile || canViewRemote) ? section("uwu", "UWU", renderTimeoutControls("uwu_end", "UWU timeout")) : null,
+        (isOwnProfile && !blocked_by_dom) || (!isOwnProfile && canViewRemote) ? section("uwu", "UWU", renderTimeoutControls("uwu_end", "UWU timeout")) : null,
 
-        (isOwnProfile || canViewRemote) ? section("censored", "Censored", h(
+        (isOwnProfile && !blocked_by_dom) || (!isOwnProfile && canViewRemote) ? section("censored", "Censored", h(
             View,
             null,
             renderTimeoutControls("censored_end", "Censored timeout"),
@@ -2304,7 +2324,7 @@ function ConfigPanel(props) {
                 : h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, "No scope entries")
         )) : null,
 
-        (isOwnProfile || canViewRemote) ? section("custom-rules", "Custom Rules", h(
+        (isOwnProfile && !blocked_by_dom) || (!isOwnProfile && canViewRemote) ? section("custom-rules", "Custom Rules", h(
             View,
             null,
             h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, `${editableConfig.rules_groups.length} group(s), ${editableConfig.rules.length} rule(s)`),
@@ -2322,7 +2342,7 @@ function ConfigPanel(props) {
             )
         )) : null,
 
-        (isOwnProfile || canViewRemote) ? rulesEditor : null,
+        (isOwnProfile && !blocked_by_dom) || (!isOwnProfile && canViewRemote) ? rulesEditor : null,
 
         (isOwnProfile || canViewRemote) ? section("sync-controls", "Sync", h(
             View,
