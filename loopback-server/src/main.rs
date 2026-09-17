@@ -35,6 +35,7 @@ struct ErrorResponse {
 #[serde(deny_unknown_fields)]
 struct ConfigPayload {
     config: LocalConfig,
+    expected_revision: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -83,7 +84,11 @@ struct RelayDesktopRequestsResponse {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum RelayDesktopCommand {
     ReadConfig { requester_id: String },
-    PutConfig { editor_id: String, config: Value },
+    PutConfig {
+        editor_id: String,
+        config: Value,
+        expected_revision: Option<u64>,
+    },
     AddAllowedEditor { owner_id: String, editor_id: String },
 }
 
@@ -246,7 +251,7 @@ async fn put_config(
 
     match state
         .store
-        .update_config(&requester_id, payload.config)
+        .update_config(&requester_id, payload.config, payload.expected_revision)
         .await
     {
         Ok(_) => {
@@ -255,8 +260,13 @@ async fn put_config(
         }
         Err(err) => {
             info!("PUT /config denied for requester {}: {}", requester_id, err);
+            let status = if err.to_string().contains("revision conflict") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::FORBIDDEN
+            };
             (
-                StatusCode::FORBIDDEN,
+                status,
                 Json(ErrorResponse {
                     error: err.to_string(),
                 }),
@@ -628,7 +638,11 @@ async fn execute_desktop_command(
                 ),
             }
         }
-        RelayDesktopCommand::PutConfig { editor_id, config } => {
+        RelayDesktopCommand::PutConfig {
+            editor_id,
+            config,
+            expected_revision,
+        } => {
             let parsed = match serde_json::from_value::<LocalConfig>(config) {
                 Ok(config) => config,
                 Err(err) => {
@@ -642,9 +656,18 @@ async fn execute_desktop_command(
             if let Err(err) = parsed.validate() {
                 return (StatusCode::BAD_REQUEST, None, Some(err));
             }
-            match store.update_config(&editor_id, parsed).await {
+            match store
+                .update_config(&editor_id, parsed, expected_revision)
+                .await
+            {
                 Ok(()) => (StatusCode::NO_CONTENT, None, None),
-                Err(err) => (StatusCode::FORBIDDEN, None, Some(err.to_string())),
+                Err(err) => {
+                    if err.to_string().contains("revision conflict") {
+                        (StatusCode::CONFLICT, None, Some(err.to_string()))
+                    } else {
+                        (StatusCode::FORBIDDEN, None, Some(err.to_string()))
+                    }
+                }
             }
         }
         RelayDesktopCommand::AddAllowedEditor {

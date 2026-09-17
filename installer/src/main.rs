@@ -183,6 +183,7 @@ async fn run() -> Result<()> {
         }
     }
 
+    reconcile_installation_state(&owner_discord_id.owner_discord_id)?;
     configure_loopback_startup(
         &owner_discord_id.owner_discord_id,
         relay_server_url.as_deref(),
@@ -923,6 +924,70 @@ fn loopback_binary_target_path() -> Result<PathBuf> {
     Ok(loopback_install_dir()?.join(format!("key-intercept-loopback{EXE_SUFFIX}")))
 }
 
+fn key_intercept_config_dir() -> Result<PathBuf> {
+    Ok(dirs::config_dir()
+        .ok_or_else(|| anyhow!("could not determine config directory"))?
+        .join("key-intercept"))
+}
+
+fn key_intercept_config_path() -> Result<PathBuf> {
+    Ok(key_intercept_config_dir()?.join("config.json"))
+}
+
+fn reconcile_installation_state(owner_discord_id: &str) -> Result<()> {
+    let config_dir = key_intercept_config_dir()?;
+    fs::create_dir_all(&config_dir)
+        .with_context(|| format!("failed to create {}", config_dir.display()))?;
+
+    let config_path = key_intercept_config_path()?;
+    let mut legacy_candidates = vec![
+        loopback_install_dir()?.join("config.json"),
+        loopback_install_dir()?.join("key-intercept-config.json"),
+    ];
+    if let Some(home) = dirs::home_dir() {
+        legacy_candidates.push(home.join(".key-intercept").join("config.json"));
+    }
+
+    for legacy_path in legacy_candidates {
+        if !legacy_path.is_file() {
+            continue;
+        }
+        if !config_path.exists() {
+            fs::copy(&legacy_path, &config_path).with_context(|| {
+                format!(
+                    "failed to migrate legacy config from {} to {}",
+                    legacy_path.display(),
+                    config_path.display()
+                )
+            })?;
+            break;
+        }
+        let backup = config_dir.join(format!(
+            "legacy-{}.bak",
+            legacy_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("config")
+        ));
+        fs::copy(&legacy_path, &backup).with_context(|| {
+            format!(
+                "failed to back up legacy config from {} to {}",
+                legacy_path.display(),
+                backup.display()
+            )
+        })?;
+    }
+
+    let marker_path = config_dir.join("install-state.json");
+    let marker_body = format!(
+        "{{\n  \"schema_version\": 1,\n  \"owner_discord_id\": \"{}\"\n}}\n",
+        owner_discord_id
+    );
+    fs::write(&marker_path, marker_body)
+        .with_context(|| format!("failed to write {}", marker_path.display()))?;
+    Ok(())
+}
+
 #[cfg(unix)]
 fn ensure_loopback_binary_executable(target: &Path) -> Result<()> {
     let mut perms = fs::metadata(target)
@@ -958,13 +1023,15 @@ fn configure_loopback_startup(
     fs::create_dir_all(&systemd_user)
         .with_context(|| format!("failed to create {}", systemd_user.display()))?;
 
+    let config_path = key_intercept_config_path()?;
     let service_file = systemd_user.join("key-intercept-loopback.service");
     let relay_environment = relay_server_url
         .map(|value| format!("Environment=RELAY_SERVER_URL={value}\n"))
         .unwrap_or_default();
     let unit = format!(
-        "[Unit]\nDescription=Key Intercept Loopback Server\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart={home}/.local/bin/key-intercept-loopback\nEnvironment=OWNER_DISCORD_ID={owner_discord_id}\nEnvironment=LOOPBACK_PORT=35491\nEnvironment=KEY_INTERCEPT_CONFIG_PATH={home}/.config/key-intercept/config.json\n{relay_environment}Restart=always\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n",
+        "[Unit]\nDescription=Key Intercept Loopback Server\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart={home}/.local/bin/key-intercept-loopback\nEnvironment=OWNER_DISCORD_ID={owner_discord_id}\nEnvironment=LOOPBACK_PORT=35491\nEnvironment=KEY_INTERCEPT_CONFIG_PATH={config_path}\n{relay_environment}Restart=always\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n",
         home = home_dir()?.display(),
+        config_path = config_path.display(),
     );
 
     fs::write(&service_file, unit)
@@ -997,10 +1064,7 @@ fn configure_loopback_startup(
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     let loopback_binary = loopback_binary_target_path()?;
-    let config_path = dirs::config_dir()
-        .ok_or_else(|| anyhow!("could not determine config directory"))?
-        .join("key-intercept")
-        .join("config.json");
+    let config_path = key_intercept_config_path()?;
 
     let tray_script = build_windows_tray_script(
         owner_discord_id,

@@ -665,7 +665,7 @@ function saveLocalConfig(ownerId, config, editorId = ownerId) {
     return uploadMobileSnapshot(currentRelayUrl(), ownerId).then(() => nextState);
 }
 
-function pushRemoteConfig(relayUrl, editorId, targetUserId, config) {
+function pushRemoteConfig(relayUrl, editorId, targetUserId, config, expectedRevision) {
     const normalizedEditorId = normalizeDiscordId(editorId);
     const normalizedTargetUserId = normalizeDiscordId(targetUserId);
     if (!normalizedEditorId || !normalizedTargetUserId) {
@@ -679,7 +679,8 @@ function pushRemoteConfig(relayUrl, editorId, targetUserId, config) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
             editor_id: normalizedEditorId,
-            config: mergeLocalConfig(config)
+            config: mergeLocalConfig(config),
+            expected_revision: Number.isFinite(expectedRevision) ? expectedRevision : null
         })
     }).then(response => {
         if (!response.ok) throw new Error(`Relay update failed: ${response.status}`);
@@ -710,6 +711,7 @@ function formatConfigAccessError(error, targetUserId) {
     if (status === 403) return "You do not have access to this user's config.";
     if (status === 404) return "This user is not using Key Intercept yet, or has not opened Key Intercept on mobile to publish their profile config.";
     if (status === 400) return "This config request was invalid. Please try again.";
+    if (status === 409) return "This config changed elsewhere. Reload the profile and try saving again.";
     if (status === 429) return "Too many requests. Please wait and try again.";
     if (status !== null && status >= 500) return "Key Intercept relay is unavailable right now. Please try again later.";
     if (status !== null) return `Unable to load ${targetUserId}'s profile config (error ${status}).`;
@@ -735,25 +737,43 @@ function readRemoteConfig(relayUrl, requesterId, targetUserId) {
         return Promise.reject(err);
     }
     debugLog("readRemoteConfig:start", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, relayUrl: relayBaseUrl(relayUrl) });
-    return fetch(
-        `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/config?requester_id=${encodeURIComponent(normalizedRequesterId)}`,
-        { cache: "no-store" }
-    ).then(response => {
-        if (!response.ok) {
-            return response.text().then(body => {
-                let payload = null;
-                try {
-                    payload = body ? JSON.parse(body) : null;
-                } catch {}
-                const status = deriveRelayConfigReadStatus(response.status, payload);
-                const err = new Error(`Relay config read failed: ${status}`);
-                err.status = status;
-                debugLog("readRemoteConfig:failed", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, status });
-                throw err;
+    const profileStateUrl = `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/profile-state?requester_id=${encodeURIComponent(normalizedRequesterId)}`;
+    const legacyConfigUrl = `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/config?requester_id=${encodeURIComponent(normalizedRequesterId)}`;
+    return fetch(profileStateUrl, { cache: "no-store" }).then(response => {
+        if (response.ok) {
+            debugLog("readRemoteConfig:success", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, status: response.status, endpoint: "profile-state" });
+            return response.json();
+        }
+        if (response.status === 404) {
+            return fetch(legacyConfigUrl, { cache: "no-store" }).then(legacyResponse => {
+                if (!legacyResponse.ok) {
+                    return legacyResponse.text().then(body => {
+                        let payload = null;
+                        try {
+                            payload = body ? JSON.parse(body) : null;
+                        } catch {}
+                        const status = deriveRelayConfigReadStatus(legacyResponse.status, payload);
+                        const err = new Error(`Relay config read failed: ${status}`);
+                        err.status = status;
+                        debugLog("readRemoteConfig:failed", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, status, endpoint: "legacy-config" });
+                        throw err;
+                    });
+                }
+                debugLog("readRemoteConfig:success", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, status: legacyResponse.status, endpoint: "legacy-config" });
+                return legacyResponse.json();
             });
         }
-        debugLog("readRemoteConfig:success", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, status: response.status });
-        return response.json();
+        return response.text().then(body => {
+            let payload = null;
+            try {
+                payload = body ? JSON.parse(body) : null;
+            } catch {}
+            const status = deriveRelayConfigReadStatus(response.status, payload);
+            const err = new Error(`Relay config read failed: ${status}`);
+            err.status = status;
+            debugLog("readRemoteConfig:failed", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, status, endpoint: "profile-state" });
+            throw err;
+        });
     }).then(payload => mergeLocalConfig(payload?.config ?? payload));
 }
 
@@ -1620,8 +1640,14 @@ function ConfigPanel(props) {
         if (!activeUserId) return null;
         const { merged } = buildConfigSnapshot(baseConfig, censoredWordsText);
         if (isOwnProfile) {
-            return pushRemoteConfig(currentRelayUrl(), activeUserId, activeUserId, merged).then(() => {
-                const previous = readMobileState(activeUserId);
+            const previous = readMobileState(activeUserId);
+            return pushRemoteConfig(
+                currentRelayUrl(),
+                activeUserId,
+                activeUserId,
+                merged,
+                previous.revision
+            ).then(() => {
                 writeMobileState({
                     owner_discord_id: activeUserId,
                     config: merged,

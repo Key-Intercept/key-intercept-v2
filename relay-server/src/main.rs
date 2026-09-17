@@ -31,10 +31,12 @@ struct AppState {
     peers: Arc<RwLock<HashMap<String, RegisteredPeer>>>,
     mobile_states: Arc<RwLock<HashMap<String, MobileState>>>,
     pending_access_requests: Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    access_requests: Arc<RwLock<HashMap<String, HashMap<String, AccessRequestRecord>>>>,
     desktop_requests: Arc<RwLock<HashMap<String, Vec<DesktopQueuedRequest>>>>,
     desktop_request_notifiers: Arc<RwLock<HashMap<String, Arc<Notify>>>>,
     desktop_waiters: Arc<RwLock<HashMap<u64, oneshot::Sender<DesktopCommandResponse>>>>,
     next_desktop_request_id: Arc<AtomicU64>,
+    next_access_request_id: Arc<AtomicU64>,
     persisted_state_path: Option<Arc<PathBuf>>,
 }
 
@@ -55,7 +57,11 @@ struct RegisteredPeer {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum DesktopCommand {
     ReadConfig { requester_id: String },
-    PutConfig { editor_id: String, config: Value },
+    PutConfig {
+        editor_id: String,
+        config: Value,
+        expected_revision: Option<u64>,
+    },
     AddAllowedEditor { owner_id: String, editor_id: String },
 }
 
@@ -114,6 +120,7 @@ struct MobileState {
 struct RemoteUpdatePayload {
     editor_id: String,
     config: Value,
+    expected_revision: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -159,11 +166,39 @@ struct UsersResponse {
 #[derive(Serialize)]
 struct AccessRequestsResponse {
     requests: Vec<String>,
+    details: Vec<AccessRequestRecord>,
 }
 
 #[derive(Serialize)]
 struct ErrorResponse {
     error: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum AccessRequestStatus {
+    RequestCreated,
+    Approved,
+    Denied,
+    Revoked,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct AccessRequestRecord {
+    request_id: u64,
+    requester_id: String,
+    state: AccessRequestStatus,
+    created_revision: u64,
+    updated_revision: u64,
+    updated_by: String,
+}
+
+#[derive(Serialize)]
+struct AccessRequestMutationResponse {
+    request_id: u64,
+    requester_id: String,
+    state: AccessRequestStatus,
+    synced_to_desktop: bool,
 }
 
 #[derive(Serialize)]
@@ -181,19 +216,62 @@ struct MobileSyncResponse {
     config: Value,
     allowed_editors: Vec<String>,
     operations: Vec<MobileOperationResponse>,
+    pending_requests: Vec<AccessRequestRecord>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
 struct PersistedRelayState {
     mobile_states: HashMap<String, MobileState>,
     pending_access_requests: HashMap<String, HashSet<String>>,
+    #[serde(default)]
+    access_requests: HashMap<String, HashMap<String, AccessRequestRecord>>,
+}
+
+#[derive(Serialize)]
+struct CanonicalProfileStateResponse {
+    owner_id: String,
+    revision: u64,
+    last_writer_id: String,
+    config: Value,
+    allowed_editors: Vec<String>,
+    pending_requests: Vec<AccessRequestRecord>,
 }
 
 fn load_persisted_relay_state(path: &FsPath) -> PersistedRelayState {
     let Ok(raw) = std::fs::read(path) else {
         return PersistedRelayState::default();
     };
-    serde_json::from_slice(&raw).unwrap_or_default()
+    let mut persisted: PersistedRelayState = serde_json::from_slice(&raw).unwrap_or_default();
+    if persisted.access_requests.is_empty() && !persisted.pending_access_requests.is_empty() {
+        for (owner_id, requesters) in &persisted.pending_access_requests {
+            let owner_requests = persisted.access_requests.entry(owner_id.clone()).or_default();
+            for requester_id in requesters {
+                owner_requests.insert(
+                    requester_id.clone(),
+                    AccessRequestRecord {
+                        request_id: 0,
+                        requester_id: requester_id.clone(),
+                        state: AccessRequestStatus::RequestCreated,
+                        created_revision: 0,
+                        updated_revision: 0,
+                        updated_by: requester_id.clone(),
+                    },
+                );
+            }
+        }
+    }
+    persisted
+}
+
+fn next_access_request_id_seed(
+    access_requests: &HashMap<String, HashMap<String, AccessRequestRecord>>,
+) -> u64 {
+    access_requests
+        .values()
+        .flat_map(|by_requester| by_requester.values().map(|request| request.request_id))
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1)
 }
 
 async fn persist_relay_state(state: &AppState) -> Result<()> {
@@ -202,9 +280,11 @@ async fn persist_relay_state(state: &AppState) -> Result<()> {
     };
     let mobile_states = state.mobile_states.read().await.clone();
     let pending_access_requests = state.pending_access_requests.read().await.clone();
+    let access_requests = state.access_requests.read().await.clone();
     let payload = PersistedRelayState {
         mobile_states,
         pending_access_requests,
+        access_requests,
     };
     let encoded = serde_json::to_vec(&payload)?;
     if let Some(parent) = path.parent() {
@@ -237,6 +317,7 @@ async fn main() -> Result<()> {
         .as_deref()
         .map(load_persisted_relay_state)
         .unwrap_or_default();
+    let next_access_request_id = next_access_request_id_seed(&initial_state.access_requests);
 
     let app = Router::new()
         .route("/health", get(health))
@@ -250,6 +331,7 @@ async fn main() -> Result<()> {
             "/users/:owner_id/access-requests",
             get(list_access_requests).post(create_access_request),
         )
+        .route("/users/:owner_id/profile-state", get(get_canonical_profile_state))
         .route(
             "/users/:owner_id/access-requests/:requester_id",
             delete(deny_access_request),
@@ -277,10 +359,12 @@ async fn main() -> Result<()> {
             peers: Arc::new(RwLock::new(HashMap::new())),
             mobile_states: Arc::new(RwLock::new(initial_state.mobile_states)),
             pending_access_requests: Arc::new(RwLock::new(initial_state.pending_access_requests)),
+            access_requests: Arc::new(RwLock::new(initial_state.access_requests)),
             desktop_requests: Arc::new(RwLock::new(HashMap::new())),
             desktop_request_notifiers: Arc::new(RwLock::new(HashMap::new())),
             desktop_waiters: Arc::new(RwLock::new(HashMap::new())),
             next_desktop_request_id: Arc::new(AtomicU64::new(1)),
+            next_access_request_id: Arc::new(AtomicU64::new(next_access_request_id)),
             persisted_state_path: persisted_state_path.map(Arc::new),
         });
 
@@ -335,6 +419,70 @@ async fn list_users(State(state): State<AppState>) -> impl IntoResponse {
     })
 }
 
+fn active_pending_requests(
+    access_requests: &HashMap<String, HashMap<String, AccessRequestRecord>>,
+    owner_id: &str,
+) -> Vec<AccessRequestRecord> {
+    let mut requests = access_requests
+        .get(owner_id)
+        .map(|requests| {
+            requests
+                .values()
+                .filter(|record| record.state == AccessRequestStatus::RequestCreated)
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    requests.sort_by(|a, b| a.requester_id.cmp(&b.requester_id));
+    requests
+}
+
+async fn get_canonical_profile_state(
+    State(state): State<AppState>,
+    Path(owner_id): Path<String>,
+    Query(query): Query<ConfigReadQuery>,
+) -> impl IntoResponse {
+    if !is_discord_id(&owner_id) || !is_discord_id(&query.requester_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "owner_id and requester_id must be numeric".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    let Some(mobile) = state.mobile_states.read().await.get(&owner_id).cloned() else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "target user is offline or unknown".to_string(),
+            }),
+        )
+            .into_response();
+    };
+    if query.requester_id != owner_id && !mobile.allowed_editors.contains(&query.requester_id) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "requester is not allowed to read config".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    let mut allowed_editors = mobile.allowed_editors.into_iter().collect::<Vec<_>>();
+    allowed_editors.sort();
+    let pending_requests = active_pending_requests(&*state.access_requests.read().await, &owner_id);
+    Json(CanonicalProfileStateResponse {
+        owner_id,
+        revision: mobile.revision,
+        last_writer_id: mobile.last_writer_id,
+        config: mobile.config,
+        allowed_editors,
+        pending_requests,
+    })
+    .into_response()
+}
+
 async fn get_remote_config(
     State(state): State<AppState>,
     Path(owner_id): Path<String>,
@@ -349,7 +497,10 @@ async fn get_remote_config(
             },
         )
         .await;
-        if response.status != StatusCode::NOT_FOUND {
+        if response.status != StatusCode::NOT_FOUND && response.status.is_client_error() {
+            return desktop_command_to_http_response(response);
+        }
+        if response.status.is_success() {
             return desktop_command_to_http_response(response);
         }
     }
@@ -408,16 +559,34 @@ async fn put_remote_config(
             DesktopCommand::PutConfig {
                 editor_id: payload.editor_id.clone(),
                 config: payload.config.clone(),
+                expected_revision: payload.expected_revision,
             },
         )
         .await;
-        if response.status != StatusCode::NOT_FOUND {
+        if response.status != StatusCode::NOT_FOUND && response.status.is_client_error() {
+            return desktop_command_to_http_response(response);
+        }
+        if response.status.is_success() {
             return desktop_command_to_http_response(response);
         }
     }
 
     let mut mobile_states = state.mobile_states.write().await;
     if let Some(mobile) = mobile_states.get_mut(&owner_id) {
+        if let Some(expected_revision) = payload.expected_revision {
+            if expected_revision != mobile.revision {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "expected_revision {} does not match current revision {}",
+                            expected_revision, mobile.revision
+                        ),
+                    }),
+                )
+                    .into_response();
+            }
+        }
         if payload.editor_id != owner_id && !mobile.allowed_editors.contains(&payload.editor_id) {
             return (
                 StatusCode::FORBIDDEN,
@@ -454,6 +623,20 @@ async fn put_remote_config(
         return StatusCode::NO_CONTENT.into_response();
     }
     if payload.editor_id == owner_id {
+        if let Some(expected_revision) = payload.expected_revision {
+            if expected_revision != 0 {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "expected_revision {} does not match current revision 0",
+                            expected_revision
+                        ),
+                    }),
+                )
+                    .into_response();
+            }
+        }
         mobile_states.insert(
             owner_id.clone(),
             MobileState {
@@ -536,12 +719,37 @@ async fn create_access_request(
             .into_response();
     }
 
-    let mut requests = state.pending_access_requests.write().await;
-    requests
+    let mut access_requests = state.access_requests.write().await;
+    let mut pending = state.pending_access_requests.write().await;
+    let owner_requests = access_requests.entry(owner_id.clone()).or_default();
+    let request_id = state.next_access_request_id.fetch_add(1, Ordering::Relaxed);
+    let record = owner_requests
+        .entry(payload.requester_id.clone())
+        .and_modify(|existing| {
+            if existing.state != AccessRequestStatus::RequestCreated {
+                existing.state = AccessRequestStatus::RequestCreated;
+                existing.updated_by = payload.requester_id.clone();
+                existing.updated_revision = existing.updated_revision.saturating_add(1);
+                if existing.request_id == 0 {
+                    existing.request_id = request_id;
+                }
+            }
+        })
+        .or_insert_with(|| AccessRequestRecord {
+            request_id,
+            requester_id: payload.requester_id.clone(),
+            state: AccessRequestStatus::RequestCreated,
+            created_revision: 0,
+            updated_revision: 0,
+            updated_by: payload.requester_id.clone(),
+        })
+        .clone();
+    pending
         .entry(owner_id)
         .or_default()
-        .insert(payload.requester_id);
-    drop(requests);
+        .insert(payload.requester_id.clone());
+    drop(access_requests);
+    drop(pending);
     if let Err(err) = persist_relay_state(&state).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -551,7 +759,16 @@ async fn create_access_request(
         )
             .into_response();
     }
-    StatusCode::NO_CONTENT.into_response()
+    (
+        StatusCode::OK,
+        Json(AccessRequestMutationResponse {
+            request_id: record.request_id,
+            requester_id: record.requester_id,
+            state: record.state,
+            synced_to_desktop: false,
+        }),
+    )
+        .into_response()
 }
 
 async fn list_access_requests(
@@ -589,8 +806,21 @@ async fn list_access_requests(
         .into_iter()
         .collect::<Vec<_>>();
     requests.sort();
-
-    Json(AccessRequestsResponse { requests }).into_response()
+    let mut details = state
+        .access_requests
+        .read()
+        .await
+        .get(&owner_id)
+        .map(|records| {
+            records
+                .values()
+                .filter(|record| record.state == AccessRequestStatus::RequestCreated)
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    details.sort_by(|a, b| a.requester_id.cmp(&b.requester_id));
+    Json(AccessRequestsResponse { requests, details }).into_response()
 }
 
 async fn approve_access_request(
@@ -622,6 +852,7 @@ async fn approve_access_request(
     }
 
     let mut approved = false;
+    let mut synced_to_desktop = false;
     if state.peers.read().await.contains_key(&owner_id) {
         let response = dispatch_desktop_command(
             &state,
@@ -637,6 +868,7 @@ async fn approve_access_request(
                 return desktop_command_to_http_response(response);
             }
             approved = true;
+            synced_to_desktop = true;
         }
     }
 
@@ -656,6 +888,29 @@ async fn approve_access_request(
     }
 
     let mut pending = state.pending_access_requests.write().await;
+    let mut access_requests = state.access_requests.write().await;
+    let request_id = state.next_access_request_id.fetch_add(1, Ordering::Relaxed);
+    let mut record = access_requests
+        .entry(owner_id.clone())
+        .or_default()
+        .entry(requester_id.clone())
+        .and_modify(|existing| {
+            if existing.request_id == 0 {
+                existing.request_id = request_id;
+            }
+            existing.state = AccessRequestStatus::Approved;
+            existing.updated_by = owner_id.clone();
+            existing.updated_revision = existing.updated_revision.saturating_add(1);
+        })
+        .or_insert_with(|| AccessRequestRecord {
+            request_id,
+            requester_id: requester_id.clone(),
+            state: AccessRequestStatus::Approved,
+            created_revision: 0,
+            updated_revision: 1,
+            updated_by: owner_id.clone(),
+        })
+        .clone();
     if let Some(entry) = pending.get_mut(&owner_id) {
         entry.remove(&requester_id);
         if entry.is_empty() {
@@ -663,6 +918,7 @@ async fn approve_access_request(
         }
     }
     drop(pending);
+    drop(access_requests);
     if let Err(err) = persist_relay_state(&state).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -672,7 +928,19 @@ async fn approve_access_request(
         )
             .into_response();
     }
-    StatusCode::NO_CONTENT.into_response()
+    if record.request_id == 0 {
+        record.request_id = request_id;
+    }
+    (
+        StatusCode::OK,
+        Json(AccessRequestMutationResponse {
+            request_id: record.request_id,
+            requester_id: record.requester_id,
+            state: record.state,
+            synced_to_desktop,
+        }),
+    )
+        .into_response()
 }
 
 async fn deny_access_request(
@@ -703,7 +971,36 @@ async fn deny_access_request(
             .into_response();
     }
 
+    let mut next_state = AccessRequestStatus::Denied;
+    if let Some(mobile) = state.mobile_states.write().await.get_mut(&owner_id) {
+        if mobile.allowed_editors.remove(&requester_id) {
+            next_state = AccessRequestStatus::Revoked;
+        }
+    }
     let mut pending = state.pending_access_requests.write().await;
+    let mut access_requests = state.access_requests.write().await;
+    let request_id = state.next_access_request_id.fetch_add(1, Ordering::Relaxed);
+    let mut record = access_requests
+        .entry(owner_id.clone())
+        .or_default()
+        .entry(requester_id.clone())
+        .and_modify(|existing| {
+            if existing.request_id == 0 {
+                existing.request_id = request_id;
+            }
+            existing.state = next_state.clone();
+            existing.updated_by = owner_id.clone();
+            existing.updated_revision = existing.updated_revision.saturating_add(1);
+        })
+        .or_insert_with(|| AccessRequestRecord {
+            request_id,
+            requester_id: requester_id.clone(),
+            state: next_state.clone(),
+            created_revision: 0,
+            updated_revision: 1,
+            updated_by: owner_id.clone(),
+        })
+        .clone();
     if let Some(entry) = pending.get_mut(&owner_id) {
         entry.remove(&requester_id);
         if entry.is_empty() {
@@ -711,6 +1008,7 @@ async fn deny_access_request(
         }
     }
     drop(pending);
+    drop(access_requests);
     if let Err(err) = persist_relay_state(&state).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -720,7 +1018,19 @@ async fn deny_access_request(
         )
             .into_response();
     }
-    StatusCode::NO_CONTENT.into_response()
+    if record.request_id == 0 {
+        record.request_id = request_id;
+    }
+    (
+        StatusCode::OK,
+        Json(AccessRequestMutationResponse {
+            request_id: record.request_id,
+            requester_id: record.requester_id,
+            state: record.state,
+            synced_to_desktop: false,
+        }),
+    )
+        .into_response()
 }
 
 async fn upsert_mobile_snapshot(
@@ -861,6 +1171,7 @@ async fn get_mobile_sync(
             config: operation.config,
         })
         .collect::<Vec<_>>();
+    let pending_requests = active_pending_requests(&*state.access_requests.read().await, &owner_id);
     Json(MobileSyncResponse {
         owner_id,
         revision: mobile.revision,
@@ -868,6 +1179,7 @@ async fn get_mobile_sync(
         config: mobile.config,
         allowed_editors,
         operations,
+        pending_requests,
     })
     .into_response()
 }
@@ -1204,10 +1516,12 @@ mod tests {
             peers: Arc::new(RwLock::new(HashMap::new())),
             mobile_states: Arc::new(RwLock::new(HashMap::new())),
             pending_access_requests: Arc::new(RwLock::new(HashMap::new())),
+            access_requests: Arc::new(RwLock::new(HashMap::new())),
             desktop_requests: Arc::new(RwLock::new(HashMap::new())),
             desktop_request_notifiers: Arc::new(RwLock::new(HashMap::new())),
             desktop_waiters: Arc::new(RwLock::new(HashMap::new())),
             next_desktop_request_id: Arc::new(AtomicU64::new(1)),
+            next_access_request_id: Arc::new(AtomicU64::new(1)),
             persisted_state_path: None,
         }
     }
@@ -1295,6 +1609,7 @@ mod tests {
             Json(RemoteUpdatePayload {
                 editor_id: "123".to_string(),
                 config: sample_config(),
+                expected_revision: None,
             }),
         )
         .await
@@ -1386,6 +1701,7 @@ mod tests {
             Json(RemoteUpdatePayload {
                 editor_id: "456".to_string(),
                 config: sample_config(),
+                expected_revision: None,
             }),
         )
         .await
@@ -1414,6 +1730,7 @@ mod tests {
             Json(RemoteUpdatePayload {
                 editor_id: "123".to_string(),
                 config: sample_config(),
+                expected_revision: None,
             }),
         )
         .await
@@ -1545,6 +1862,7 @@ mod tests {
             Json(RemoteUpdatePayload {
                 editor_id: "999".to_string(),
                 config: sample_config(),
+                expected_revision: None,
             }),
         )
         .await
