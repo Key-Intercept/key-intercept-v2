@@ -121,7 +121,6 @@ function isDebugEnabled() {
 }
 
 function debugLog(event, payload) {
-    if (!isDebugEnabled()) return;
     console.log(`${LOG_PREFIX} ${event}`, payload);
 }
 

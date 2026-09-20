@@ -937,7 +937,6 @@ function isDebugEnabled(): boolean {
 }
 
 function debugLog(event: string, payload: unknown): void {
-    if (!isDebugEnabled()) return;
     console.info(`${LOG_PREFIX} ${event}`, payload);
 }
 
