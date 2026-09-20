@@ -529,11 +529,38 @@ function currentUser() {
 }
 
 function validateDiscordId(value) {
-    return typeof value === "string" && /^\d+$/.test(value);
+    return typeof value === "string" && /^[0-9]+$/.test(value);
+}
+
+function extractDiscordIdCandidate(value, depth = 0) {
+    if (depth > 3) return "";
+    if (typeof value === "string") return value.trim();
+    if (typeof value === "bigint") return value.toString();
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+        return Math.trunc(value).toString();
+    }
+    if (!value || typeof value !== "object") return "";
+    const nestedCandidates = [
+        value.id,
+        value.userId,
+        value.user_id,
+        value.value,
+        value.raw
+    ];
+    for (let i = 0; i < nestedCandidates.length; i++) {
+        const nested = extractDiscordIdCandidate(nestedCandidates[i], depth + 1);
+        if (nested) return nested;
+    }
+    const toString = value.toString;
+    if (typeof toString === "function" && toString !== Object.prototype.toString) {
+        const stringified = extractDiscordIdCandidate(toString.call(value), depth + 1);
+        if (stringified) return stringified;
+    }
+    return "";
 }
 
 function normalizeDiscordId(value) {
-    const normalized = String(value ?? "").trim();
+    const normalized = extractDiscordIdCandidate(value);
     return validateDiscordId(normalized) ? normalized : "";
 }
 
@@ -641,8 +668,8 @@ function getContextTargetUserId(props) {
         props?.account?.id
     ];
     for (let i = 0; i < candidates.length; i++) {
-        const value = candidates[i];
-        if (typeof value === "string" && value.length > 0) return value;
+        const normalized = normalizeDiscordId(candidates[i]);
+        if (normalized) return normalized;
     }
     return null;
 }
@@ -710,7 +737,7 @@ function formatConfigAccessError(error, targetUserId) {
     const status = parseErrorStatusCode(error);
     if (status === 403) return "You do not have access to this user's config.";
     if (status === 404) return "This user is not using Key Intercept yet, or has not opened Key Intercept on mobile to publish their profile config.";
-    if (status === 400) return "This config request was invalid. Please try again.";
+    if (status === 400) return "Config request failed due to an incompatible or malformed Discord ID shape. Reopen the profile or use Open by Discord ID from settings.";
     if (status === 409) return "This config changed elsewhere. Reload the profile and try saving again.";
     if (status === 429) return "Too many requests. Please wait and try again.";
     if (status !== null && status >= 500) return "Key Intercept relay is unavailable right now. Please try again later.";
@@ -753,9 +780,16 @@ function readRemoteConfig(relayUrl, requesterId, targetUserId) {
                             payload = body ? JSON.parse(body) : null;
                         } catch {}
                         const status = deriveRelayConfigReadStatus(legacyResponse.status, payload);
-                        const err = new Error(`Relay config read failed: ${status}`);
-                        err.status = status;
-                        debugLog("readRemoteConfig:failed", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, status, endpoint: "legacy-config" });
+                        const remappedStatus = status === 400 ? 404 : status;
+                        const err = new Error(`Relay config read failed: ${remappedStatus}`);
+                        err.status = remappedStatus;
+                        debugLog("readRemoteConfig:failed", {
+                            requesterId: normalizedRequesterId,
+                            targetUserId: normalizedTargetUserId,
+                            status: remappedStatus,
+                            rawStatus: status,
+                            endpoint: "legacy-config"
+                        });
                         throw err;
                     });
                 }
@@ -1439,9 +1473,7 @@ function ConfigPanel(props) {
     const useCallback = resolveReactHook(React, "useCallback") ?? (callback => callback);
     if (!h || !useState || !useEffect || !useRef) return null;
     const activeUserId = resolveSessionUserId(props);
-    const forcedProfileUserId = typeof props?.forcedProfileUserId === "string" && props.forcedProfileUserId.length > 0
-        ? props.forcedProfileUserId
-        : null;
+    const forcedProfileUserId = normalizeDiscordId(props?.forcedProfileUserId) || null;
     const profileUserId = forcedProfileUserId ?? getProfileUserId(props) ?? activeUserId;
     const entrypoint = typeof props?.entrypoint === "string" ? props.entrypoint : "unknown";
     const isOwnProfile = validateDiscordId(profileUserId) && profileUserId === activeUserId;
