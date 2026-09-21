@@ -742,7 +742,9 @@ async function readRemoteConfig(relayUrl: string, requesterId: string, targetUse
     const legacyConfigUrl = `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/config?requester_id=${encodeURIComponent(normalizedRequesterId)}`;
     let response = await fetch(profileStateUrl, { cache: "no-store" });
     let endpoint = "profile-state";
-    if (response.status === 404) {
+    let fallbackSourceStatus: number | null = null;
+    if (response.status === 404 || response.status === 400) {
+        fallbackSourceStatus = response.status;
         response = await fetch(legacyConfigUrl, { cache: "no-store" });
         endpoint = "legacy-config";
     }
@@ -757,6 +759,7 @@ async function readRemoteConfig(relayUrl: string, requesterId: string, targetUse
             targetUserId: normalizedTargetUserId,
             status,
             relayStatus: response.status,
+            fallbackSourceStatus,
             endpoint
         });
         const err = new Error(`Relay config read failed: ${status}`) as Error & { status?: number };

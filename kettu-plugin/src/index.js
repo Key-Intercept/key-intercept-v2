@@ -770,7 +770,8 @@ function readRemoteConfig(relayUrl, requesterId, targetUserId) {
             debugLog("readRemoteConfig:success", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, status: response.status, endpoint: "profile-state" });
             return response.json();
         }
-        if (response.status === 404) {
+        if (response.status === 404 || response.status === 400) {
+            const fallbackSourceStatus = response.status;
             return fetch(legacyConfigUrl, { cache: "no-store" }).then(legacyResponse => {
                 if (!legacyResponse.ok) {
                     return legacyResponse.text().then(body => {
@@ -787,12 +788,19 @@ function readRemoteConfig(relayUrl, requesterId, targetUserId) {
                             targetUserId: normalizedTargetUserId,
                             status: remappedStatus,
                             rawStatus: status,
+                            fallbackSourceStatus,
                             endpoint: "legacy-config"
                         });
                         throw err;
                     });
                 }
-                debugLog("readRemoteConfig:success", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, status: legacyResponse.status, endpoint: "legacy-config" });
+                debugLog("readRemoteConfig:success", {
+                    requesterId: normalizedRequesterId,
+                    targetUserId: normalizedTargetUserId,
+                    status: legacyResponse.status,
+                    fallbackSourceStatus,
+                    endpoint: "legacy-config"
+                });
                 return legacyResponse.json();
             });
         }
