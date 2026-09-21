@@ -87,7 +87,6 @@ struct DesktopCommandResponsePayload {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct DesktopRequestPullQuery {
     wait_seconds: Option<u64>,
 }
@@ -124,7 +123,6 @@ struct RemoteUpdatePayload {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ConfigReadQuery {
     requester_id: String,
 }
@@ -152,7 +150,6 @@ struct MobileSnapshotPayload {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct MobileSyncQuery {
     requester_id: String,
     after_revision: Option<u64>,
