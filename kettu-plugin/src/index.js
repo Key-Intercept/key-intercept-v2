@@ -779,15 +779,24 @@ function readRemoteConfig(relayUrl, requesterId, targetUserId) {
                         try {
                             payload = body ? JSON.parse(body) : null;
                         } catch {}
+                        const relayStatus = legacyResponse.status;
+                        const relayError = typeof payload?.error === "string"
+                            ? payload.error
+                            : String(body || "").slice(0, 300);
                         const status = deriveRelayConfigReadStatus(legacyResponse.status, payload);
                         const remappedStatus = status === 400 ? 404 : status;
                         const err = new Error(`Relay config read failed: ${remappedStatus}`);
                         err.status = remappedStatus;
+                        err.relayStatus = relayStatus;
+                        err.relayError = relayError;
+                        err.endpoint = "legacy-config";
                         debugLog("readRemoteConfig:failed", {
                             requesterId: normalizedRequesterId,
                             targetUserId: normalizedTargetUserId,
                             status: remappedStatus,
                             rawStatus: status,
+                            relayStatus,
+                            relayError,
                             fallbackSourceStatus,
                             endpoint: "legacy-config"
                         });
@@ -809,10 +818,24 @@ function readRemoteConfig(relayUrl, requesterId, targetUserId) {
             try {
                 payload = body ? JSON.parse(body) : null;
             } catch {}
+            const relayStatus = response.status;
+            const relayError = typeof payload?.error === "string"
+                ? payload.error
+                : String(body || "").slice(0, 300);
             const status = deriveRelayConfigReadStatus(response.status, payload);
             const err = new Error(`Relay config read failed: ${status}`);
             err.status = status;
-            debugLog("readRemoteConfig:failed", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, status, endpoint: "profile-state" });
+            err.relayStatus = relayStatus;
+            err.relayError = relayError;
+            err.endpoint = "profile-state";
+            debugLog("readRemoteConfig:failed", {
+                requesterId: normalizedRequesterId,
+                targetUserId: normalizedTargetUserId,
+                status,
+                relayStatus,
+                relayError,
+                endpoint: "profile-state"
+            });
             throw err;
         });
     }).then(payload => mergeLocalConfig(payload?.config ?? payload));
