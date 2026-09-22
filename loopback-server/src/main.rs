@@ -15,7 +15,11 @@ use axum::{
 use schema::{LocalConfig, is_discord_id};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::HashMap, net::SocketAddr, path::PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    net::SocketAddr,
+    path::PathBuf,
+};
 use store::ConfigStore;
 use tokio::time::{Duration, Instant, sleep};
 use tower_http::cors::CorsLayer;
@@ -210,7 +214,7 @@ async fn get_config(
             .into_response();
     };
 
-    if requester != stored.owner_discord_id && !stored.allowed_editors.contains(&requester) {
+    if !is_allowed_reader(&stored.owner_discord_id, &stored.allowed_editors, &requester) {
         info!("GET /config denied for requester {}", requester);
         return (
             StatusCode::FORBIDDEN,
@@ -362,6 +366,8 @@ fn requester_header(headers: &HeaderMap) -> Option<String> {
     headers
         .get("x-discord-user-id")
         .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
 }
 
@@ -379,9 +385,11 @@ async fn get_config_updates(
             .into_response();
     }
     let stored = state.store.get().await;
-    if query.requester_id != stored.owner_discord_id
-        && !stored.allowed_editors.contains(&query.requester_id)
-    {
+    if !is_allowed_reader(
+        &stored.owner_discord_id,
+        &stored.allowed_editors,
+        &query.requester_id,
+    ) {
         return (
             StatusCode::FORBIDDEN,
             Json(ErrorResponse {
@@ -408,7 +416,27 @@ async fn get_config_updates(
 }
 
 fn requester_id(headers: &HeaderMap, query: &HashMap<String, String>) -> Option<String> {
-    requester_header(headers).or_else(|| query.get("requester_id").cloned())
+    requester_header(headers).or_else(|| {
+        query
+            .get("requester_id")
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn ids_match(left: &str, right: &str) -> bool {
+    left.trim() == right.trim()
+}
+
+fn contains_discord_id(ids: &HashSet<String>, requester_id: &str) -> bool {
+    let normalized = requester_id.trim();
+    ids.iter().any(|id| id.trim() == normalized)
+}
+
+fn is_allowed_reader(owner_discord_id: &str, allowed_editors: &HashSet<String>, requester: &str) -> bool {
+    ids_match(owner_discord_id, requester) || contains_discord_id(allowed_editors, requester)
 }
 
 fn discord_cors_layer() -> CorsLayer {
@@ -620,8 +648,7 @@ async fn execute_desktop_command(
     match command {
         RelayDesktopCommand::ReadConfig { requester_id } => {
             let stored = store.get().await;
-            if requester_id != stored.owner_discord_id
-                && !stored.allowed_editors.contains(&requester_id)
+            if !is_allowed_reader(&stored.owner_discord_id, &stored.allowed_editors, &requester_id)
             {
                 return (
                     StatusCode::FORBIDDEN,

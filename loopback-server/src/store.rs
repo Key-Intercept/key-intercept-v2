@@ -404,11 +404,16 @@ impl ConfigStore {
 }
 
 fn can_edit(state: &PersistedState, editor_id: &str) -> bool {
-    state.owner_discord_id == editor_id || state.allowed_editors.contains(editor_id)
+    let normalized_editor_id = editor_id.trim();
+    state.owner_discord_id.trim() == normalized_editor_id
+        || state
+            .allowed_editors
+            .iter()
+            .any(|allowed| allowed.trim() == normalized_editor_id)
 }
 
 fn ensure_owner(state: &PersistedState, requester_id: &str) -> Result<()> {
-    if state.owner_discord_id != requester_id {
+    if state.owner_discord_id.trim() != requester_id.trim() {
         bail!("only owner can modify allowed editors");
     }
     Ok(())
@@ -477,6 +482,30 @@ mod tests {
             store.get().await.config.config.censored_replacement,
             "*".to_string()
         );
+    }
+
+    #[tokio::test]
+    async fn owner_and_editor_ids_tolerate_surrounding_whitespace() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let mut seeded = PersistedState::new("owner".to_string());
+        seeded.allowed_editors.insert("editor".to_string());
+        fs::write(&path, serde_json::to_vec_pretty(&seeded).unwrap())
+            .await
+            .unwrap();
+
+        let store = ConfigStore::load_or_create(&path, "owner".to_string())
+            .await
+            .unwrap();
+
+        store
+            .update_config(" owner \r\n", LocalConfig::default(), None)
+            .await
+            .unwrap();
+        store
+            .update_config("\teditor ", LocalConfig::default(), None)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
