@@ -1702,25 +1702,47 @@ function ConfigPanel(props) {
         if (!activeUserId) return null;
         const { merged } = buildConfigSnapshot(baseConfig, censoredWordsText);
         if (isOwnProfile) {
-            const previous = readMobileState(activeUserId);
-            return pushRemoteConfig(
-                currentRelayUrl(),
-                activeUserId,
-                activeUserId,
-                merged,
-                previous.revision
-            ).then(() => {
+            const persistOwnProfileSave = nextRevision => {
+                const latest = readMobileState(activeUserId);
                 writeMobileState({
                     owner_discord_id: activeUserId,
                     config: merged,
-                    allowed_editors: previous.allowed_editors,
-                    revision: previous.revision + 1,
+                    allowed_editors: latest.allowed_editors,
+                    revision: nextRevision,
                     last_writer_id: activeUserId
                 });
                 interceptConfig = merged;
                 lastSavedSnapshotRef.current = JSON.stringify(merged);
                 setStatus("Auto-saved profile config");
-            }, err => {
+            };
+            const pushOwnProfileConfig = expectedRevision => pushRemoteConfig(
+                currentRelayUrl(),
+                activeUserId,
+                activeUserId,
+                merged,
+                expectedRevision
+            ).then(() => {
+                const nextRevision = Number.isFinite(expectedRevision)
+                    ? Math.max(0, Math.floor(expectedRevision)) + 1
+                    : readMobileState(activeUserId).revision + 1;
+                persistOwnProfileSave(nextRevision);
+            });
+            const previous = readMobileState(activeUserId);
+            return pushOwnProfileConfig(previous.revision).catch(err => {
+                if (parseErrorStatusCode(err) !== 409) throw err;
+                return syncInAppLoopback(currentRelayUrl(), activeUserId)
+                    .catch(() => null)
+                    .then(syncPayload => {
+                        const latest = readMobileState(activeUserId);
+                        const retryExpectedRevision = Number.isFinite(latest.revision) && latest.revision >= 0
+                            ? latest.revision
+                            : 0;
+                        return pushOwnProfileConfig(retryExpectedRevision).catch(retryErr => {
+                            if (parseErrorStatusCode(retryErr) !== 409 || syncPayload) throw retryErr;
+                            return pushOwnProfileConfig(0);
+                        });
+                    });
+            }).then(undefined, err => {
                 const status = parseErrorStatusCode(err);
                 if (status === 404) {
                     return saveLocalConfig(activeUserId, merged, activeUserId).then(() => {
