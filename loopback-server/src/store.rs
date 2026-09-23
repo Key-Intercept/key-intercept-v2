@@ -259,10 +259,24 @@ impl ConfigStore {
         self.state.read().await.clone()
     }
 
-    pub async fn update_config(&self, editor_id: &str, config: LocalConfig) -> Result<()> {
+    pub async fn update_config(
+        &self,
+        editor_id: &str,
+        config: LocalConfig,
+        expected_revision: Option<u64>,
+    ) -> Result<()> {
         let mut state = self.state.write().await;
         if !can_edit(&state, editor_id) {
             bail!("editor is not allowed to update config");
+        }
+        if let Some(expected_revision) = expected_revision {
+            if expected_revision != state.revision {
+                bail!(
+                    "revision conflict: expected {} but current is {}",
+                    expected_revision,
+                    state.revision
+                );
+            }
         }
 
         state.config = config;
@@ -416,7 +430,7 @@ mod tests {
             .unwrap();
 
         store
-            .update_config("owner", LocalConfig::default())
+            .update_config("owner", LocalConfig::default(), None)
             .await
             .unwrap();
 
@@ -435,7 +449,7 @@ mod tests {
             .unwrap();
 
         let err = store
-            .update_config("editor", LocalConfig::default())
+            .update_config("editor", LocalConfig::default(), None)
             .await
             .unwrap_err();
 
@@ -455,7 +469,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .update_config("editor", LocalConfig::default())
+            .update_config("editor", LocalConfig::default(), None)
             .await
             .unwrap();
 
@@ -476,7 +490,10 @@ mod tests {
         let mut updated = LocalConfig::default();
         updated.config.censored_replacement = "#".to_string();
 
-        store.update_config("owner", updated.clone()).await.unwrap();
+        store
+            .update_config("owner", updated.clone(), None)
+            .await
+            .unwrap();
 
         let reloaded = ConfigStore::load_or_create(&path, "owner".to_string())
             .await
@@ -486,6 +503,21 @@ mod tests {
             reloaded.get().await.config.config.censored_replacement,
             updated.config.censored_replacement
         );
+    }
+
+    #[tokio::test]
+    async fn update_config_rejects_stale_expected_revision() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let store = ConfigStore::load_or_create(&path, "owner".to_string())
+            .await
+            .unwrap();
+
+        let err = store
+            .update_config("owner", LocalConfig::default(), Some(99))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("revision conflict"));
     }
 
     #[tokio::test]
