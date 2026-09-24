@@ -1972,19 +1972,36 @@ function ConfigPanel(props: any) {
                     {!isOwnProfile ?`Viewing profile ${profileUserId}`:
                     blocked_by_dom ? "Your profile configuration is locked" : "Your profile configuration" }
                 </p>
-                {!isOwnProfile && canViewRemote && (
-                <label style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "16px"}}>
-                    <input
-                        type="checkbox"
-                        checked={editableConfig.config.blocked_by_dom}
-                        onChange={e => {
-                            const nextValue = e.currentTarget.checked;
-                            setEditableConfig(prev => ({ ...prev, config: { ...prev.config, blocked_by_dom: nextValue } }));
-                        }}
-                    />
-                    Block subs control
-                </label>
-                )}
+                    {!isOwnProfile && canViewRemote && (
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "16px", flexWrap: "wrap" }}>
+                            <button
+                                style={{
+                                    ...buttonStyle,
+                                    background: "#5865f2",
+                                    borderColor: "#5865f2"
+                                }}
+                                onClick={() => {
+                                    setEditableConfig(prev => ({
+                                        ...prev,
+                                        config: {
+                                            ...prev.config,
+                                            blocked_by_dom: !prev.config.blocked_by_dom
+                                        }
+                                    }));
+                                }}
+                            >
+                                Toggle Sub Control
+                            </button>
+                            <span
+                                style={{
+                                    color: editableConfig.config.blocked_by_dom ? "#da373c" : "#3ba55d",
+                                    fontWeight: 600
+                                }}
+                            >
+                                {editableConfig.config.blocked_by_dom ? "Sub Control Blocked" : "Sub Control Allowed"}
+                            </span>
+                        </div>
+                    )}
             </div>
 
             {!isOwnProfile && !canViewRemote && (
