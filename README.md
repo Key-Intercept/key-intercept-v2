@@ -61,30 +61,46 @@ tar -xf <file location>
 ### Android
 To install on Android:
 
-1. Download `key-intercept-loopback-android.apk` from [Releases](https://github.com/Key-intercept/key-intercept-v2/releases/latest).
-2. Install and open **Key Intercept Loopback**.
-3. Tap **Start Background Service**.
-4. Tap **Fix Battery Optimization**.
-5. Install Kettu/Bunny and add plugin source [https://key-intercept.github.io/key-intercept-v2/](https://key-intercept.github.io/key-intercept-v2/).
-6. Enable the plugin.
+1. Download the [APK](https://github.com/C0C0B01/KettuManager/releases/latest) for Kettu.
+2. Run it to install Kettu.
+3. 3. Open Kettu.
+4. Go to Profile > Settings > Plugins.
+5. Click the plus button in the bottom right hand corner.
+6. Download `key-intercept-loopback-android.apk` from [Releases](https://github.com/Key-intercept/key-intercept-v2/releases/latest).
+7. Install and open **Key Intercept Loopback** (see [this guide](https://www.lifewire.com/install-apk-on-android-4177185) for how to install an APK if unsure.
+8. Tap **Start Background Service**.
+9. Tap **Fix Battery Optimization**.
+10. Enable the plugin.
 
 The notification should show **Key Intercept Loopback is running in the background**.
 
-Detailed guide: [docs/quick-install-android.md](./docs/quick-install-android.md)
+> Note: I have no apple devices and refuse to get any, so I have no way of testing this.
+> Also note: you will need a mac to install this unless you know how to sideload without mac
 
 ### IOS
 To install on IOS:
 
-1. Download `key-intercept-loopback-ios.ipa` from [Releases](https://github.com/Key-intercept/key-intercept-v2/releases/latest).
-2. Sideload the IPA using AltStore/SideStore/TrollStore.
-3. Open **Key Intercept Loopback**.
-4. Tap **Start Loopback** (this enables silent audio keepalive).
-5. Install Kettu/Bunny and add plugin source [https://key-intercept.github.io/key-intercept-v2/](https://key-intercept.github.io/key-intercept-v2/).
-6. Enable the plugin.
+1. Download iloader on PC
+2. Connect your phone to PC via USB
+3. Sign in to your IOS account on Iloader
+4. Set the server to "stikstore"
+5. On the IPhone, go to settings > general > vpn & device management
+6. You should see a new developer app, enable it
+7. Go to settings > privacy & security and enable developer mode
+8. Restart your phone
+9. kettu should now be installed
+10. Open Kettu.
+11. Go to Profile > Settings > Plugins.
+12. Click the plus button in the bottom right hand corner.
+13. Type in the source [https://key-intercept.github.io/key-intercept-v2/](https://key-intercept.github.io/key-intercept-v2/).
+14. Click install.
+15. Download `key-intercept-loopback-ios.ipa` from [Releases](https://github.com/Key-intercept/key-intercept-v2/releases/latest).
+16. Sideload the IPA using the above steps.
+17. Open **Key Intercept Loopback**.
+18. Tap **Start Loopback** (the app will claim to be playing audio, this is so it doesnt close (blame apple)).
+19. Enable the plugin.
 
 The app should show **Key Intercept Loopback is running in the background**.
-
-Detailed guide: [docs/quick-install-ios.md](./docs/quick-install-ios.md)
 
 ## Usage
 
