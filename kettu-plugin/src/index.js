@@ -2498,15 +2498,15 @@ function ConfigLauncherPanel(props) {
     const useRef = resolveReactHook(React, "useRef");
     if (!h || !useState || !useEffect || !useRef) return ConfigPanel(props);
 
+    const activeUserId = currentUser()?.id ?? "";
     let targetUserInputState;
     try {
-        targetUserInputState = useState("");
+        targetUserInputState = useState(validateDiscordId(activeUserId) ? activeUserId : "");
     } catch {
         return ConfigPanel(props);
     }
-    const activeUserId = currentUser().id;
     const [targetUserInput, setTargetUserInput] = targetUserInputState;
-    const [selectedUserId, setSelectedUserId] = useState(activeUserId);
+    const [selectedUserId, setSelectedUserId] = useState(validateDiscordId(activeUserId) ? activeUserId : "");
     const [launcherStatus, setLauncherStatus] = useState("");
     const [launcherRevision, setLauncherRevision] = useState(0);
     const lastConsumedLaunchRef = useRef("");
@@ -2514,6 +2514,12 @@ function ConfigLauncherPanel(props) {
     const launcherPanelHeight = Number.isFinite(windowHeight)
         ? Math.max(260, Math.floor(windowHeight - 260))
         : 560;
+
+    useEffect(() => {
+        if (!validateDiscordId(activeUserId)) return;
+        setTargetUserInput(prev => (validateDiscordId(prev) ? prev : activeUserId));
+        setSelectedUserId(prev => (validateDiscordId(prev) ? prev : activeUserId));
+    }, [activeUserId]);
 
     useEffect(() => {
         const pending = consumePendingProfileEditorLaunch();
