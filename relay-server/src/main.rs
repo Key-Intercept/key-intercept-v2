@@ -1539,7 +1539,8 @@ mod tests {
                 "uwu_end": "1970-01-01T00:00:00.000Z",
                 "censored_end": "1970-01-01T00:00:00.000Z",
                 "censored_replacement": "*",
-                "debug": false
+                "debug": false,
+                "blocked_by_dom": false
             },
             "rules": [],
             "rules_groups": [],
