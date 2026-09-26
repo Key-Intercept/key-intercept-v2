@@ -1,6 +1,3 @@
-mod schema;
-mod store;
-
 use anyhow::Result;
 use axum::{
     Json, Router,
@@ -12,11 +9,10 @@ use axum::{
     response::IntoResponse,
     routing::{delete, get},
 };
-use schema::{LocalConfig, is_discord_id};
+use loopback_core::{ConfigStore, LocalConfig, is_discord_id};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf};
-use store::ConfigStore;
 use tokio::time::{Duration, Instant, sleep};
 use tower_http::cors::CorsLayer;
 use tracing::{error, info, warn};
@@ -90,6 +86,8 @@ enum RelayDesktopCommand {
         expected_revision: Option<u64>,
     },
     AddAllowedEditor { owner_id: String, editor_id: String },
+    RemoveAllowedEditor { owner_id: String, editor_id: String },
+    ReadAllowedEditors { requester_id: String },
 }
 
 #[derive(Deserialize)]
@@ -692,6 +690,46 @@ async fn execute_desktop_command(
                 Ok(()) => (StatusCode::NO_CONTENT, None, None),
                 Err(err) => (StatusCode::FORBIDDEN, None, Some(err.to_string())),
             }
+        }
+        RelayDesktopCommand::RemoveAllowedEditor {
+            owner_id,
+            editor_id,
+        } => {
+            if owner_id != owner_discord_id {
+                return (
+                    StatusCode::FORBIDDEN,
+                    None,
+                    Some("owner_id does not match this loopback owner".to_string()),
+                );
+            }
+            if !is_discord_id(&editor_id) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    None,
+                    Some("editor_id must be numeric".to_string()),
+                );
+            }
+            match store.remove_editor(&owner_id, &editor_id).await {
+                Ok(()) => (StatusCode::NO_CONTENT, None, None),
+                Err(err) => (StatusCode::FORBIDDEN, None, Some(err.to_string())),
+            }
+        }
+        RelayDesktopCommand::ReadAllowedEditors { requester_id } => {
+            let stored = store.get().await;
+            if requester_id != stored.owner_discord_id {
+                return (
+                    StatusCode::FORBIDDEN,
+                    None,
+                    Some("only owner can read allowed editors".to_string()),
+                );
+            }
+            let mut allowed = stored.allowed_editors.into_iter().collect::<Vec<_>>();
+            allowed.sort();
+            (
+                StatusCode::OK,
+                Some(serde_json::json!({ "allowed_editors": allowed })),
+                None,
+            )
         }
     }
 }

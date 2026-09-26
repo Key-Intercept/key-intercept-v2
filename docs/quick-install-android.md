@@ -1,0 +1,32 @@
+# Quick Install: Android Loopback
+
+## What you need
+- Android 9+
+- Discord mobile mod (Kettu/Bunny/Vendetta)
+- Internet connection for first-time setup
+
+## Install in 5 taps
+1. Download `key-intercept-loopback-android.apk` from the latest release.
+2. Open APK and allow install from unknown sources if prompted.
+3. Open **Key Intercept Loopback**.
+4. Tap **Start Background Service**.
+5. Tap **Fix Battery Optimization** and allow the exemption.
+
+The app notification should read:
+**Key Intercept Loopback is running in the background**
+
+## Plugin setup (one-time)
+1. Open Kettu/Bunny plugin settings.
+2. Add plugin source: `https://key-intercept.github.io/key-intercept-v2/`
+3. Enable Key Intercept plugin.
+
+## Diagnostics
+- If loopback is not detected, keep the app open once and retry plugin sync.
+- If service stops, re-open app and tap **Start Background Service**.
+- If Android kills background activity, re-run **Fix Battery Optimization**.
+
+## Screenshot checklist for release notes
+- Home screen showing **Start Background Service**
+- Running state text
+- Persistent notification text
+- Battery optimization prompt

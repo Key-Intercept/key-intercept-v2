@@ -159,9 +159,80 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
 
+  build-mobile-artifacts:
+    runs-on: ${{ matrix.os }}
+    needs: determine-version
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: android
+          - os: macos-latest
+            target: ios
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        if: matrix.target == 'android'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        if: matrix.target == 'android'
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        if: matrix.target == 'android'
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build Android APK
+        if: matrix.target == 'android'
+        working-directory: mobile/android-loopback
+        run: |
+          gradle :app:assembleRelease
+          mkdir -p ../../dist
+          cp app/build/outputs/apk/release/app-release.apk ../../dist/key-intercept-loopback-android.apk
+
+      - name: Upload Android APK
+        if: matrix.target == 'android'
+        uses: actions/upload-artifact@v4
+        with:
+          name: key-intercept-loopback-android
+          path: dist/key-intercept-loopback-android.apk
+
+      - name: Install XcodeGen
+        if: matrix.target == 'ios'
+        run: brew install xcodegen
+
+      - name: Build iOS app
+        if: matrix.target == 'ios'
+        working-directory: mobile/ios-loopback
+        run: |
+          xcodegen generate
+          xcodebuild \
+            -project KeyInterceptLoopback.xcodeproj \
+            -scheme KeyInterceptLoopback \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            -archivePath build/KeyInterceptLoopback.xcarchive \
+            archive
+          mkdir -p ../../dist
+          ditto -c -k --sequesterRsrc --keepParent build/KeyInterceptLoopback.xcarchive ../../dist/key-intercept-loopback-ios.ipa
+
+      - name: Upload iOS IPA
+        if: matrix.target == 'ios'
+        uses: actions/upload-artifact@v4
+        with:
+          name: key-intercept-loopback-ios
+          path: dist/key-intercept-loopback-ios.ipa
+
   publish-release:
     runs-on: ubuntu-latest
-    needs: [determine-version, build-loopback-and-plugin, build-installer]
+    needs: [determine-version, build-loopback-and-plugin, build-installer, build-mobile-artifacts]
     steps:
       - name: Download installer packages
         uses: actions/download-artifact@v4
@@ -181,6 +252,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: key-intercept-vencord-plugin
+          merge-multiple: true
+          path: release-assets
+
+      - name: Download mobile artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: key-intercept-loopback-*
           merge-multiple: true
           path: release-assets
 
