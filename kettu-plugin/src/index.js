@@ -385,6 +385,7 @@ function currentRelayUrl() {
 }
 
 function readMobileState(ownerId) {
+    if (ownerId === null || ownerId === undefined) ownerId = currentUser()?.id ?? "";
     const storage = getStorageBackend();
     const key = `${MOBILE_STATE_KEY}:${ownerId}`;
     const fallback = fallbackMobileStateByOwner.get(ownerId);
@@ -1504,10 +1505,10 @@ function ConfigPanel(props) {
     const useCallback = resolveReactHook(React, "useCallback") ?? (callback => callback);
     if (!h || !useState || !useEffect || !useRef) return null;
     const activeUserId = resolveSessionUserId(props);
-    const forcedProfileUserId = normalizeDiscordId(props?.forcedProfileUserId) || null;
+    const forcedProfileUserId = normalizeDiscordId(props?.forcedProfileUserId);
     const profileUserId = forcedProfileUserId ?? getProfileUserId(props) ?? activeUserId;
     const entrypoint = typeof props?.entrypoint === "string" ? props.entrypoint : "unknown";
-    const isOwnProfile = validateDiscordId(profileUserId) && profileUserId === activeUserId;
+    const isOwnProfile = (validateDiscordId(profileUserId) && profileUserId === activeUserId) ?? true;
     const panelOpenInfo = getProfilePanelOpenInfo(props);
     const isPanelOpen = panelOpenInfo.isOpen;
     const hasExplicitPanelOpenState = panelOpenInfo.hasExplicitState;
