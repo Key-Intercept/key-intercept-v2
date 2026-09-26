@@ -1458,6 +1458,7 @@ fn validate_config_shape(value: &Value) -> Result<(), String> {
         "censored_end",
         "censored_replacement",
         "debug",
+        "blocked_by_dom",
     ];
     if !has_exact_keys(config, &config_keys) {
         return Err("config.config has unexpected or missing fields".to_string());

@@ -23,6 +23,7 @@ type Config = {
     censored_end: string;
     censored_replacement: string;
     debug: boolean;
+    blocked_by_dom: boolean;
 };
 
 type Rule = {
@@ -165,7 +166,8 @@ const defaultLocalConfig: LocalConfig = {
         uwu_end: epoch,
         censored_end: epoch,
         censored_replacement: "*",
-        debug: false
+        debug: false,
+        blocked_by_dom: false
     },
     rules: [],
     rules_groups: [],
@@ -1619,6 +1621,8 @@ function ConfigPanel(props: any) {
         event.stopPropagation();
     }, []);
 
+    const blocked_by_dom = editableConfig.config.blocked_by_dom;
+
     const sectionStyle: React.CSSProperties = {
         background: "#2b2d31",
         border: "1px solid #3f4147",
@@ -1965,8 +1969,39 @@ function ConfigPanel(props: any) {
             <div style={{ ...sectionStyle, background: "#2b2d31" }}>
                 <h3 style={{ margin: 0 }}>key-intercept control center</h3>
                 <p style={{ margin: "6px 0 0 0", color: "#b5bac1" }}>
-                    {isOwnProfile ? "Your profile configuration" : `Viewing profile ${profileUserId}`}
+                    {!isOwnProfile ?`Viewing profile ${profileUserId}`:
+                    blocked_by_dom ? "Your profile configuration is locked" : "Your profile configuration" }
                 </p>
+                    {!isOwnProfile && canViewRemote && (
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "16px", flexWrap: "wrap" }}>
+                            <button
+                                style={{
+                                    ...buttonStyle,
+                                    background: "#5865f2",
+                                    borderColor: "#5865f2"
+                                }}
+                                onClick={() => {
+                                    setEditableConfig(prev => ({
+                                        ...prev,
+                                        config: {
+                                            ...prev.config,
+                                            blocked_by_dom: !prev.config.blocked_by_dom
+                                        }
+                                    }));
+                                }}
+                            >
+                                Toggle Sub Control
+                            </button>
+                            <span
+                                style={{
+                                    color: editableConfig.config.blocked_by_dom ? "#da373c" : "#3ba55d",
+                                    fontWeight: 600
+                                }}
+                            >
+                                {editableConfig.config.blocked_by_dom ? "Sub Control Blocked" : "Sub Control Allowed"}
+                            </span>
+                        </div>
+                    )}
             </div>
 
             {!isOwnProfile && !canViewRemote && (
@@ -1993,7 +2028,7 @@ function ConfigPanel(props: any) {
                 </div>
             )}
 
-            {(isOwnProfile || canViewRemote) && (
+            {((isOwnProfile && !blocked_by_dom) || (!isOwnProfile && canViewRemote)) && (
                 <>
                     <div style={sectionStyle}>
                         <h4 style={sectionHeaderStyle}>Gag</h4>
@@ -2126,47 +2161,6 @@ function ConfigPanel(props: any) {
                     </div>
 
                     <div style={sectionStyle}>
-                        <h4 style={sectionHeaderStyle}>Scope Filter</h4>
-                        <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
-                            <label>
-                                Filter mode
-                                <select
-                                    style={inputStyle}
-                                    value={editableConfig.filter_mode}
-                                    onChange={e => {
-                                        const nextMode: ScopeFilterMode = e.currentTarget.value === "blacklist" ? "blacklist" : "whitelist";
-                                        setEditableConfig(prev => ({ ...prev, filter_mode: nextMode }));
-                                    }}
-                                >
-                                    <option value="whitelist">Whitelist mode (only listed servers/DMs are transformed)</option>
-                                    <option value="blacklist">Blacklist mode (listed servers/DMs are skipped)</option>
-                                </select>
-                            </label>
-                            <p style={{ margin: 0, color: "#b5bac1" }}>
-                                Use the server or DM right-click menu to add/remove entries from the shared scope list.
-                            </p>
-                            <ul style={{ marginBottom: 0 }}>
-                                {getSharedScopeList(editableConfig).map((item, index) => (
-                                    <li key={`${item.discord_id}-${item.server_name}-${index}`} style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
-                                        <span>{item.server_name || item.discord_id}</span>
-                                        <button
-                                            style={{ ...buttonStyle, background: "#da373c", borderColor: "#da373c" }}
-                                            onClick={() => {
-                                                setEditableConfig(prev => {
-                                                    const nextList = getSharedScopeList(prev).filter((_, itemIndex) => itemIndex !== index);
-                                                    return { ...prev, whitelist: nextList, blacklist: nextList };
-                                                });
-                                            }}
-                                        >
-                                            Remove
-                                        </button>
-                                    </li>
-                                ))}
-                            </ul>
-                        </div>
-                    </div>
-
-                    <div style={sectionStyle}>
                         <h4 style={sectionHeaderStyle}>Custom Rules</h4>
                         <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
                             <p style={{ margin: 0, color: "#b5bac1" }}>{editableConfig.rules_groups.length} group(s), {editableConfig.rules.length} rule(s)</p>
@@ -2191,7 +2185,7 @@ function ConfigPanel(props: any) {
                 </>
             )}
 
-            {(isOwnProfile || canViewRemote) && isRulesEditorOpen && (
+            {((isOwnProfile && !blocked_by_dom) || (!isOwnProfile && canViewRemote)) && isRulesEditorOpen && (
                 <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 9999, display: "grid", placeItems: "center", padding: "20px" }}>
                     <div style={{ width: "min(980px, 95vw)", maxHeight: "90vh", overflow: "auto", ...sectionStyle, background: "#1e1f22", display: "grid", gap: "10px" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
@@ -2318,7 +2312,47 @@ function ConfigPanel(props: any) {
             )}
 
             {isOwnProfile && (
-                <>
+            <>
+                <div style={sectionStyle}>
+                        <h4 style={sectionHeaderStyle}>Scope Filter</h4>
+                        <div style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
+                            <label>
+                                Filter mode
+                                <select
+                                    style={inputStyle}
+                                    value={editableConfig.filter_mode}
+                                    onChange={e => {
+                                        const nextMode: ScopeFilterMode = e.currentTarget.value === "blacklist" ? "blacklist" : "whitelist";
+                                        setEditableConfig(prev => ({ ...prev, filter_mode: nextMode }));
+                                    }}
+                                >
+                                    <option value="whitelist">Whitelist mode (only listed servers/DMs are transformed)</option>
+                                    <option value="blacklist">Blacklist mode (listed servers/DMs are skipped)</option>
+                                </select>
+                            </label>
+                            <p style={{ margin: 0, color: "#b5bac1" }}>
+                                Use the server or DM right-click menu to add/remove entries from the shared scope list.
+                            </p>
+                            <ul style={{ marginBottom: 0 }}>
+                                {getSharedScopeList(editableConfig).map((item, index) => (
+                                    <li key={`${item.discord_id}-${item.server_name}-${index}`} style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
+                                        <span>{item.server_name || item.discord_id}</span>
+                                        <button
+                                            style={{ ...buttonStyle, background: "#da373c", borderColor: "#da373c" }}
+                                            onClick={() => {
+                                                setEditableConfig(prev => {
+                                                    const nextList = getSharedScopeList(prev).filter((_, itemIndex) => itemIndex !== index);
+                                                    return { ...prev, whitelist: nextList, blacklist: nextList };
+                                                });
+                                            }}
+                                        >
+                                            Remove
+                                        </button>
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    </div>
                     <div style={sectionStyle}>
                         <h4 style={sectionHeaderStyle}>Allowed Editors</h4>
                         <div style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
