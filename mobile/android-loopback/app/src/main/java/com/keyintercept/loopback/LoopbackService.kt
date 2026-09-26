@@ -23,7 +23,6 @@ class LoopbackService : Service() {
         const val ACTION_STOP = "com.keyintercept.loopback.STOP"
         private const val CHANNEL_ID = "key-intercept-loopback"
         private const val NOTIFICATION_ID = 1001
-        private const val PORT = 35491
     }
 
     private val running = AtomicBoolean(false)
@@ -61,7 +60,10 @@ class LoopbackService : Service() {
 
         running.set(true)
         serverThread = Thread {
-            ServerSocket(PORT, 50, InetAddress.getByName("127.0.0.1")).use { server ->
+            val configuredPort = BuildConfig.LOOPBACK_PORT
+                .takeIf { it in 1..65535 }
+                ?: 35491
+            ServerSocket(configuredPort, 50, InetAddress.getByName("127.0.0.1")).use { server ->
                 while (running.get()) {
                     runCatching { server.accept() }
                         .onSuccess { socket -> handleClient(socket) }

@@ -15,6 +15,19 @@
 The app notification should read:
 **Key Intercept Loopback is running in the background**
 
+## Build with a custom loopback port (testing)
+From `/home/runner/work/key-intercept-v2/key-intercept-v2/mobile/android-loopback`:
+
+```sh
+gradle :app:assembleDebug -PloopbackPort=46001
+```
+
+You can also use an environment variable:
+
+```sh
+KEY_INTERCEPT_LOOPBACK_PORT=46001 gradle :app:assembleDebug
+```
+
 ## Plugin setup (one-time)
 1. Open Kettu/Bunny plugin settings.
 2. Add plugin source: `https://key-intercept.github.io/key-intercept-v2/`

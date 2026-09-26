@@ -3,6 +3,14 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val configuredLoopbackPort = (
+    providers.gradleProperty("loopbackPort").orNull
+        ?: providers.environmentVariable("KEY_INTERCEPT_LOOPBACK_PORT").orNull
+        ?: "35491"
+).toIntOrNull()
+    ?.takeIf { it in 1..65535 }
+    ?: 35491
+
 android {
     namespace = "com.keyintercept.loopback"
     compileSdk = 34
@@ -13,6 +21,7 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "0.1.0"
+        buildConfigField("int", "LOOPBACK_PORT", configuredLoopbackPort.toString())
     }
 
     buildTypes {
