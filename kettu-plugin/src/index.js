@@ -2502,7 +2502,7 @@ function ConfigLauncherPanel(props) {
     const activeUserId = currentUser()?.id ?? "";
     let targetUserInputState;
     try {
-        targetUserInputState = useState(validateDiscordId(activeUserId) ? activeUserId : "");
+        targetUserInputState = useState("");
     } catch {
         return ConfigPanel(props);
     }
@@ -2518,7 +2518,6 @@ function ConfigLauncherPanel(props) {
 
     useEffect(() => {
         if (!validateDiscordId(activeUserId)) return;
-        setTargetUserInput(prev => (validateDiscordId(prev) ? prev : activeUserId));
         setSelectedUserId(prev => (validateDiscordId(prev) ? prev : activeUserId));
     }, [activeUserId]);
 
@@ -2526,18 +2525,24 @@ function ConfigLauncherPanel(props) {
         const pending = consumePendingProfileEditorLaunch();
         if (!pending) return;
         const launchKey = `${pending.source}:${pending.targetUserId}`;
-        lastConsumedLaunchRef.current = launchKey;
-        setSelectedUserId(pending.targetUserId);
-        setLauncherRevision(revision => revision + 1);
-        setLauncherStatus(`Opened target ${pending.targetUserId} from ${pending.source}`);
-        console.log(`${LOG_PREFIX} launcher consumed pending request`, pending);
+        if (pending.targetUserId === activeUserId) {
+            lastConsumedLaunchRef.current = launchKey;
+            setSelectedUserId(pending.targetUserId);
+            setLauncherRevision(revision => revision + 1);
+            setLauncherStatus(`Opened target ${pending.targetUserId} from ${pending.source}`);
+            console.log(`${LOG_PREFIX} launcher consumed pending request`, pending);
+            return;
+        }
+        setLauncherStatus("Type a Discord ID below to edit another profile config.");
+        console.log(`${LOG_PREFIX} launcher ignored pending non-self request`, pending);
     }, []);
 
-    const launchForUser = (targetUserId, source) => {
+    const launchForUser = targetUserId => {
         if (!validateDiscordId(targetUserId)) {
             setLauncherStatus("Enter a numeric Discord ID");
             return;
         }
+        const source = "settings:manual";
         const launchKey = `${source}:${targetUserId}`;
         lastConsumedLaunchRef.current = launchKey;
         setSelectedUserId(targetUserId);
@@ -2589,10 +2594,9 @@ function ConfigLauncherPanel(props) {
                 }
             },
             h(Text, { style: { color: "#f2f3f5", fontSize: 16, fontWeight: "700" } }, "Profile Config Editor"),
-            h(Text, { style: { color: "#b5bac1", marginTop: 4 } }, "Use this launcher if profile badges do not appear."),
+            h(Text, { style: { color: "#b5bac1", marginTop: 4 } }, "You're editing your own profile by default. Type a Discord ID to edit someone else."),
             h(View, { style: { marginTop: 8, flexDirection: "row", flexWrap: "wrap" } },
-                button("Open my profile config", () => launchForUser(activeUserId, "settings:self"), { key: "open-self", noTopMargin: true }),
-                button("Open by Discord ID", () => launchForUser(targetUserInput.trim(), "settings:manual"), { key: "open-target", noTopMargin: true })
+                button("Open by Discord ID", () => launchForUser(targetUserInput.trim()), { key: "open-target", noTopMargin: true })
             ),
             h(TextInput, {
                 value: targetUserInput,
