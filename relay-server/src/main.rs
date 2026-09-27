@@ -344,7 +344,7 @@ async fn get_canonical_profile_state(
         &state,
         &owner_id,
         DesktopCommand::ReadConfig {
-            requester_id: query.requester_id,
+            requester_id: query.requester_id.clone(),
         },
     )
     .await;
@@ -366,24 +366,26 @@ async fn get_canonical_profile_state(
     };
 
     let mut allowed_editors = Vec::new();
-    let allowed_response = dispatch_desktop_command(
-        &state,
-        &owner_id,
-        DesktopCommand::ReadAllowedEditors {
-            requester_id: owner_id.clone(),
-        },
-    )
-    .await;
-    if allowed_response.status.is_success() {
-        if let Some(body) = allowed_response.body {
-            allowed_editors = body
-                .get("allowed_editors")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|v| v.as_str().map(ToOwned::to_owned))
-                .collect::<Vec<_>>();
-            allowed_editors.sort();
+    if query.requester_id == owner_id {
+        let allowed_response = dispatch_desktop_command(
+            &state,
+            &owner_id,
+            DesktopCommand::ReadAllowedEditors {
+                requester_id: owner_id.clone(),
+            },
+        )
+        .await;
+        if allowed_response.status.is_success() {
+            if let Some(body) = allowed_response.body {
+                allowed_editors = body
+                    .get("allowed_editors")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                    .collect::<Vec<_>>();
+                allowed_editors.sort();
+            }
         }
     }
 

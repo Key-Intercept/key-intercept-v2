@@ -775,7 +775,7 @@ function readRemoteConfig(relayUrl, requesterId, targetUserId) {
             debugLog("readRemoteConfig:success", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, status: response.status, endpoint: "profile-state" });
             return response.json();
         }
-        if (response.status === 404 || response.status === 400) {
+        if (!response.ok) {
             const fallbackSourceStatus = response.status;
             return fetch(legacyConfigUrl, { cache: "no-store" }).then(legacyResponse => {
                 if (!legacyResponse.ok) {

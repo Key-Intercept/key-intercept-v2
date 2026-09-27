@@ -764,7 +764,7 @@ async function readRemoteConfig(relayUrl: string, requesterId: string, targetUse
     let response = await fetch(profileStateUrl, { cache: "no-store" });
     let endpoint = "profile-state";
     let fallbackSourceStatus: number | null = null;
-    if (response.status === 404 || response.status === 400) {
+    if (!response.ok) {
         fallbackSourceStatus = response.status;
         response = await fetch(legacyConfigUrl, { cache: "no-store" });
         endpoint = "legacy-config";
