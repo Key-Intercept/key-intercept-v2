@@ -115,6 +115,12 @@ When enabled and explicit relay settings are not provided:
 - `loopback-server` defaults relay URL to `http://127.0.0.1:46001`
 - installer default relay URL becomes `http://127.0.0.1:46001`
 
+For the self-hosted desktop plugin, you can also enable developer relay defaults at runtime by setting browser local storage:
+
+```js
+localStorage.setItem("key-intercept/developer-mode", "true")
+```
+
 ## Usage
 
 Each user has a 'config' which allows controlling how they speak. On PC, you can access this by clicking on your profile, to access someone elses config, they must first give permission (see [Allowing Editors](#allowing-editors)). Other user's config's can be found by clicking on their profile.

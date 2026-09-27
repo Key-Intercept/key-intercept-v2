@@ -8,7 +8,24 @@ const LOOPBACK = "http://127.0.0.1:35491";
 const DISCORD_SECURE_ORIGINS = new Set(["https://discord.com", "https://ptb.discord.com", "https://canary.discord.com"]);
 const LOG_PREFIX = "[key-intercept]";
 const MOBILE_STATE_KEY = "key-intercept/mobile-loopback-state/v1";
-const DEVELOPER_MODE_ENABLED = "__KEY_INTERCEPT_DEVELOPER_MODE__" === "true";
+const DEVELOPER_MODE_ENABLED = (() => {
+    const values: unknown[] = [];
+    try {
+        const globalScope = globalThis as Record<string, unknown>;
+        values.push(globalScope.KEY_INTERCEPT_DEVELOPER_MODE);
+        values.push(globalScope.KEY_INTERCEPT_DEBUG_MODE);
+    } catch {}
+    try {
+        values.push(window.localStorage.getItem("key-intercept/developer-mode"));
+    } catch {}
+    for (const value of values) {
+        const normalized = String(value ?? "").trim().toLowerCase();
+        if (normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on") {
+            return true;
+        }
+    }
+    return false;
+})();
 const DEFAULT_RELAY_URL = DEVELOPER_MODE_ENABLED ? "http://127.0.0.1:46001" : "https://kirelay.thomaslower.com";
 
 type Config = {
