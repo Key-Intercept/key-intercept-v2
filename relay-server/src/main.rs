@@ -343,6 +343,10 @@ fn mobile_snapshot_allows(snapshot: &MobileSnapshotRecord, owner_id: &str, reque
     requester_id == owner_id || snapshot.allowed_editors.iter().any(|id| id == requester_id)
 }
 
+fn mobile_snapshot_allows_edit(snapshot: &MobileSnapshotRecord, owner_id: &str, editor_id: &str) -> bool {
+    editor_id == owner_id || snapshot.allowed_editors.iter().any(|id| id == editor_id)
+}
+
 async fn get_canonical_profile_state(
     State(state): State<AppState>,
     Path(owner_id): Path<String>,
@@ -523,12 +527,61 @@ async fn put_remote_config(
         &state,
         &owner_id,
         DesktopCommand::PutConfig {
-            editor_id: payload.editor_id,
-            config: payload.config,
+            editor_id: payload.editor_id.clone(),
+            config: payload.config.clone(),
             expected_revision: payload.expected_revision,
         },
     )
     .await;
+    if response.status.is_success() {
+        return desktop_command_to_http_response(response);
+    }
+
+    if matches!(response.status, StatusCode::NOT_FOUND | StatusCode::BAD_GATEWAY) {
+        let mut snapshots = state.mobile_snapshots.write().await;
+        if let Some(snapshot) = snapshots.get_mut(&owner_id) {
+            if !mobile_snapshot_allows_edit(snapshot, &owner_id, &payload.editor_id) {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(ErrorResponse {
+                        error: "editor is not allowed to update config".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+            if payload
+                .expected_revision
+                .is_some_and(|expected| expected != snapshot.revision)
+            {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "revision mismatch: expected {}, found {}",
+                            payload.expected_revision.unwrap_or_default(),
+                            snapshot.revision
+                        ),
+                    }),
+                )
+                    .into_response();
+            }
+
+            snapshot.config = payload.config;
+            snapshot.revision = snapshot.revision.saturating_add(1);
+            snapshot.last_writer_id = payload.editor_id.clone();
+
+            return (
+                StatusCode::OK,
+                Json(MobileOperationResponse {
+                    revision: snapshot.revision,
+                    editor_id: payload.editor_id,
+                    config: snapshot.config.clone(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
     desktop_command_to_http_response(response)
 }
 
@@ -638,7 +691,22 @@ async fn approve_access_request(
     )
     .await;
     if !response.status.is_success() {
-        return desktop_command_to_http_response(response);
+        if matches!(response.status, StatusCode::NOT_FOUND | StatusCode::BAD_GATEWAY) {
+            let mut snapshots = state.mobile_snapshots.write().await;
+            if let Some(snapshot) = snapshots.get_mut(&owner_id) {
+                if !snapshot.allowed_editors.iter().any(|id| id == &requester_id) {
+                    snapshot.allowed_editors.push(requester_id.clone());
+                    snapshot.allowed_editors.sort();
+                    snapshot.allowed_editors.dedup();
+                    snapshot.revision = snapshot.revision.saturating_add(1);
+                    snapshot.last_writer_id = owner_id.clone();
+                }
+            } else {
+                return desktop_command_to_http_response(response);
+            }
+        } else {
+            return desktop_command_to_http_response(response);
+        }
     }
 
     (
@@ -691,7 +759,21 @@ async fn deny_access_request(
     )
     .await;
     if !response.status.is_success() && response.status != StatusCode::FORBIDDEN {
-        return desktop_command_to_http_response(response);
+        if matches!(response.status, StatusCode::NOT_FOUND | StatusCode::BAD_GATEWAY) {
+            let mut snapshots = state.mobile_snapshots.write().await;
+            if let Some(snapshot) = snapshots.get_mut(&owner_id) {
+                let previous_len = snapshot.allowed_editors.len();
+                snapshot.allowed_editors.retain(|id| id != &requester_id);
+                if snapshot.allowed_editors.len() != previous_len {
+                    snapshot.revision = snapshot.revision.saturating_add(1);
+                    snapshot.last_writer_id = owner_id.clone();
+                }
+            } else {
+                return desktop_command_to_http_response(response);
+            }
+        } else {
+            return desktop_command_to_http_response(response);
+        }
     }
 
     (
@@ -1342,5 +1424,66 @@ mod tests {
         .into_response();
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn put_remote_config_updates_mobile_snapshot_when_desktop_missing() {
+        let state = test_state();
+        state.mobile_snapshots.write().await.insert(
+            "111".to_string(),
+            MobileSnapshotRecord {
+                revision: 2,
+                last_writer_id: "111".to_string(),
+                config: sample_config(),
+                allowed_editors: vec!["222".to_string()],
+            },
+        );
+
+        let response = put_remote_config(
+            State(state.clone()),
+            Path("111".to_string()),
+            Json(RemoteUpdatePayload {
+                editor_id: "222".to_string(),
+                config: sample_config(),
+                expected_revision: Some(2),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let snapshots = state.mobile_snapshots.read().await;
+        let snapshot = snapshots.get("111").expect("snapshot exists");
+        assert_eq!(snapshot.revision, 3);
+        assert_eq!(snapshot.last_writer_id, "222");
+    }
+
+    #[tokio::test]
+    async fn approve_access_request_updates_mobile_snapshot_when_desktop_missing() {
+        let state = test_state();
+        state.mobile_snapshots.write().await.insert(
+            "111".to_string(),
+            MobileSnapshotRecord {
+                revision: 1,
+                last_writer_id: "111".to_string(),
+                config: sample_config(),
+                allowed_editors: vec![],
+            },
+        );
+
+        let response = approve_access_request(
+            State(state.clone()),
+            Path(("111".to_string(), "222".to_string())),
+            Json(AccessRequestApprovalPayload {
+                owner_id: "111".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let snapshots = state.mobile_snapshots.read().await;
+        let snapshot = snapshots.get("111").expect("snapshot exists");
+        assert!(snapshot.allowed_editors.iter().any(|id| id == "222"));
     }
 }
