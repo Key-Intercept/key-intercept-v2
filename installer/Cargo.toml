@@ -3,6 +3,10 @@ name = "key-intercept-installer"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+developer-build = []
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "test": "node ./test/react-compat.test.mjs",
-    "build": "node build.mjs"
+    "build": "node build.mjs --release-build",
+    "build:developer": "node build.mjs --developer-build"
   },
   "license": "MIT"
 }

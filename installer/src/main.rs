@@ -281,7 +281,10 @@ fn env_flag(name: &str) -> bool {
 }
 
 fn default_relay_server_url() -> String {
-    if env_flag("KEY_INTERCEPT_DEVELOPER_MODE") || env_flag("KEY_INTERCEPT_DEBUG_MODE") {
+    if cfg!(feature = "developer-build")
+        || env_flag("KEY_INTERCEPT_DEVELOPER_MODE")
+        || env_flag("KEY_INTERCEPT_DEBUG_MODE")
+    {
         "http://127.0.0.1:46001".to_string()
     } else {
         "https://kirelay.thomaslower.com".to_string()

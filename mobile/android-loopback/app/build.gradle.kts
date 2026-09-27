@@ -12,10 +12,21 @@ val configuredLoopbackPort = (
     ?: 35491
 
 val developerModeEnabled = (
-    providers.gradleProperty("developerMode").orNull
+    providers.gradleProperty("developerBuild").orNull
+        ?: providers.gradleProperty("developerMode").orNull
+        ?: providers.environmentVariable("KEY_INTERCEPT_DEVELOPER_BUILD").orNull
         ?: providers.environmentVariable("KEY_INTERCEPT_DEVELOPER_MODE").orNull
         ?: providers.environmentVariable("KEY_INTERCEPT_DEBUG_MODE").orNull
-        ?: "false"
+        ?: run {
+            val requestedTasks = gradle.startParameter.taskNames
+                .joinToString(" ")
+                .lowercase()
+            when {
+                requestedTasks.contains("release") -> "false"
+                requestedTasks.contains("debug") -> "true"
+                else -> "false"
+            }
+        }
 ).trim().lowercase().let { value ->
     value == "1" || value == "true" || value == "yes" || value == "on"
 }

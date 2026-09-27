@@ -28,7 +28,9 @@ fn env_flag(name: &str) -> bool {
 }
 
 fn developer_mode_enabled() -> bool {
-    env_flag("KEY_INTERCEPT_DEVELOPER_MODE") || env_flag("KEY_INTERCEPT_DEBUG_MODE")
+    cfg!(feature = "developer-build")
+        || env_flag("KEY_INTERCEPT_DEVELOPER_MODE")
+        || env_flag("KEY_INTERCEPT_DEBUG_MODE")
 }
 
 fn developer_default_relay_url() -> Option<String> {

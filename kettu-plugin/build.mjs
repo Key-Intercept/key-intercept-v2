@@ -9,7 +9,11 @@ const distManifestPath = new URL("./dist/manifest.json", import.meta.url);
 
 const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 const source = await readFile(sourcePath, "utf8");
+const forceDeveloperBuild = process.argv.includes("--developer-build");
+const forceReleaseBuild = process.argv.includes("--release-build");
 const developerMode = (() => {
+    if (forceDeveloperBuild) return true;
+    if (forceReleaseBuild) return false;
     const value = String(process.env.KEY_INTERCEPT_DEVELOPER_MODE ?? process.env.KEY_INTERCEPT_DEBUG_MODE ?? "").trim().toLowerCase();
     return value === "1" || value === "true" || value === "yes" || value === "on";
 })();

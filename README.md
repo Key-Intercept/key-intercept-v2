@@ -102,12 +102,21 @@ To install on IOS:
 
 The app should show **Key Intercept Loopback is running in the background**.
 
-### Developer mode relay defaults
+### Developer mode relay defaults (build args)
 
-For local/dev testing, set:
+Use developer build args when building debug/dev artifacts:
 
 ```sh
-KEY_INTERCEPT_DEVELOPER_MODE=1
+# Rust (relay/loopback/installer)
+cargo run -p relay-server --features developer-build
+cargo run -p loopback-server --features developer-build
+
+# Android
+cd /home/runner/work/key-intercept-v2/key-intercept-v2/mobile/android-loopback
+gradle :app:assembleDebug -PdeveloperBuild=true
+
+# Kettu plugin
+npm --prefix kettu-plugin run build:developer
 ```
 
 When enabled and explicit relay settings are not provided:
