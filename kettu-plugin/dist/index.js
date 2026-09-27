@@ -1,7 +1,10 @@
 (function(vendetta){const LOG_PREFIX = "[key-intercept/kettu]";
 const MOBILE_STATE_KEY = "key-intercept/mobile-loopback-state/v1";
 const RELAY_URL_STORAGE_KEY = "key-intercept/relay-url";
-const DEFAULT_RELAY_URL = "https://kirelay.thomaslower.com";
+const DEVELOPER_MODE_ENABLED = "false" === "true";
+const DEFAULT_RELAY_URL = DEVELOPER_MODE_ENABLED
+    ? "http://127.0.0.1:46001"
+    : "https://kirelay.thomaslower.com";
 const BOOTSTRAP_USER_RETRY_LIMIT = 20;
 const BOOTSTRAP_USER_RETRY_DELAY_MS = 1500;
 const farFuture = "9999-12-31T23:59:59.000Z";
@@ -52,7 +55,8 @@ const defaultLocalConfig = {
         uwu_end: epoch,
         censored_end: epoch,
         censored_replacement: "*",
-        debug: false
+        debug: false,
+        blocked_by_dom: false
     },
     rules: [],
     rules_groups: [],
@@ -121,7 +125,6 @@ function isDebugEnabled() {
 }
 
 function debugLog(event, payload) {
-    if (!isDebugEnabled()) return;
     console.log(`${LOG_PREFIX} ${event}`, payload);
 }
 
@@ -385,6 +388,7 @@ function currentRelayUrl() {
 }
 
 function readMobileState(ownerId) {
+    if (ownerId === null || ownerId === undefined) ownerId = currentUser()?.id ?? "";
     const storage = getStorageBackend();
     const key = `${MOBILE_STATE_KEY}:${ownerId}`;
     const fallback = fallbackMobileStateByOwner.get(ownerId);
@@ -529,11 +533,38 @@ function currentUser() {
 }
 
 function validateDiscordId(value) {
-    return typeof value === "string" && /^\d+$/.test(value);
+    return typeof value === "string" && /^[0-9]+$/.test(value);
+}
+
+function extractDiscordIdCandidate(value, depth = 0) {
+    if (depth > 3) return "";
+    if (typeof value === "string") return value.trim();
+    if (typeof value === "bigint") return value.toString();
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+        return Math.trunc(value).toString();
+    }
+    if (!value || typeof value !== "object") return "";
+    const nestedCandidates = [
+        value.id,
+        value.userId,
+        value.user_id,
+        value.value,
+        value.raw
+    ];
+    for (let i = 0; i < nestedCandidates.length; i++) {
+        const nested = extractDiscordIdCandidate(nestedCandidates[i], depth + 1);
+        if (nested) return nested;
+    }
+    const toString = value.toString;
+    if (typeof toString === "function" && toString !== Object.prototype.toString) {
+        const stringified = extractDiscordIdCandidate(toString.call(value), depth + 1);
+        if (stringified) return stringified;
+    }
+    return "";
 }
 
 function normalizeDiscordId(value) {
-    const normalized = String(value ?? "").trim();
+    const normalized = extractDiscordIdCandidate(value);
     return validateDiscordId(normalized) ? normalized : "";
 }
 
@@ -641,8 +672,8 @@ function getContextTargetUserId(props) {
         props?.account?.id
     ];
     for (let i = 0; i < candidates.length; i++) {
-        const value = candidates[i];
-        if (typeof value === "string" && value.length > 0) return value;
+        const normalized = normalizeDiscordId(candidates[i]);
+        if (normalized) return normalized;
     }
     return null;
 }
@@ -665,7 +696,7 @@ function saveLocalConfig(ownerId, config, editorId = ownerId) {
     return uploadMobileSnapshot(currentRelayUrl(), ownerId).then(() => nextState);
 }
 
-function pushRemoteConfig(relayUrl, editorId, targetUserId, config) {
+function pushRemoteConfig(relayUrl, editorId, targetUserId, config, expectedRevision) {
     const normalizedEditorId = normalizeDiscordId(editorId);
     const normalizedTargetUserId = normalizeDiscordId(targetUserId);
     if (!normalizedEditorId || !normalizedTargetUserId) {
@@ -679,7 +710,8 @@ function pushRemoteConfig(relayUrl, editorId, targetUserId, config) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
             editor_id: normalizedEditorId,
-            config: mergeLocalConfig(config)
+            config: mergeLocalConfig(config),
+            expected_revision: Number.isFinite(expectedRevision) ? expectedRevision : null
         })
     }).then(response => {
         if (!response.ok) throw new Error(`Relay update failed: ${response.status}`);
@@ -709,7 +741,8 @@ function formatConfigAccessError(error, targetUserId) {
     const status = parseErrorStatusCode(error);
     if (status === 403) return "You do not have access to this user's config.";
     if (status === 404) return "This user is not using Key Intercept yet, or has not opened Key Intercept on mobile to publish their profile config.";
-    if (status === 400) return "This config request was invalid. Please try again.";
+    if (status === 400) return "Config request failed due to an incompatible or malformed Discord ID shape. Reopen the profile or use Open by Discord ID from settings.";
+    if (status === 409) return "This config changed elsewhere. Reload the profile and try saving again.";
     if (status === 429) return "Too many requests. Please wait and try again.";
     if (status !== null && status >= 500) return "Key Intercept relay is unavailable right now. Please try again later.";
     if (status !== null) return `Unable to load ${targetUserId}'s profile config (error ${status}).`;
@@ -735,25 +768,81 @@ function readRemoteConfig(relayUrl, requesterId, targetUserId) {
         return Promise.reject(err);
     }
     debugLog("readRemoteConfig:start", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, relayUrl: relayBaseUrl(relayUrl) });
-    return fetch(
-        `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/config?requester_id=${encodeURIComponent(normalizedRequesterId)}`,
-        { cache: "no-store" }
-    ).then(response => {
-        if (!response.ok) {
-            return response.text().then(body => {
-                let payload = null;
-                try {
-                    payload = body ? JSON.parse(body) : null;
-                } catch {}
-                const status = deriveRelayConfigReadStatus(response.status, payload);
-                const err = new Error(`Relay config read failed: ${status}`);
-                err.status = status;
-                debugLog("readRemoteConfig:failed", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, status });
-                throw err;
+    const profileStateUrl = `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/profile-state?requester_id=${encodeURIComponent(normalizedRequesterId)}`;
+    const legacyConfigUrl = `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/config?requester_id=${encodeURIComponent(normalizedRequesterId)}`;
+    return fetch(profileStateUrl, { cache: "no-store" }).then(response => {
+        if (response.ok) {
+            debugLog("readRemoteConfig:success", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, status: response.status, endpoint: "profile-state" });
+            return response.json();
+        }
+        if (response.status === 404 || response.status === 400) {
+            const fallbackSourceStatus = response.status;
+            return fetch(legacyConfigUrl, { cache: "no-store" }).then(legacyResponse => {
+                if (!legacyResponse.ok) {
+                    return legacyResponse.text().then(body => {
+                        let payload = null;
+                        try {
+                            payload = body ? JSON.parse(body) : null;
+                        } catch {}
+                        const relayStatus = legacyResponse.status;
+                        const relayError = typeof payload?.error === "string"
+                            ? payload.error
+                            : String(body || "").slice(0, 300);
+                        const status = deriveRelayConfigReadStatus(legacyResponse.status, payload);
+                        const remappedStatus = status === 400 ? 404 : status;
+                        const err = new Error(`Relay config read failed: ${remappedStatus}`);
+                        err.status = remappedStatus;
+                        err.relayStatus = relayStatus;
+                        err.relayError = relayError;
+                        err.endpoint = "legacy-config";
+                        debugLog("readRemoteConfig:failed", {
+                            requesterId: normalizedRequesterId,
+                            targetUserId: normalizedTargetUserId,
+                            status: remappedStatus,
+                            rawStatus: status,
+                            relayStatus,
+                            relayError,
+                            fallbackSourceStatus,
+                            endpoint: "legacy-config"
+                        });
+                        throw err;
+                    });
+                }
+                debugLog("readRemoteConfig:success", {
+                    requesterId: normalizedRequesterId,
+                    targetUserId: normalizedTargetUserId,
+                    status: legacyResponse.status,
+                    fallbackSourceStatus,
+                    endpoint: "legacy-config"
+                });
+                return legacyResponse.json();
             });
         }
-        debugLog("readRemoteConfig:success", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, status: response.status });
-        return response.json();
+        return response.text().then(body => {
+            let payload = null;
+            try {
+                payload = body ? JSON.parse(body) : null;
+            } catch {}
+            const relayStatus = response.status;
+            const relayError = typeof payload?.error === "string"
+                ? payload.error
+                : String(body || "").slice(0, 300);
+            const status = deriveRelayConfigReadStatus(response.status, payload);
+            const err = new Error(`Relay config read failed: ${status}`);
+            err.status = status;
+            err.relayStatus = relayStatus;
+            err.relayError = relayError;
+            err.endpoint = "profile-state";
+            debugLog("readRemoteConfig:failed", {
+                requesterId: normalizedRequesterId,
+                targetUserId: normalizedTargetUserId,
+                status,
+                relayStatus,
+                relayError,
+                endpoint: "profile-state"
+            });
+            throw err;
+        });
     }).then(payload => mergeLocalConfig(payload?.config ?? payload));
 }
 
@@ -1419,12 +1508,10 @@ function ConfigPanel(props) {
     const useCallback = resolveReactHook(React, "useCallback") ?? (callback => callback);
     if (!h || !useState || !useEffect || !useRef) return null;
     const activeUserId = resolveSessionUserId(props);
-    const forcedProfileUserId = typeof props?.forcedProfileUserId === "string" && props.forcedProfileUserId.length > 0
-        ? props.forcedProfileUserId
-        : null;
+    const forcedProfileUserId = normalizeDiscordId(props?.forcedProfileUserId);
     const profileUserId = forcedProfileUserId ?? getProfileUserId(props) ?? activeUserId;
     const entrypoint = typeof props?.entrypoint === "string" ? props.entrypoint : "unknown";
-    const isOwnProfile = validateDiscordId(profileUserId) && profileUserId === activeUserId;
+    const isOwnProfile = (validateDiscordId(profileUserId) && profileUserId === activeUserId) ?? true;
     const panelOpenInfo = getProfilePanelOpenInfo(props);
     const isPanelOpen = panelOpenInfo.isOpen;
     const hasExplicitPanelOpenState = panelOpenInfo.hasExplicitState;
@@ -1437,6 +1524,7 @@ function ConfigPanel(props) {
         ? Math.floor(requestedPanelHeight)
         : defaultMaxPanelHeight;
 
+    
     let relayUrlState;
     try {
         relayUrlState = useState(currentRelayUrl());
@@ -1465,6 +1553,8 @@ function ConfigPanel(props) {
     const saveQueueRef = useRef(null);
     const refreshInFlightRef = useRef(false);
     const profileDebugRef = useRef("");
+
+    const blocked_by_dom = editableConfig.config.blocked_by_dom;
 
     useEffect(() => {
         const nextDebug = `${entrypoint}:${activeUserId}:${profileUserId}:${isPanelOpen ? "open" : "closed"}`;
@@ -1620,8 +1710,14 @@ function ConfigPanel(props) {
         if (!activeUserId) return null;
         const { merged } = buildConfigSnapshot(baseConfig, censoredWordsText);
         if (isOwnProfile) {
-            return pushRemoteConfig(currentRelayUrl(), activeUserId, activeUserId, merged).then(() => {
-                const previous = readMobileState(activeUserId);
+            const previous = readMobileState(activeUserId);
+            return pushRemoteConfig(
+                currentRelayUrl(),
+                activeUserId,
+                activeUserId,
+                merged,
+                previous.revision
+            ).then(() => {
                 writeMobileState({
                     owner_discord_id: activeUserId,
                     config: merged,
@@ -2095,6 +2191,22 @@ function ConfigPanel(props) {
             }),
             button("Save Relay URL", saveRelayUrl)
         )) : null,
+        
+        (!isOwnProfile && canViewRemote) ? section("Sub Contol", "Sub Control", h(
+            View,
+            null,
+            h(View, { style: { marginTop: 6, flexDirection: "row", flexWrap: "wrap" } },
+                button(editableConfig.config.blocked_by_dom ? "Sub Control Blocked" : "Sub Control Allowed", () => {
+                    setEditableConfig(prev => ({
+                        ...prev,
+                        config: {
+                            ...prev.config,
+                            blocked_by_dom: !prev.config.blocked_by_dom
+                        }
+                    }));
+                }, { active: editableConfig.config.blocked_by_dom, noTopMargin: true, key: "blocked_by_dom-toggle" })
+            )
+        )) : null,
 
         !isOwnProfile && !canViewRemote ? section("access-request", "Access", h(
             View,
@@ -2112,9 +2224,9 @@ function ConfigPanel(props) {
             })
         )) : null,
 
-        (isOwnProfile || canViewRemote) ? section("gag", "Gag", renderTimeoutControls("gag_end", "Gag timeout")) : null,
+        (isOwnProfile && !blocked_by_dom) || (!isOwnProfile && canViewRemote) ? section("gag", "Gag", renderTimeoutControls("gag_end", "Gag timeout")) : null,
 
-        (isOwnProfile || canViewRemote) ? section("pet", "Pet", h(
+        (isOwnProfile && !blocked_by_dom) || (!isOwnProfile && canViewRemote) ? section("pet", "Pet", h(
             View,
             null,
             renderTimeoutControls("pet_end", "Pet timeout"),
@@ -2164,7 +2276,7 @@ function ConfigPanel(props) {
             })
         )) : null,
 
-        (isOwnProfile || canViewRemote) ? section("bimbo", "Bimbo", h(
+        (isOwnProfile && !blocked_by_dom) || (!isOwnProfile && canViewRemote) ? section("bimbo", "Bimbo", h(
             View,
             null,
             renderTimeoutControls("bimbo_end", "Bimbo timeout"),
@@ -2186,9 +2298,9 @@ function ConfigPanel(props) {
             })
         )) : null,
 
-        (isOwnProfile || canViewRemote) ? section("horny", "Horny", renderTimeoutControls("horny_end", "Horny timeout")) : null,
+        (isOwnProfile && !blocked_by_dom) || (!isOwnProfile && canViewRemote) ? section("horny", "Horny", renderTimeoutControls("horny_end", "Horny timeout")) : null,
 
-        (isOwnProfile || canViewRemote) ? section("drone", "Drone", h(
+        (isOwnProfile && !blocked_by_dom) || (!isOwnProfile && canViewRemote) ? section("drone", "Drone", h(
             View,
             null,
             renderTimeoutControls("drone_end", "Drone timeout"),
@@ -2224,9 +2336,9 @@ function ConfigPanel(props) {
             ))
         )) : null,
 
-        (isOwnProfile || canViewRemote) ? section("uwu", "UWU", renderTimeoutControls("uwu_end", "UWU timeout")) : null,
+        (isOwnProfile && !blocked_by_dom) || (!isOwnProfile && canViewRemote) ? section("uwu", "UWU", renderTimeoutControls("uwu_end", "UWU timeout")) : null,
 
-        (isOwnProfile || canViewRemote) ? section("censored", "Censored", h(
+        (isOwnProfile && !blocked_by_dom) || (!isOwnProfile && canViewRemote) ? section("censored", "Censored", h(
             View,
             null,
             renderTimeoutControls("censored_end", "Censored timeout"),
@@ -2304,7 +2416,7 @@ function ConfigPanel(props) {
                 : h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, "No scope entries")
         )) : null,
 
-        (isOwnProfile || canViewRemote) ? section("custom-rules", "Custom Rules", h(
+        (isOwnProfile && !blocked_by_dom) || (!isOwnProfile && canViewRemote) ? section("custom-rules", "Custom Rules", h(
             View,
             null,
             h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, `${editableConfig.rules_groups.length} group(s), ${editableConfig.rules.length} rule(s)`),
@@ -2322,7 +2434,7 @@ function ConfigPanel(props) {
             )
         )) : null,
 
-        (isOwnProfile || canViewRemote) ? rulesEditor : null,
+        (isOwnProfile && !blocked_by_dom) || (!isOwnProfile && canViewRemote) ? rulesEditor : null,
 
         (isOwnProfile || canViewRemote) ? section("sync-controls", "Sync", h(
             View,
@@ -2390,15 +2502,15 @@ function ConfigLauncherPanel(props) {
     const useRef = resolveReactHook(React, "useRef");
     if (!h || !useState || !useEffect || !useRef) return ConfigPanel(props);
 
+    const activeUserId = currentUser()?.id ?? "";
     let targetUserInputState;
     try {
-        targetUserInputState = useState("");
+        targetUserInputState = useState(validateDiscordId(activeUserId) ? activeUserId : "");
     } catch {
         return ConfigPanel(props);
     }
-    const activeUserId = currentUser().id;
     const [targetUserInput, setTargetUserInput] = targetUserInputState;
-    const [selectedUserId, setSelectedUserId] = useState(activeUserId);
+    const [selectedUserId, setSelectedUserId] = useState(validateDiscordId(activeUserId) ? activeUserId : "");
     const [launcherStatus, setLauncherStatus] = useState("");
     const [launcherRevision, setLauncherRevision] = useState(0);
     const lastConsumedLaunchRef = useRef("");
@@ -2406,6 +2518,12 @@ function ConfigLauncherPanel(props) {
     const launcherPanelHeight = Number.isFinite(windowHeight)
         ? Math.max(260, Math.floor(windowHeight - 260))
         : 560;
+
+    useEffect(() => {
+        if (!validateDiscordId(activeUserId)) return;
+        setTargetUserInput(prev => (validateDiscordId(prev) ? prev : activeUserId));
+        setSelectedUserId(prev => (validateDiscordId(prev) ? prev : activeUserId));
+    }, [activeUserId]);
 
     useEffect(() => {
         const pending = consumePendingProfileEditorLaunch();

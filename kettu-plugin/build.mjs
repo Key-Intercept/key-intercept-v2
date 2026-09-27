@@ -9,10 +9,15 @@ const distManifestPath = new URL("./dist/manifest.json", import.meta.url);
 
 const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 const source = await readFile(sourcePath, "utf8");
+const developerMode = (() => {
+    const value = String(process.env.KEY_INTERCEPT_DEVELOPER_MODE ?? process.env.KEY_INTERCEPT_DEBUG_MODE ?? "").trim().toLowerCase();
+    return value === "1" || value === "true" || value === "yes" || value === "on";
+})();
 const sourceWithoutExports = source
     .replace(/^\s*export\s+const\s+onLoad\s*=.*$/m, "")
     .replace(/^\s*export\s+const\s+onUnload\s*=.*$/m, "")
     .replace(/^\s*export\s+default\s+plugin;?\s*$/m, "")
+    .replace(/__KEY_INTERCEPT_DEVELOPER_MODE__/g, developerMode ? "true" : "false")
     .trim();
 
 const builtSource = `(function(vendetta){${sourceWithoutExports}\nreturn plugin;})(vendetta)`;

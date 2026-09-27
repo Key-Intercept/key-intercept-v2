@@ -8,6 +8,8 @@ const LOOPBACK = "http://127.0.0.1:35491";
 const DISCORD_SECURE_ORIGINS = new Set(["https://discord.com", "https://ptb.discord.com", "https://canary.discord.com"]);
 const LOG_PREFIX = "[key-intercept]";
 const MOBILE_STATE_KEY = "key-intercept/mobile-loopback-state/v1";
+const DEVELOPER_MODE_ENABLED = "__KEY_INTERCEPT_DEVELOPER_MODE__" === "true";
+const DEFAULT_RELAY_URL = DEVELOPER_MODE_ENABLED ? "http://127.0.0.1:46001" : "https://kirelay.thomaslower.com";
 
 type Config = {
     rules_end: string;
@@ -2454,7 +2456,7 @@ const settings = definePluginSettings({
     relayUrl: {
         type: OptionType.STRING,
         description: "Public relay URL",
-        default: "https://kirelay.thomaslower.com"
+        default: DEFAULT_RELAY_URL
     },
     loopbackTransportMode: {
         type: OptionType.STRING,

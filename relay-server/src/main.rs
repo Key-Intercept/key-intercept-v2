@@ -23,6 +23,24 @@ use tower_http::cors::{AllowHeaders, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
+fn developer_mode_enabled() -> bool {
+    env_flag("KEY_INTERCEPT_DEVELOPER_MODE") || env_flag("KEY_INTERCEPT_DEBUG_MODE")
+}
+
+fn default_relay_port() -> u16 {
+    if developer_mode_enabled() { 46001 } else { 35491 }
+}
+
 #[derive(Clone)]
 struct AppState {
     peers: Arc<RwLock<HashMap<String, RegisteredPeer>>>,
@@ -215,7 +233,7 @@ async fn main() -> Result<()> {
     let port = std::env::var("RELAY_PORT")
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
-        .unwrap_or(35491);
+        .unwrap_or_else(default_relay_port);
 
     let app = Router::new()
         .route("/health", get(health))

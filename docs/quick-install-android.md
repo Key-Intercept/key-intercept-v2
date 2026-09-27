@@ -28,6 +28,15 @@ You can also use an environment variable:
 KEY_INTERCEPT_LOOPBACK_PORT=46001 gradle :app:assembleDebug
 ```
 
+## Developer mode relay defaults (testing)
+To build with developer mode enabled across components:
+
+```sh
+KEY_INTERCEPT_DEVELOPER_MODE=1 gradle :app:assembleDebug -PdeveloperMode=true
+```
+
+This sets Android `BuildConfig.RELAY_PORT` default to `46001` unless you override `-PrelayPort` or `KEY_INTERCEPT_RELAY_PORT`.
+
 ## Plugin setup (one-time)
 1. Open Kettu/Bunny plugin settings.
 2. Add plugin source: `https://key-intercept.github.io/key-intercept-v2/`

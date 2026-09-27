@@ -245,7 +245,7 @@ fn resolve_relay_server_url(
 ) -> Option<String> {
     cli_relay_server_url
         .or(wizard_relay_server_url)
-        .or_else(|| Some(default_relay_server_url().to_string()))
+        .or_else(|| Some(default_relay_server_url()))
 }
 
 #[cfg(windows)]
@@ -270,8 +270,22 @@ fn validate_owner_discord_id(owner_discord_id: &str) -> Result<()> {
     Ok(())
 }
 
-fn default_relay_server_url() -> &'static str {
-    "https://kirelay.thomaslower.com"
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
+fn default_relay_server_url() -> String {
+    if env_flag("KEY_INTERCEPT_DEVELOPER_MODE") || env_flag("KEY_INTERCEPT_DEBUG_MODE") {
+        "http://127.0.0.1:46001".to_string()
+    } else {
+        "https://kirelay.thomaslower.com".to_string()
+    }
 }
 
 fn build_client() -> Result<reqwest::Client> {
@@ -1231,7 +1245,8 @@ fn windows_startup_dir() -> Result<PathBuf> {
 
 #[cfg(windows)]
 fn collect_windows_wizard_inputs(relay_server_url: Option<&str>) -> Result<ResolvedOwner> {
-    let default_relay_server_url = relay_server_url.unwrap_or(default_relay_server_url());
+    let fallback_relay_server_url = default_relay_server_url();
+    let default_relay_server_url = relay_server_url.unwrap_or(fallback_relay_server_url.as_str());
     let script = r#"
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -1541,7 +1556,7 @@ mod tests {
     #[test]
     fn resolve_relay_server_url_uses_default_when_missing() {
         let relay = resolve_relay_server_url(None, None);
-        assert_eq!(relay.as_deref(), Some(default_relay_server_url()));
+        assert_eq!(relay, Some(default_relay_server_url()));
     }
 
     #[test]

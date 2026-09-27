@@ -102,6 +102,19 @@ To install on IOS:
 
 The app should show **Key Intercept Loopback is running in the background**.
 
+### Developer mode relay defaults
+
+For local/dev testing, set:
+
+```sh
+KEY_INTERCEPT_DEVELOPER_MODE=1
+```
+
+When enabled and explicit relay settings are not provided:
+- `relay-server` defaults to port `46001`
+- `loopback-server` defaults relay URL to `http://127.0.0.1:46001`
+- installer default relay URL becomes `http://127.0.0.1:46001`
+
 ## Usage
 
 Each user has a 'config' which allows controlling how they speak. On PC, you can access this by clicking on your profile, to access someone elses config, they must first give permission (see [Allowing Editors](#allowing-editors)). Other user's config's can be found by clicking on their profile.

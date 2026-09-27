@@ -1,7 +1,10 @@
 const LOG_PREFIX = "[key-intercept/kettu]";
 const MOBILE_STATE_KEY = "key-intercept/mobile-loopback-state/v1";
 const RELAY_URL_STORAGE_KEY = "key-intercept/relay-url";
-const DEFAULT_RELAY_URL = "https://kirelay.thomaslower.com";
+const DEVELOPER_MODE_ENABLED = "__KEY_INTERCEPT_DEVELOPER_MODE__" === "true";
+const DEFAULT_RELAY_URL = DEVELOPER_MODE_ENABLED
+    ? "http://127.0.0.1:46001"
+    : "https://kirelay.thomaslower.com";
 const BOOTSTRAP_USER_RETRY_LIMIT = 20;
 const BOOTSTRAP_USER_RETRY_DELAY_MS = 1500;
 const farFuture = "9999-12-31T23:59:59.000Z";

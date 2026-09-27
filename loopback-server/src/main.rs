@@ -17,6 +17,24 @@ use tokio::time::{Duration, Instant, sleep};
 use tower_http::cors::CorsLayer;
 use tracing::{error, info, warn};
 
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
+fn developer_mode_enabled() -> bool {
+    env_flag("KEY_INTERCEPT_DEVELOPER_MODE") || env_flag("KEY_INTERCEPT_DEBUG_MODE")
+}
+
+fn developer_default_relay_url() -> Option<String> {
+    developer_mode_enabled().then_some("http://127.0.0.1:46001".to_string())
+}
+
 #[derive(Clone)]
 struct AppState {
     store: ConfigStore,
@@ -123,7 +141,8 @@ async fn main() -> Result<()> {
     let relay_server_url = std::env::var("RELAY_SERVER_URL")
         .ok()
         .map(|value| value.trim().trim_end_matches('/').to_string())
-        .filter(|value| !value.is_empty());
+        .filter(|value| !value.is_empty())
+        .or_else(developer_default_relay_url);
     let shared_token = std::env::var("LOOPBACK_SHARED_TOKEN")
         .ok()
         .map(|value| value.trim().to_string())
