@@ -71,9 +71,15 @@ struct ReleaseAsset {
 }
 
 #[derive(Debug, Clone)]
-struct LocalSources {
-    repo_root: PathBuf,
-    plugin_file: PathBuf,
+enum LocalSources {
+    ArtifactDirectory {
+        loopback_binary: PathBuf,
+        plugin_file: Option<PathBuf>,
+    },
+    Repository {
+        repo_root: PathBuf,
+        plugin_file: PathBuf,
+    },
 }
 
 const SANDBOXED_PNPM_VERSION: &str = "11.9.0";
@@ -129,23 +135,60 @@ async fn run() -> Result<()> {
         None
     };
 
-    if let Some(local_sources) = find_local_sources() {
-        println!(
-            "Detected local repository at {}. Building and installing local sources.",
-            local_sources.repo_root.display()
-        );
-        let loopback_binary = build_local_loopback_binary(&local_sources.repo_root)?;
-        install_loopback_binary_from_path(&loopback_binary)?;
-        if install_into_vencord {
-            install_plugin_into_vencord(
-                installer_tools
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("missing installer tools for vencord install"))?,
-                &local_sources.plugin_file,
-                &args.plugin_file_name,
-                &args.vencord_plugin_folder,
-                relay_server_url.as_deref(),
-            )?;
+    if let Some(local_sources) = find_local_sources(
+        &loopback_binary_name,
+        &args.plugin_file_name,
+        install_into_vencord,
+    ) {
+        match local_sources {
+            LocalSources::ArtifactDirectory {
+                loopback_binary,
+                plugin_file,
+            } => {
+                println!(
+                    "Detected local installer artifacts at {}. Installing directly.",
+                    loopback_binary
+                        .parent()
+                        .unwrap_or_else(|| Path::new("."))
+                        .display()
+                );
+                install_loopback_binary_from_path(&loopback_binary)?;
+                if install_into_vencord {
+                    let plugin_file =
+                        plugin_file.ok_or_else(|| anyhow!("missing local plugin artifact"))?;
+                    install_plugin_into_vencord(
+                        installer_tools
+                            .as_ref()
+                            .ok_or_else(|| anyhow!("missing installer tools for vencord install"))?,
+                        &plugin_file,
+                        &args.plugin_file_name,
+                        &args.vencord_plugin_folder,
+                        relay_server_url.as_deref(),
+                    )?;
+                }
+            }
+            LocalSources::Repository {
+                repo_root,
+                plugin_file,
+            } => {
+                println!(
+                    "Detected local repository at {}. Building and installing local sources.",
+                    repo_root.display()
+                );
+                let loopback_binary = build_local_loopback_binary(&repo_root)?;
+                install_loopback_binary_from_path(&loopback_binary)?;
+                if install_into_vencord {
+                    install_plugin_into_vencord(
+                        installer_tools
+                            .as_ref()
+                            .ok_or_else(|| anyhow!("missing installer tools for vencord install"))?,
+                        &plugin_file,
+                        &args.plugin_file_name,
+                        &args.vencord_plugin_folder,
+                        relay_server_url.as_deref(),
+                    )?;
+                }
+            }
         }
     } else {
         let client = build_client()?;
@@ -507,19 +550,66 @@ fn pnpm_install_args() -> [&'static str; 2] {
     ["install", "--prod=false"]
 }
 
-fn find_local_sources() -> Option<LocalSources> {
+fn find_local_sources(
+    loopback_binary_name: &str,
+    plugin_file_name: &str,
+    require_plugin: bool,
+) -> Option<LocalSources> {
     let cwd = env::current_dir().ok()?;
+    if let Some(artifact_sources) =
+        local_artifacts_from_dir(&cwd, loopback_binary_name, plugin_file_name, require_plugin)
+    {
+        return Some(artifact_sources);
+    }
+
+    if let Ok(exe_path) = env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            if exe_dir != cwd.as_path() {
+                if let Some(artifact_sources) = local_artifacts_from_dir(
+                    exe_dir,
+                    loopback_binary_name,
+                    plugin_file_name,
+                    require_plugin,
+                ) {
+                    return Some(artifact_sources);
+                }
+            }
+        }
+    }
+
     for dir in cwd.ancestors() {
         let loopback_manifest = dir.join("loopback-server/Cargo.toml");
         let plugin_file = dir.join("plugin/keyInterceptSelfHosted.tsx");
         if loopback_manifest.is_file() && plugin_file.is_file() {
-            return Some(LocalSources {
+            return Some(LocalSources::Repository {
                 repo_root: dir.to_path_buf(),
                 plugin_file,
             });
         }
     }
     None
+}
+
+fn local_artifacts_from_dir(
+    dir: &Path,
+    loopback_binary_name: &str,
+    plugin_file_name: &str,
+    require_plugin: bool,
+) -> Option<LocalSources> {
+    let loopback_binary = dir.join(loopback_binary_name);
+    if !loopback_binary.is_file() {
+        return None;
+    }
+
+    let plugin_file = dir.join(plugin_file_name);
+    if require_plugin && !plugin_file.is_file() {
+        return None;
+    }
+
+    Some(LocalSources::ArtifactDirectory {
+        loopback_binary,
+        plugin_file: plugin_file.is_file().then_some(plugin_file),
+    })
 }
 
 fn build_local_loopback_binary(repo_root: &Path) -> Result<PathBuf> {
@@ -1479,6 +1569,53 @@ mod tests {
         let extracted = dir.path().join("nested/sample.txt");
         let content = std::fs::read_to_string(extracted).unwrap();
         assert_eq!(content, "hello");
+    }
+
+    #[test]
+    fn local_artifacts_from_dir_detects_required_binary_and_plugin() {
+        let root = tempdir().unwrap();
+        let binary = root.path().join(format!("loopback-server{EXE_SUFFIX}"));
+        let plugin = root.path().join("keyInterceptSelfHosted.tsx");
+        std::fs::write(&binary, "bin").unwrap();
+        std::fs::write(&plugin, "plugin").unwrap();
+
+        let detected = local_artifacts_from_dir(
+            root.path(),
+            &format!("loopback-server{EXE_SUFFIX}"),
+            "keyInterceptSelfHosted.tsx",
+            true,
+        )
+        .unwrap();
+
+        match detected {
+            LocalSources::ArtifactDirectory {
+                loopback_binary,
+                plugin_file,
+            } => {
+                assert_eq!(loopback_binary, binary);
+                assert_eq!(plugin_file.as_deref(), Some(plugin.as_path()));
+            }
+            LocalSources::Repository { .. } => panic!("expected artifact directory source"),
+        }
+    }
+
+    #[test]
+    fn local_artifacts_from_dir_rejects_missing_plugin_when_required() {
+        let root = tempdir().unwrap();
+        std::fs::write(
+            root.path().join(format!("loopback-server{EXE_SUFFIX}")),
+            "bin",
+        )
+        .unwrap();
+
+        let detected = local_artifacts_from_dir(
+            root.path(),
+            &format!("loopback-server{EXE_SUFFIX}"),
+            "keyInterceptSelfHosted.tsx",
+            true,
+        );
+
+        assert!(detected.is_none());
     }
 
     #[test]
