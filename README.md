@@ -63,7 +63,7 @@ To install on Android:
 
 1. Download the [APK](https://github.com/C0C0B01/KettuManager/releases/latest) for Kettu.
 2. Run it to install Kettu.
-3. 3. Open Kettu.
+3. Open Kettu.
 4. Go to Profile > Settings > Plugins.
 5. Click the plus button in the bottom right hand corner.
 6. Download `key-intercept-loopback-android.apk` from [Releases](https://github.com/Key-intercept/key-intercept-v2/releases/latest).
