@@ -10,6 +10,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.core.content.ContextCompat
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -27,20 +28,35 @@ class MainActivity : ComponentActivity() {
         val startButton = Button(this).apply {
             text = "Start Background Service"
             setOnClickListener {
-                startService(Intent(this@MainActivity, LoopbackService::class.java).apply {
-                    action = LoopbackService.ACTION_START
-                })
-                statusText.text = "Key Intercept Loopback is running in the background"
+                runCatching {
+                    val intent = Intent(this@MainActivity, LoopbackService::class.java).apply {
+                        action = LoopbackService.ACTION_START
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        ContextCompat.startForegroundService(this@MainActivity, intent)
+                    } else {
+                        startService(intent)
+                    }
+                }.onSuccess {
+                    statusText.text = "Key Intercept Loopback is starting in the background"
+                }.onFailure { error ->
+                    statusText.text = "Failed to start background service: ${error.message ?: "unknown error"}"
+                }
             }
         }
 
         val stopButton = Button(this).apply {
             text = "Stop Background Service"
             setOnClickListener {
-                startService(Intent(this@MainActivity, LoopbackService::class.java).apply {
-                    action = LoopbackService.ACTION_STOP
-                })
-                statusText.text = "Key Intercept Loopback is currently stopped"
+                runCatching {
+                    startService(Intent(this@MainActivity, LoopbackService::class.java).apply {
+                        action = LoopbackService.ACTION_STOP
+                    })
+                }.onSuccess {
+                    statusText.text = "Key Intercept Loopback is currently stopped"
+                }.onFailure { error ->
+                    statusText.text = "Failed to stop background service: ${error.message ?: "unknown error"}"
+                }
             }
         }
 

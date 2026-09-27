@@ -9,6 +9,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -27,6 +28,7 @@ class LoopbackService : Service() {
 
     private val running = AtomicBoolean(false)
     private var serverThread: Thread? = null
+    private var serverSocket: ServerSocket? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -49,31 +51,46 @@ class LoopbackService : Service() {
 
     private fun startServer() {
         if (running.get()) return
-        createNotificationChannel()
-        val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Key Intercept Loopback")
-            .setContentText("Key Intercept Loopback is running in the background")
-            .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setOngoing(true)
-            .build()
-        startForeground(NOTIFICATION_ID, notification)
+        runCatching {
+            createNotificationChannel()
+            val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("Key Intercept Loopback")
+                .setContentText("Key Intercept Loopback is running in the background")
+                .setSmallIcon(android.R.drawable.stat_notify_sync)
+                .setOngoing(true)
+                .build()
+            startForeground(NOTIFICATION_ID, notification)
+        }.onFailure { err ->
+            Log.e("KeyInterceptLoopback", "Failed to start foreground service", err)
+            stopSelf()
+            return
+        }
 
         running.set(true)
         serverThread = Thread {
             val configuredPort = BuildConfig.LOOPBACK_PORT
                 .takeIf { it in 1..65535 }
                 ?: 35491
-            ServerSocket(configuredPort, 50, InetAddress.getByName("127.0.0.1")).use { server ->
-                while (running.get()) {
-                    runCatching { server.accept() }
-                        .onSuccess { socket -> handleClient(socket) }
+            runCatching {
+                ServerSocket(configuredPort, 50, InetAddress.getByName("127.0.0.1")).use { server ->
+                    serverSocket = server
+                    while (running.get()) {
+                        runCatching { server.accept() }
+                            .onSuccess { socket -> handleClient(socket) }
+                    }
                 }
+            }.onFailure { err ->
+                Log.e("KeyInterceptLoopback", "Loopback server thread failed", err)
+            }.also {
+                serverSocket = null
             }
         }.also { it.start() }
     }
 
     private fun stopServer() {
         running.set(false)
+        runCatching { serverSocket?.close() }
+        serverSocket = null
         serverThread?.interrupt()
         serverThread = null
     }
