@@ -46,6 +46,7 @@ fn default_relay_port() -> u16 {
 #[derive(Clone)]
 struct AppState {
     peers: Arc<RwLock<HashMap<String, RegisteredPeer>>>,
+    mobile_snapshots: Arc<RwLock<HashMap<String, MobileSnapshotRecord>>>,
     desktop_requests: Arc<RwLock<HashMap<String, Vec<DesktopQueuedRequest>>>>,
     desktop_request_notifiers: Arc<RwLock<HashMap<String, Arc<Notify>>>>,
     desktop_waiters: Arc<RwLock<HashMap<u64, oneshot::Sender<DesktopCommandResponse>>>>,
@@ -143,6 +144,14 @@ struct MobileSnapshotPayload {
     owner_id: String,
     revision: u64,
     last_writer_id: Option<String>,
+    config: Value,
+    allowed_editors: Vec<String>,
+}
+
+#[derive(Clone)]
+struct MobileSnapshotRecord {
+    revision: u64,
+    last_writer_id: String,
     config: Value,
     allowed_editors: Vec<String>,
 }
@@ -275,6 +284,7 @@ async fn main() -> Result<()> {
         .layer(TraceLayer::new_for_http())
         .with_state(AppState {
             peers: Arc::new(RwLock::new(HashMap::new())),
+            mobile_snapshots: Arc::new(RwLock::new(HashMap::new())),
             desktop_requests: Arc::new(RwLock::new(HashMap::new())),
             desktop_request_notifiers: Arc::new(RwLock::new(HashMap::new())),
             desktop_waiters: Arc::new(RwLock::new(HashMap::new())),
@@ -325,6 +335,14 @@ async fn list_users(State(state): State<AppState>) -> impl IntoResponse {
     })
 }
 
+async fn read_mobile_snapshot(state: &AppState, owner_id: &str) -> Option<MobileSnapshotRecord> {
+    state.mobile_snapshots.read().await.get(owner_id).cloned()
+}
+
+fn mobile_snapshot_allows(snapshot: &MobileSnapshotRecord, owner_id: &str, requester_id: &str) -> bool {
+    requester_id == owner_id || snapshot.allowed_editors.iter().any(|id| id == requester_id)
+}
+
 async fn get_canonical_profile_state(
     State(state): State<AppState>,
     Path(owner_id): Path<String>,
@@ -348,56 +366,87 @@ async fn get_canonical_profile_state(
         },
     )
     .await;
-    if !config_response.status.is_success() {
-        return desktop_command_to_http_response(config_response);
-    }
 
-    let config = match config_response.body {
-        Some(body) => body,
-        None => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(ErrorResponse {
-                    error: "target returned no config payload".to_string(),
-                }),
+    if config_response.status.is_success() {
+        let config = match config_response.body {
+            Some(body) => body,
+            None => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(ErrorResponse {
+                        error: "target returned no config payload".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let mut allowed_editors = Vec::new();
+        if query.requester_id == owner_id {
+            let allowed_response = dispatch_desktop_command(
+                &state,
+                &owner_id,
+                DesktopCommand::ReadAllowedEditors {
+                    requester_id: owner_id.clone(),
+                },
             )
-                .into_response();
-        }
-    };
-
-    let mut allowed_editors = Vec::new();
-    if query.requester_id == owner_id {
-        let allowed_response = dispatch_desktop_command(
-            &state,
-            &owner_id,
-            DesktopCommand::ReadAllowedEditors {
-                requester_id: owner_id.clone(),
-            },
-        )
-        .await;
-        if allowed_response.status.is_success() {
-            if let Some(body) = allowed_response.body {
-                allowed_editors = body
-                    .get("allowed_editors")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|v| v.as_str().map(ToOwned::to_owned))
-                    .collect::<Vec<_>>();
-                allowed_editors.sort();
+            .await;
+            if allowed_response.status.is_success() {
+                if let Some(body) = allowed_response.body {
+                    allowed_editors = body
+                        .get("allowed_editors")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                        .collect::<Vec<_>>();
+                    allowed_editors.sort();
+                }
             }
         }
+        return Json(CanonicalProfileStateResponse {
+            owner_id: owner_id.clone(),
+            revision: 0,
+            last_writer_id: owner_id,
+            config,
+            allowed_editors,
+            pending_requests: Vec::new(),
+        })
+        .into_response();
     }
 
-    Json(CanonicalProfileStateResponse {
-        owner_id: owner_id.clone(),
-        revision: 0,
-        last_writer_id: owner_id,
-        config,
-        allowed_editors,
-        pending_requests: Vec::new(),
-    })
-    .into_response()
+    if matches!(
+        config_response.status,
+        StatusCode::NOT_FOUND | StatusCode::BAD_GATEWAY
+    ) {
+        if let Some(snapshot) = read_mobile_snapshot(&state, &owner_id).await {
+            if !mobile_snapshot_allows(&snapshot, &owner_id, &query.requester_id) {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(ErrorResponse {
+                        error: "requester is not allowed to read config".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+            let mut allowed_editors = if query.requester_id == owner_id {
+                snapshot.allowed_editors
+            } else {
+                Vec::new()
+            };
+            allowed_editors.sort();
+            return Json(CanonicalProfileStateResponse {
+                owner_id: owner_id.clone(),
+                revision: snapshot.revision,
+                last_writer_id: snapshot.last_writer_id,
+                config: snapshot.config,
+                allowed_editors,
+                pending_requests: Vec::new(),
+            })
+            .into_response();
+        }
+    }
+
+    desktop_command_to_http_response(config_response)
 }
 
 async fn get_remote_config(
@@ -405,14 +454,43 @@ async fn get_remote_config(
     Path(owner_id): Path<String>,
     Query(query): Query<ConfigReadQuery>,
 ) -> impl IntoResponse {
+    if !is_discord_id(&owner_id) || !is_discord_id(&query.requester_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "owner_id and requester_id must be numeric".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     let response = dispatch_desktop_command(
         &state,
         &owner_id,
         DesktopCommand::ReadConfig {
-            requester_id: query.requester_id,
+            requester_id: query.requester_id.clone(),
         },
     )
     .await;
+    if response.status.is_success() {
+        return desktop_command_to_http_response(response);
+    }
+
+    if matches!(response.status, StatusCode::NOT_FOUND | StatusCode::BAD_GATEWAY) {
+        if let Some(snapshot) = read_mobile_snapshot(&state, &owner_id).await {
+            if !mobile_snapshot_allows(&snapshot, &owner_id, &query.requester_id) {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(ErrorResponse {
+                        error: "requester is not allowed to read config".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+            return Json(snapshot.config).into_response();
+        }
+    }
+
     desktop_command_to_http_response(response)
 }
 
@@ -670,15 +748,18 @@ async fn upsert_mobile_snapshot(
             .into_response();
     }
 
-    if !state.peers.read().await.contains_key(&owner_id) {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: "target user is offline or unknown".to_string(),
-            }),
-        )
-            .into_response();
-    }
+    let mut allowed_editors = payload.allowed_editors;
+    allowed_editors.sort();
+    allowed_editors.dedup();
+    state.mobile_snapshots.write().await.insert(
+        owner_id.clone(),
+        MobileSnapshotRecord {
+            revision: payload.revision,
+            last_writer_id: payload.last_writer_id.unwrap_or_else(|| owner_id.clone()),
+            config: payload.config,
+            allowed_editors,
+        },
+    );
 
     StatusCode::NO_CONTENT.into_response()
 }
@@ -707,7 +788,7 @@ async fn get_mobile_sync(
             .into_response();
     }
 
-    let _after_revision = query.after_revision.unwrap_or(0);
+    let after_revision = query.after_revision.unwrap_or(0);
 
     let config_response = dispatch_desktop_command(
         &state,
@@ -717,55 +798,76 @@ async fn get_mobile_sync(
         },
     )
     .await;
-    if !config_response.status.is_success() {
-        return desktop_command_to_http_response(config_response);
+    if config_response.status.is_success() {
+        let config = match config_response.body {
+            Some(body) => body,
+            None => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(ErrorResponse {
+                        error: "target returned no config payload".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+
+        let mut allowed_editors = Vec::new();
+        let allowed_response = dispatch_desktop_command(
+            &state,
+            &owner_id,
+            DesktopCommand::ReadAllowedEditors {
+                requester_id: owner_id.clone(),
+            },
+        )
+        .await;
+        if allowed_response.status.is_success() {
+            if let Some(body) = allowed_response.body {
+                allowed_editors = body
+                    .get("allowed_editors")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                    .collect::<Vec<_>>();
+                allowed_editors.sort();
+            }
+        }
+
+        return Json(MobileSyncResponse {
+            owner_id: owner_id.clone(),
+            revision: 0,
+            last_writer_id: owner_id,
+            config,
+            allowed_editors,
+            operations: Vec::new(),
+            pending_requests: Vec::new(),
+        })
+        .into_response();
     }
 
-    let config = match config_response.body {
-        Some(body) => body,
-        None => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(ErrorResponse {
-                    error: "target returned no config payload".to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
-
-    let mut allowed_editors = Vec::new();
-    let allowed_response = dispatch_desktop_command(
-        &state,
-        &owner_id,
-        DesktopCommand::ReadAllowedEditors {
-            requester_id: owner_id.clone(),
-        },
-    )
-    .await;
-    if allowed_response.status.is_success() {
-        if let Some(body) = allowed_response.body {
-            allowed_editors = body
-                .get("allowed_editors")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|v| v.as_str().map(ToOwned::to_owned))
-                .collect::<Vec<_>>();
-            allowed_editors.sort();
+    if matches!(
+        config_response.status,
+        StatusCode::NOT_FOUND | StatusCode::BAD_GATEWAY
+    ) {
+        if let Some(snapshot) = read_mobile_snapshot(&state, &owner_id).await {
+            if snapshot.revision <= after_revision {
+                return StatusCode::NO_CONTENT.into_response();
+            }
+            return Json(MobileSyncResponse {
+                owner_id: owner_id.clone(),
+                revision: snapshot.revision,
+                last_writer_id: snapshot.last_writer_id,
+                config: snapshot.config,
+                allowed_editors: snapshot.allowed_editors,
+                operations: Vec::new(),
+                pending_requests: Vec::new(),
+            })
+            .into_response();
         }
     }
 
-    Json(MobileSyncResponse {
-        owner_id: owner_id.clone(),
-        revision: 0,
-        last_writer_id: owner_id,
-        config,
-        allowed_editors,
-        operations: Vec::new(),
-        pending_requests: Vec::new(),
-    })
-    .into_response()
+    desktop_command_to_http_response(config_response)
 }
 
 async fn pull_desktop_requests(
@@ -1105,6 +1207,7 @@ mod tests {
     fn test_state() -> AppState {
         AppState {
             peers: Arc::new(RwLock::new(HashMap::new())),
+            mobile_snapshots: Arc::new(RwLock::new(HashMap::new())),
             desktop_requests: Arc::new(RwLock::new(HashMap::new())),
             desktop_request_notifiers: Arc::new(RwLock::new(HashMap::new())),
             desktop_waiters: Arc::new(RwLock::new(HashMap::new())),
@@ -1187,5 +1290,57 @@ mod tests {
         .into_response();
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn remote_config_falls_back_to_mobile_snapshot_when_desktop_missing() {
+        let state = test_state();
+        state.mobile_snapshots.write().await.insert(
+            "111".to_string(),
+            MobileSnapshotRecord {
+                revision: 3,
+                last_writer_id: "111".to_string(),
+                config: sample_config(),
+                allowed_editors: vec!["222".to_string()],
+            },
+        );
+
+        let response = get_remote_config(
+            State(state),
+            Path("111".to_string()),
+            Query(ConfigReadQuery {
+                requester_id: "222".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn remote_config_mobile_snapshot_respects_access_controls() {
+        let state = test_state();
+        state.mobile_snapshots.write().await.insert(
+            "111".to_string(),
+            MobileSnapshotRecord {
+                revision: 3,
+                last_writer_id: "111".to_string(),
+                config: sample_config(),
+                allowed_editors: vec!["222".to_string()],
+            },
+        );
+
+        let response = get_remote_config(
+            State(state),
+            Path("111".to_string()),
+            Query(ConfigReadQuery {
+                requester_id: "333".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 }

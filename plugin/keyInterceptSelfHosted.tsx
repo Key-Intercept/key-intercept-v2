@@ -1734,6 +1734,19 @@ function ConfigPanel(props: any) {
 
     React.useEffect(() => {
         if (!isPanelOpen) return;
+        skipAutosaveRef.current = true;
+        setCanViewRemote(isOwnProfile);
+        if (!isOwnProfile) {
+            setAllowedEditors([]);
+            setPendingRequests([]);
+            setStatus(`Loading ${profileUserId}'s profile config...`);
+        } else {
+            setStatus("Loading your profile config...");
+        }
+    }, [activeUserId, isOwnProfile, isPanelOpen, profileUserId]);
+
+    React.useEffect(() => {
+        if (!isPanelOpen) return;
         refresh().catch(err => setStatus(formatConfigAccessError(err, profileUserId)));
     }, [isPanelOpen, refresh]);
 

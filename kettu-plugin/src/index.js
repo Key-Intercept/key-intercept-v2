@@ -1643,6 +1643,19 @@ function ConfigPanel(props) {
     }, [activeUserId, isOwnProfile, isPanelOpen, profileUserId, updateFromConfig]);
 
     useEffect(() => {
+        if (!isPanelOpen) return;
+        skipAutosaveRef.current = true;
+        setCanViewRemote(isOwnProfile);
+        if (!isOwnProfile) {
+            setAllowedEditors([]);
+            setPendingRequests([]);
+            setStatus(`Loading ${profileUserId}'s profile config...`);
+        } else {
+            setStatus("Loading your profile config...");
+        }
+    }, [activeUserId, isOwnProfile, isPanelOpen, profileUserId]);
+
+    useEffect(() => {
         try {
             const pending = refresh();
             if (pending && typeof pending.then === "function") {
