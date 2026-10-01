@@ -43,14 +43,24 @@ class LoopbackService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onCreate() {
+        super.onCreate()
+        publishStatus(STATE_STARTING, "Service created")
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_STOP -> {
-                stopServer()
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
+        runCatching {
+            when (intent?.action) {
+                ACTION_STOP -> {
+                    stopServer()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
+                else -> startServer()
             }
-            else -> startServer()
+        }.onFailure { err ->
+            Log.e("KeyInterceptLoopback", "onStartCommand failed", err)
+            publishStatus(STATE_ERROR, "Service command failed: ${err.message ?: "unknown error"}")
         }
         return START_STICKY
     }

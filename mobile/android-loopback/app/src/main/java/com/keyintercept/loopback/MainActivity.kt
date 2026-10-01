@@ -15,6 +15,8 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.core.content.ContextCompat
+import java.net.HttpURLConnection
+import java.net.URL
 
 class MainActivity : ComponentActivity() {
     private var statusText: TextView? = null
@@ -135,6 +137,7 @@ class MainActivity : ComponentActivity() {
         }.onSuccess {
             statusText?.text = "Key Intercept Loopback is starting in the background"
             appendLog("requested start")
+            verifyLoopbackStartupAsync()
         }.onFailure { error ->
             statusText?.text = "Failed to start background service: ${error.message ?: "unknown error"}"
             appendLog("start failed: ${error.message ?: "unknown error"}")
@@ -177,6 +180,44 @@ class MainActivity : ComponentActivity() {
         }
         recentLogs.addLast(line)
         logsText?.text = recentLogs.joinToString(separator = "\n")
+    }
+
+    private fun verifyLoopbackStartupAsync() {
+        Thread {
+            Thread.sleep(1800)
+            val running = isServiceRunning()
+            val healthOk = probeLoopbackHealth()
+            runOnUiThread {
+                when {
+                    healthOk -> {
+                        statusText?.text = "Key Intercept Loopback is running in the background"
+                        appendLog("startup verification passed (health ok)")
+                    }
+                    running -> {
+                        appendLog("service running but /health probe failed")
+                    }
+                    else -> {
+                        statusText?.text = "Key Intercept Loopback failed to start"
+                        appendLog("service process not running after start request")
+                    }
+                }
+            }
+        }.start()
+    }
+
+    private fun probeLoopbackHealth(): Boolean {
+        return runCatching {
+            val url = URL("http://127.0.0.1:${BuildConfig.LOOPBACK_PORT}/health")
+            (url.openConnection() as HttpURLConnection).run {
+                requestMethod = "GET"
+                connectTimeout = 1000
+                readTimeout = 1000
+                connect()
+                val ok = responseCode == 200
+                disconnect()
+                ok
+            }
+        }.getOrDefault(false)
     }
 
     private fun restorePersistedServiceStatus() {
