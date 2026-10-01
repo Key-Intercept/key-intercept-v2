@@ -29,6 +29,10 @@ class LoopbackService : Service() {
         const val STATE_RUNNING = "running"
         const val STATE_STOPPED = "stopped"
         const val STATE_ERROR = "error"
+        const val PREFS_NAME = "key_intercept_loopback_status"
+        const val PREF_STATE = "state"
+        const val PREF_MESSAGE = "message"
+        const val PREF_LOGS = "logs"
         private const val CHANNEL_ID = "key-intercept-loopback"
         private const val NOTIFICATION_ID = 1001
     }
@@ -269,11 +273,27 @@ class LoopbackService : Service() {
         httpResponse(status, JSONObject().put("error", message).toString())
 
     private fun publishStatus(state: String, message: String) {
+        persistStatus(state, message)
         sendBroadcast(
             Intent(ACTION_STATUS).apply {
                 putExtra(EXTRA_STATE, state)
                 putExtra(EXTRA_MESSAGE, message)
             }
         )
+    }
+
+    private fun persistStatus(state: String, message: String) {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val existing = prefs.getString(PREF_LOGS, "").orEmpty()
+        val nextLine = "service:$state ${message.trim()}".trim()
+        val combined = (existing.lines() + nextLine)
+            .filter { it.isNotBlank() }
+            .takeLast(40)
+            .joinToString("\n")
+        prefs.edit()
+            .putString(PREF_STATE, state)
+            .putString(PREF_MESSAGE, message)
+            .putString(PREF_LOGS, combined)
+            .apply()
     }
 }

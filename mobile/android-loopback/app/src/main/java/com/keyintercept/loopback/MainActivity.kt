@@ -20,6 +20,7 @@ class MainActivity : ComponentActivity() {
     private var statusText: TextView? = null
     private var logsText: TextView? = null
     private val recentLogs = ArrayDeque<String>()
+    private var pendingStartAfterOptimization = false
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != LoopbackService.ACTION_STATUS) return
@@ -51,22 +52,12 @@ class MainActivity : ComponentActivity() {
         val startButton = Button(this).apply {
             text = "Start Background Service"
             setOnClickListener {
-                requestBatteryOptimizationExemption()
-                runCatching {
-                    val intent = Intent(this@MainActivity, LoopbackService::class.java).apply {
-                        action = LoopbackService.ACTION_START
-                    }
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        ContextCompat.startForegroundService(this@MainActivity, intent)
-                    } else {
-                        startService(intent)
-                    }
-                }.onSuccess {
-                    statusText?.text = "Key Intercept Loopback is starting in the background"
-                    appendLog("requested start")
-                }.onFailure { error ->
-                    statusText?.text = "Failed to start background service: ${error.message ?: "unknown error"}"
-                    appendLog("start failed: ${error.message ?: "unknown error"}")
+                if (ensureBatteryOptimizationReady()) {
+                    startLoopbackService()
+                } else {
+                    pendingStartAfterOptimization = true
+                    statusText?.text = "Waiting for battery optimization exemption before starting"
+                    appendLog("awaiting battery optimization exemption")
                 }
             }
         }
@@ -93,6 +84,7 @@ class MainActivity : ComponentActivity() {
         layout.addView(stopButton)
         layout.addView(logsView)
         setContentView(layout)
+        restorePersistedServiceStatus()
         refreshInitialStatus()
     }
 
@@ -112,15 +104,58 @@ class MainActivity : ComponentActivity() {
         super.onStop()
     }
 
+    override fun onResume() {
+        super.onResume()
+        restorePersistedServiceStatus()
+        if (pendingStartAfterOptimization) {
+            if (isBatteryOptimizationExempt()) {
+                pendingStartAfterOptimization = false
+                appendLog("battery optimization exemption confirmed")
+                startLoopbackService()
+            } else {
+                appendLog("battery optimization exemption still not granted")
+            }
+        }
+    }
+
+    private fun ensureBatteryOptimizationReady(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
+        if (isBatteryOptimizationExempt()) return true
+        requestBatteryOptimizationExemption()
+        return false
+    }
+
+    private fun isBatteryOptimizationExempt(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
+        val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+        return powerManager.isIgnoringBatteryOptimizations(packageName)
+    }
+
     private fun requestBatteryOptimizationExemption() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
-        val powerManager = getSystemService(POWER_SERVICE) as PowerManager
-        if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
-            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                data = Uri.parse("package:$packageName")
+        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+            data = Uri.parse("package:$packageName")
+        }
+        startActivity(intent)
+        appendLog("requested battery optimization exemption")
+    }
+
+    private fun startLoopbackService() {
+        runCatching {
+            val intent = Intent(this@MainActivity, LoopbackService::class.java).apply {
+                action = LoopbackService.ACTION_START
             }
-            startActivity(intent)
-            appendLog("requested battery optimization exemption")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ContextCompat.startForegroundService(this@MainActivity, intent)
+            } else {
+                startService(intent)
+            }
+        }.onSuccess {
+            statusText?.text = "Key Intercept Loopback is starting in the background"
+            appendLog("requested start")
+        }.onFailure { error ->
+            statusText?.text = "Failed to start background service: ${error.message ?: "unknown error"}"
+            appendLog("start failed: ${error.message ?: "unknown error"}")
         }
     }
 
@@ -160,5 +195,24 @@ class MainActivity : ComponentActivity() {
         }
         recentLogs.addLast(line)
         logsText?.text = recentLogs.joinToString(separator = "\n")
+    }
+
+    private fun restorePersistedServiceStatus() {
+        val prefs = getSharedPreferences(LoopbackService.PREFS_NAME, Context.MODE_PRIVATE)
+        val state = prefs.getString(LoopbackService.PREF_STATE, null)
+        val message = prefs.getString(LoopbackService.PREF_MESSAGE, "").orEmpty()
+        if (!state.isNullOrBlank()) {
+            updateStatusFromState(state, message)
+        }
+        val persistedLogs = prefs.getString(LoopbackService.PREF_LOGS, "").orEmpty()
+            .lines()
+            .filter { it.isNotBlank() }
+        if (persistedLogs.isNotEmpty()) {
+            recentLogs.clear()
+            for (line in persistedLogs.takeLast(12)) {
+                recentLogs.addLast(line)
+            }
+            logsText?.text = recentLogs.joinToString(separator = "\n")
+        }
     }
 }
