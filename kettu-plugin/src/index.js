@@ -482,6 +482,10 @@ function syncInAppLoopback(relayUrl, ownerId) {
             debugLog("syncInAppLoopback:not_found", { ownerId });
             return null;
         }
+        if (response.status === 204) {
+            debugLog("syncInAppLoopback:no_content", { ownerId, localRevision: local.revision });
+            return null;
+        }
         if (!response.ok) throw new Error(`Mobile relay sync failed: ${response.status}`);
         return response.json().then(payload => {
             const relayRevision = Number.isFinite(payload.revision) ? payload.revision : local.revision;
@@ -490,14 +494,18 @@ function syncInAppLoopback(relayUrl, ownerId) {
             const normalizedRelayEditors = nextAllowedEditors.filter(validateDiscordId).sort();
             const editorsChanged = normalizedRelayEditors.length !== normalizedLocalEditors.length
                 || normalizedRelayEditors.some((value, index) => value !== normalizedLocalEditors[index]);
-            if (relayRevision <= local.revision && !editorsChanged) {
+            const mergedLocalConfig = mergeLocalConfig(local.config);
+            const mergedRelayConfig = mergeLocalConfig(payload.config);
+            const configChanged = JSON.stringify(mergedRelayConfig) !== JSON.stringify(mergedLocalConfig);
+            if (relayRevision <= local.revision && !editorsChanged && !configChanged) {
                 debugLog("syncInAppLoopback:no_change", { ownerId, relayRevision, localRevision: local.revision });
                 return;
             }
 
+            const shouldApplyRelayConfig = relayRevision > local.revision || configChanged;
             writeMobileState({
                 owner_discord_id: ownerId,
-                config: relayRevision > local.revision ? mergeLocalConfig(payload.config) : local.config,
+                config: shouldApplyRelayConfig ? mergedRelayConfig : mergedLocalConfig,
                 allowed_editors: nextAllowedEditors,
                 revision: Math.max(local.revision, relayRevision),
                 last_writer_id: typeof payload.last_writer_id === "string" ? payload.last_writer_id : ownerId
@@ -506,7 +514,8 @@ function syncInAppLoopback(relayUrl, ownerId) {
                 ownerId,
                 relayRevision,
                 localRevision: local.revision,
-                editorsChanged
+                editorsChanged,
+                configChanged
             });
             return payload;
         });

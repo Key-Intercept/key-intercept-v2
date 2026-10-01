@@ -915,15 +915,23 @@ async function syncInAppLoopback(relayUrl: string, ownerId: string) {
         await uploadMobileSnapshot(relayUrl, ownerId);
         return;
     }
+    if (response.status === 204) return;
     if (!response.ok) throw new Error(`Mobile relay sync failed: ${response.status}`);
     const payload = await response.json() as MobileSyncPayload;
     const relayRevision = Number.isFinite(payload.revision) ? payload.revision : local.revision;
-    if (relayRevision <= local.revision) return;
+    const relayConfig = mergeLocalConfig(payload.config);
+    const localConfig = mergeLocalConfig(local.config);
+    const configChanged = JSON.stringify(relayConfig) !== JSON.stringify(localConfig);
+    const relayEditors = Array.isArray(payload.allowed_editors) ? payload.allowed_editors.filter(isDiscordId).sort() : [];
+    const localEditors = Array.isArray(local.allowed_editors) ? local.allowed_editors.filter(isDiscordId).sort() : [];
+    const editorsChanged = relayEditors.length !== localEditors.length
+        || relayEditors.some((editorId, index) => editorId !== localEditors[index]);
+    if (relayRevision <= local.revision && !configChanged && !editorsChanged) return;
     writeMobileState({
         owner_discord_id: ownerId,
-        config: mergeLocalConfig(payload.config),
+        config: relayRevision > local.revision || configChanged ? relayConfig : localConfig,
         allowed_editors: Array.isArray(payload.allowed_editors) ? payload.allowed_editors.filter(isDiscordId) : local.allowed_editors,
-        revision: relayRevision,
+        revision: Math.max(local.revision, relayRevision),
         last_writer_id: typeof payload.last_writer_id === "string" && isDiscordId(payload.last_writer_id)
             ? payload.last_writer_id
             : ownerId
