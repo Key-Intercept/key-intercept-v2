@@ -368,10 +368,16 @@ async function readLocalConfig(): Promise<LocalConfig> {
 async function saveLocalConfig(userId: string, config: LocalConfig) {
     if (activeLoopbackTransport === "desktop_http") {
         await saveDesktopLoopbackConfig(userId, config);
+        const refreshed = await readDesktopLoopbackConfig(userId);
+        interceptConfig = refreshed;
+        return refreshed;
     } else {
         await saveInAppLoopbackConfig(userId, config);
+        await syncInAppLoopback(settings.store.relayUrl, userId).catch(() => {});
+        const refreshed = readInAppLoopbackConfig(userId);
+        interceptConfig = refreshed;
+        return refreshed;
     }
-    interceptConfig = mergeLocalConfig(config);
 }
 
 async function getAllowedEditors(requesterId: string) {
@@ -1919,6 +1925,7 @@ function ConfigPanel(props: any) {
             pet_words: getPetWordsForType(baseConfig.config.pet_type, baseConfig.pet_words),
             censored_words: fromLines(censoredWordsText)
         });
+        let appliedConfig = mergedConfig;
         console.info(`${LOG_PREFIX} saveConfig:start`, {
             activeUserId,
             profileUserId,
@@ -1927,18 +1934,18 @@ function ConfigPanel(props: any) {
             summary: configLogSummary(mergedConfig)
         });
         if (isOwnProfile) {
-            await saveLocalConfig(activeUserId, mergedConfig);
+            appliedConfig = await saveLocalConfig(activeUserId, mergedConfig);
             if (!options?.quiet) setStatus("Auto-saved local config");
         } else {
             await pushRemoteConfig(settings.store.relayUrl, activeUserId, profileUserId, mergedConfig);
             if (!options?.quiet) setStatus(`Auto-saved ${profileUserId}'s config via relay`);
         }
-        lastSavedSnapshotRef.current = JSON.stringify(mergedConfig);
+        lastSavedSnapshotRef.current = JSON.stringify(appliedConfig);
         console.info(`${LOG_PREFIX} saveConfig:success`, {
             activeUserId,
             profileUserId,
             isOwnProfile,
-            summary: configLogSummary(mergedConfig)
+            summary: configLogSummary(appliedConfig)
         });
     }, [activeUserId, censoredWordsText, isOwnProfile, profileUserId]);
 

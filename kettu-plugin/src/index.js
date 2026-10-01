@@ -694,15 +694,20 @@ function readLocalConfig(ownerId) {
 function saveLocalConfig(ownerId, config, editorId = ownerId) {
     const previous = readMobileState(ownerId);
     const mergedConfig = mergeLocalConfig(config);
-    const nextState = writeMobileState({
+    writeMobileState({
         owner_discord_id: ownerId,
         config: mergedConfig,
         allowed_editors: previous.allowed_editors,
         revision: previous.revision + 1,
         last_writer_id: editorId
     });
-    interceptConfig = mergedConfig;
-    return uploadMobileSnapshot(currentRelayUrl(), ownerId).then(() => nextState);
+    return uploadMobileSnapshot(currentRelayUrl(), ownerId).then(
+        () => syncInAppLoopback(currentRelayUrl(), ownerId).catch(() => null)
+    ).then(() => {
+        const latest = readLocalConfig(ownerId);
+        interceptConfig = latest;
+        return latest;
+    });
 }
 
 function pushRemoteConfig(relayUrl, editorId, targetUserId, config, expectedRevision) {
@@ -1758,21 +1763,18 @@ function ConfigPanel(props) {
                 merged,
                 previous.revision
             ).then(() => {
-                writeMobileState({
-                    owner_discord_id: activeUserId,
-                    config: merged,
-                    allowed_editors: previous.allowed_editors,
-                    revision: previous.revision + 1,
-                    last_writer_id: activeUserId
+                return syncInAppLoopback(currentRelayUrl(), activeUserId).catch(() => null).then(() => {
+                    const latest = readLocalConfig(activeUserId);
+                    interceptConfig = latest;
+                    updateFromConfig(latest);
                 });
-                interceptConfig = merged;
-                lastSavedSnapshotRef.current = JSON.stringify(merged);
+            }).then(() => {
                 setStatus("Auto-saved profile config");
             }, err => {
                 const status = parseErrorStatusCode(err);
                 if (status === 404) {
-                    return saveLocalConfig(activeUserId, merged, activeUserId).then(() => {
-                        lastSavedSnapshotRef.current = JSON.stringify(merged);
+                    return saveLocalConfig(activeUserId, merged, activeUserId).then(latest => {
+                        updateFromConfig(latest);
                         setStatus("Auto-saved profile config");
                     }, fallbackErr => setStatus(`Auto-save failed: ${String(fallbackErr)}`));
                 }
@@ -1798,15 +1800,19 @@ function ConfigPanel(props) {
                             merged,
                             expectedRevision
                         ).then(() => {
-                            writeMobileState({
-                                owner_discord_id: activeUserId,
-                                config: merged,
-                                allowed_editors: allowedEditors,
-                                revision: expectedRevision + 1,
-                                last_writer_id: activeUserId
+                            return syncInAppLoopback(currentRelayUrl(), activeUserId).catch(() => {
+                                writeMobileState({
+                                    owner_discord_id: activeUserId,
+                                    config: merged,
+                                    allowed_editors: allowedEditors,
+                                    revision: expectedRevision + 1,
+                                    last_writer_id: activeUserId
+                                });
                             });
-                            interceptConfig = merged;
-                            lastSavedSnapshotRef.current = JSON.stringify(merged);
+                        }).then(() => {
+                            const latest = readLocalConfig(activeUserId);
+                            interceptConfig = latest;
+                            updateFromConfig(latest);
                             setStatus("Auto-saved profile config");
                         }));
                     }).catch(retryErr => {
@@ -1820,7 +1826,7 @@ function ConfigPanel(props) {
             lastSavedSnapshotRef.current = JSON.stringify(merged);
             setStatus(`Auto-saved ${profileUserId}'s profile config`);
         }, err => setStatus(`Auto-save failed: ${String(err)}`));
-    }, [activeUserId, censoredWordsText, isOwnProfile, profileUserId]);
+    }, [activeUserId, censoredWordsText, isOwnProfile, profileUserId, updateFromConfig]);
 
     useEffect(() => {
         if (!(isOwnProfile || canViewRemote) || !isPanelOpen) return;
