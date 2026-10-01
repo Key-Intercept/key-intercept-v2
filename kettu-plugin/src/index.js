@@ -1427,11 +1427,31 @@ function bootstrapConfig() {
     const syncForCurrentUser = () => {
         const currentUser = UserStore?.getCurrentUser?.();
         if (!validateDiscordId(currentUser?.id)) return false;
+        const storage = getStorageBackend();
+        const preferredSource = normalizeConfigSource(storage?.getItem(CONFIG_SOURCE_PREF_KEY));
+        const bootstrapSource = preferredSource === "auto"
+            ? (isLikelyMobileRuntime() ? "mobile" : "auto")
+            : preferredSource;
+        if (bootstrapSource === "mobile") {
+            interceptConfig = mergeLocalConfig(readMobileState(currentUser.id).config);
+            ensureMobileRelayPresence(currentRelayUrl(), currentUser.id, "bootstrap-mobile")
+                .then(() => syncInAppLoopback(currentRelayUrl(), currentUser.id))
+                .catch(() => null)
+                .then(() => {
+                    interceptConfig = mergeLocalConfig(readMobileState(currentUser.id).config);
+                    console.log(`${LOG_PREFIX} config ready`);
+                })
+                .catch(err => {
+                    interceptConfig = mergeLocalConfig(readMobileState(currentUser.id).config);
+                    console.log(`${LOG_PREFIX} config bootstrap mobile fallback`, err);
+                });
+            return true;
+        }
         readRemoteConfig(
             currentRelayUrl(),
             currentUser.id,
             currentUser.id,
-            isLikelyMobileRuntime() ? "mobile" : "auto"
+            bootstrapSource
         ).then(remoteConfig => {
             interceptConfig = mergeLocalConfig(remoteConfig);
             const previous = readMobileState(currentUser.id);
