@@ -20,7 +20,6 @@ class MainActivity : ComponentActivity() {
     private var statusText: TextView? = null
     private var logsText: TextView? = null
     private val recentLogs = ArrayDeque<String>()
-    private var pendingStartAfterOptimization = false
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != LoopbackService.ACTION_STATUS) return
@@ -52,13 +51,8 @@ class MainActivity : ComponentActivity() {
         val startButton = Button(this).apply {
             text = "Start Background Service"
             setOnClickListener {
-                if (ensureBatteryOptimizationReady()) {
-                    startLoopbackService()
-                } else {
-                    pendingStartAfterOptimization = true
-                    statusText?.text = "Waiting for battery optimization exemption before starting"
-                    appendLog("awaiting battery optimization exemption")
-                }
+                startLoopbackService()
+                requestBatteryOptimizationExemptionIfNeeded()
             }
         }
 
@@ -107,22 +101,6 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         restorePersistedServiceStatus()
-        if (pendingStartAfterOptimization) {
-            if (isBatteryOptimizationExempt()) {
-                pendingStartAfterOptimization = false
-                appendLog("battery optimization exemption confirmed")
-                startLoopbackService()
-            } else {
-                appendLog("battery optimization exemption still not granted")
-            }
-        }
-    }
-
-    private fun ensureBatteryOptimizationReady(): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
-        if (isBatteryOptimizationExempt()) return true
-        requestBatteryOptimizationExemption()
-        return false
     }
 
     private fun isBatteryOptimizationExempt(): Boolean {
@@ -131,8 +109,12 @@ class MainActivity : ComponentActivity() {
         return powerManager.isIgnoringBatteryOptimizations(packageName)
     }
 
-    private fun requestBatteryOptimizationExemption() {
+    private fun requestBatteryOptimizationExemptionIfNeeded() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        if (isBatteryOptimizationExempt()) {
+            appendLog("battery optimization exemption already granted")
+            return
+        }
         val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
             data = Uri.parse("package:$packageName")
         }
