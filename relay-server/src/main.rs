@@ -830,10 +830,18 @@ async fn upsert_mobile_snapshot(
             .into_response();
     }
 
+    let mut snapshots = state.mobile_snapshots.write().await;
+    if snapshots
+        .get(&owner_id)
+        .is_some_and(|existing| payload.revision < existing.revision)
+    {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+
     let mut allowed_editors = payload.allowed_editors;
     allowed_editors.sort();
     allowed_editors.dedup();
-    state.mobile_snapshots.write().await.insert(
+    snapshots.insert(
         owner_id.clone(),
         MobileSnapshotRecord {
             revision: payload.revision,
@@ -1484,6 +1492,40 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let snapshots = state.mobile_snapshots.read().await;
         let snapshot = snapshots.get("111").expect("snapshot exists");
+        assert!(snapshot.allowed_editors.iter().any(|id| id == "222"));
+    }
+
+    #[tokio::test]
+    async fn upsert_mobile_snapshot_ignores_older_revision() {
+        let state = test_state();
+        state.mobile_snapshots.write().await.insert(
+            "111".to_string(),
+            MobileSnapshotRecord {
+                revision: 5,
+                last_writer_id: "111".to_string(),
+                config: sample_config(),
+                allowed_editors: vec!["222".to_string()],
+            },
+        );
+
+        let response = upsert_mobile_snapshot(
+            State(state.clone()),
+            Path("111".to_string()),
+            Json(MobileSnapshotPayload {
+                owner_id: "111".to_string(),
+                revision: 1,
+                last_writer_id: Some("111".to_string()),
+                config: sample_config(),
+                allowed_editors: vec![],
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let snapshots = state.mobile_snapshots.read().await;
+        let snapshot = snapshots.get("111").expect("snapshot exists");
+        assert_eq!(snapshot.revision, 5);
         assert!(snapshot.allowed_editors.iter().any(|id| id == "222"));
     }
 }

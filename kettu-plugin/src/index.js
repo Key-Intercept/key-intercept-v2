@@ -1605,7 +1605,6 @@ function ConfigPanel(props) {
                     setStatus("Loaded profile config");
                 } catch {}
                 try {
-                    await ensureMobileRelayPresence(nextRelayUrl, activeUserId, "refresh-self");
                     let syncPayload = await syncInAppLoopback(nextRelayUrl, activeUserId);
                     if (!syncPayload) {
                         await ensureMobileRelayPresence(nextRelayUrl, activeUserId, "refresh-self-retry");
