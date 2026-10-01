@@ -1568,7 +1568,8 @@ function ConfigPanel(props) {
     const forcedProfileUserId = normalizeDiscordId(props?.forcedProfileUserId);
     const profileUserId = forcedProfileUserId ?? getProfileUserId(props) ?? activeUserId;
     const entrypoint = typeof props?.entrypoint === "string" ? props.entrypoint : "unknown";
-    const isOwnProfile = (validateDiscordId(profileUserId) && profileUserId === activeUserId) ?? true;
+    const hasValidProfileTarget = validateDiscordId(profileUserId);
+    const isOwnProfile = !hasValidProfileTarget || profileUserId === activeUserId;
     const panelOpenInfo = getProfilePanelOpenInfo(props);
     const isPanelOpen = panelOpenInfo.isOpen;
     const hasExplicitPanelOpenState = panelOpenInfo.hasExplicitState;
@@ -1660,22 +1661,26 @@ function ConfigPanel(props) {
                 return;
             }
             if (isOwnProfile) {
+                const preferredSource = normalizeConfigSource(ownConfigSource);
                 let loadedRemote = false;
                 let syncedEditors = null;
-                try {
-                    const remoteState = await readRemoteProfileState(nextRelayUrl, activeUserId, activeUserId, ownConfigSource);
-                    updateFromConfig(remoteState?.config ?? remoteState);
-                    const nextSources = Array.isArray(remoteState?.available_sources)
-                        ? remoteState.available_sources.map(normalizeConfigSource).filter(value => value !== "auto")
-                        : [];
-                    if (nextSources.length > 0) {
-                        setAvailableProfileSources(nextSources);
-                    }
-                    setResolvedProfileSource(normalizeConfigSource(remoteState?.source));
-                    loadedRemote = true;
-                    setCanViewRemote(true);
-                    setStatus(`Loaded profile config (${normalizeConfigSource(remoteState?.source)})`);
-                } catch {}
+                if (preferredSource !== "mobile") {
+                    try {
+                        const remoteState = await readRemoteProfileState(nextRelayUrl, activeUserId, activeUserId, preferredSource);
+                        updateFromConfig(remoteState?.config ?? remoteState);
+                        const nextSources = Array.isArray(remoteState?.available_sources)
+                            ? remoteState.available_sources.map(normalizeConfigSource).filter(value => value !== "auto")
+                            : [];
+                        if (nextSources.length > 0) {
+                            setAvailableProfileSources(nextSources);
+                        }
+                        const resolvedSource = normalizeConfigSource(remoteState?.source || preferredSource);
+                        setResolvedProfileSource(resolvedSource);
+                        loadedRemote = true;
+                        setCanViewRemote(true);
+                        setStatus(`Loaded profile config (${resolvedSource})`);
+                    } catch {}
+                }
                 try {
                     let syncPayload = await syncInAppLoopback(nextRelayUrl, activeUserId);
                     if (!syncPayload) {
@@ -1801,6 +1806,7 @@ function ConfigPanel(props) {
         const storage = getStorageBackend();
         storage?.setItem(CONFIG_SOURCE_PREF_KEY, normalized);
         setOwnConfigSource(normalized);
+        setResolvedProfileSource(normalized);
         setStatus(`Preferred config source set to ${normalized}`);
     }, []);
 
@@ -1809,6 +1815,13 @@ function ConfigPanel(props) {
         const { merged } = buildConfigSnapshot(baseConfig, censoredWordsText);
         if (isOwnProfile) {
             const preferredSource = normalizeConfigSource(ownConfigSource);
+            if (preferredSource === "mobile") {
+                return saveLocalConfig(activeUserId, merged, activeUserId).then(latest => {
+                    updateFromConfig(latest);
+                    setResolvedProfileSource("mobile");
+                    setStatus("Auto-saved profile config (mobile)");
+                }, err => setStatus(`Auto-save failed: ${String(err)}`));
+            }
             const previous = readMobileState(activeUserId);
             return pushRemoteConfig(
                 currentRelayUrl(),

@@ -1625,7 +1625,8 @@ function buildScopeTargetFromContext(props: any): ScopeTarget | null {
 function ConfigPanel(props: any) {
     const activeUserId = resolveSessionUserId(props);
     const profileUserId = getProfileUserId(props) ?? activeUserId;
-    const isOwnProfile = isDiscordId(profileUserId) && profileUserId === activeUserId;
+    const hasValidProfileTarget = isDiscordId(profileUserId);
+    const isOwnProfile = !hasValidProfileTarget || profileUserId === activeUserId;
     const panelOpenInfo = getProfilePanelOpenInfo(props);
     const isPanelOpen = panelOpenInfo.isOpen;
     const hasExplicitPanelOpenState = panelOpenInfo.hasExplicitState;
