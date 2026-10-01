@@ -1763,7 +1763,16 @@ function ConfigPanel(props) {
                 merged,
                 previous.revision
             ).then(() => {
-                return syncInAppLoopback(currentRelayUrl(), activeUserId).catch(() => null).then(() => {
+                return syncInAppLoopback(currentRelayUrl(), activeUserId).catch(() => null).then(syncPayload => {
+                    if (!syncPayload) {
+                        writeMobileState({
+                            owner_discord_id: activeUserId,
+                            config: merged,
+                            allowed_editors: previous.allowed_editors,
+                            revision: previous.revision + 1,
+                            last_writer_id: activeUserId
+                        });
+                    }
                     const latest = readLocalConfig(activeUserId);
                     interceptConfig = latest;
                     updateFromConfig(latest);
@@ -1800,14 +1809,16 @@ function ConfigPanel(props) {
                             merged,
                             expectedRevision
                         ).then(() => {
-                            return syncInAppLoopback(currentRelayUrl(), activeUserId).catch(() => {
-                                writeMobileState({
-                                    owner_discord_id: activeUserId,
-                                    config: merged,
-                                    allowed_editors: allowedEditors,
-                                    revision: expectedRevision + 1,
-                                    last_writer_id: activeUserId
-                                });
+                            return syncInAppLoopback(currentRelayUrl(), activeUserId).catch(() => null).then(syncPayload => {
+                                if (!syncPayload) {
+                                    writeMobileState({
+                                        owner_discord_id: activeUserId,
+                                        config: merged,
+                                        allowed_editors: allowedEditors,
+                                        revision: expectedRevision + 1,
+                                        last_writer_id: activeUserId
+                                    });
+                                }
                             });
                         }).then(() => {
                             const latest = readLocalConfig(activeUserId);
