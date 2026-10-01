@@ -1748,6 +1748,29 @@ function ConfigPanel(props) {
                         setStatus("Auto-saved profile config");
                     }, fallbackErr => setStatus(`Auto-save failed: ${String(fallbackErr)}`));
                 }
+                if (status === 409) {
+                    return syncInAppLoopback(currentRelayUrl(), activeUserId).catch(() => null).then(() => {
+                        const latest = readMobileState(activeUserId);
+                        return pushRemoteConfig(
+                            currentRelayUrl(),
+                            activeUserId,
+                            activeUserId,
+                            merged,
+                            latest.revision
+                        ).then(() => {
+                            writeMobileState({
+                                owner_discord_id: activeUserId,
+                                config: merged,
+                                allowed_editors: latest.allowed_editors,
+                                revision: latest.revision + 1,
+                                last_writer_id: activeUserId
+                            });
+                            interceptConfig = merged;
+                            lastSavedSnapshotRef.current = JSON.stringify(merged);
+                            setStatus("Auto-saved profile config");
+                        }, retryErr => setStatus(`Auto-save failed after conflict retry: ${String(retryErr)}`));
+                    });
+                }
                 setStatus(`Auto-save failed: ${String(err)}`);
             });
         }
