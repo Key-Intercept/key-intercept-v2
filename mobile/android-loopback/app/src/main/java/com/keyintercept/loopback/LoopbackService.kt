@@ -22,6 +22,13 @@ class LoopbackService : Service() {
     companion object {
         const val ACTION_START = "com.keyintercept.loopback.START"
         const val ACTION_STOP = "com.keyintercept.loopback.STOP"
+        const val ACTION_STATUS = "com.keyintercept.loopback.STATUS"
+        const val EXTRA_STATE = "state"
+        const val EXTRA_MESSAGE = "message"
+        const val STATE_STARTING = "starting"
+        const val STATE_RUNNING = "running"
+        const val STATE_STOPPED = "stopped"
+        const val STATE_ERROR = "error"
         private const val CHANNEL_ID = "key-intercept-loopback"
         private const val NOTIFICATION_ID = 1001
     }
@@ -51,6 +58,7 @@ class LoopbackService : Service() {
 
     private fun startServer() {
         if (running.get()) return
+        publishStatus(STATE_STARTING, "Starting foreground service")
         runCatching {
             createNotificationChannel()
             val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
@@ -62,6 +70,7 @@ class LoopbackService : Service() {
             startForeground(NOTIFICATION_ID, notification)
         }.onFailure { err ->
             Log.e("KeyInterceptLoopback", "Failed to start foreground service", err)
+            publishStatus(STATE_ERROR, "Failed to start foreground service: ${err.message ?: "unknown error"}")
             stopSelf()
             return
         }
@@ -74,6 +83,7 @@ class LoopbackService : Service() {
             runCatching {
                 ServerSocket(configuredPort, 50, InetAddress.getByName("127.0.0.1")).use { server ->
                     serverSocket = server
+                    publishStatus(STATE_RUNNING, "Running on 127.0.0.1:$configuredPort")
                     while (running.get()) {
                         runCatching { server.accept() }
                             .onSuccess { socket -> handleClient(socket) }
@@ -81,6 +91,7 @@ class LoopbackService : Service() {
                 }
             }.onFailure { err ->
                 Log.e("KeyInterceptLoopback", "Loopback server thread failed", err)
+                publishStatus(STATE_ERROR, "Loopback server failed: ${err.message ?: "unknown error"}")
             }.also {
                 serverSocket = null
             }
@@ -93,6 +104,7 @@ class LoopbackService : Service() {
         serverSocket = null
         serverThread?.interrupt()
         serverThread = null
+        publishStatus(STATE_STOPPED, "Stopped")
     }
 
     private fun handleClient(socket: Socket) {
@@ -255,4 +267,13 @@ class LoopbackService : Service() {
 
     private fun jsonError(status: Int, message: String): String =
         httpResponse(status, JSONObject().put("error", message).toString())
+
+    private fun publishStatus(state: String, message: String) {
+        sendBroadcast(
+            Intent(ACTION_STATUS).apply {
+                putExtra(EXTRA_STATE, state)
+                putExtra(EXTRA_MESSAGE, message)
+            }
+        )
+    }
 }
