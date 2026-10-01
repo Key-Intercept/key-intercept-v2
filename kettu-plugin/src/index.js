@@ -846,6 +846,25 @@ function readRemoteConfig(relayUrl, requesterId, targetUserId) {
     }).then(payload => mergeLocalConfig(payload?.config ?? payload));
 }
 
+function readRemoteProfileState(relayUrl, requesterId, targetUserId) {
+    const normalizedRequesterId = normalizeDiscordId(requesterId);
+    const normalizedTargetUserId = normalizeDiscordId(targetUserId);
+    if (!normalizedRequesterId || !normalizedTargetUserId) {
+        const err = new Error("Relay profile-state read failed: 400");
+        err.status = 400;
+        return Promise.reject(err);
+    }
+    const profileStateUrl = `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/profile-state?requester_id=${encodeURIComponent(normalizedRequesterId)}`;
+    return fetch(profileStateUrl, { cache: "no-store" }).then(response => {
+        if (!response.ok) {
+            const err = new Error(`Relay profile-state read failed: ${response.status}`);
+            err.status = response.status;
+            throw err;
+        }
+        return response.json();
+    });
+}
+
 function requestRemoteAccess(relayUrl, requesterId, targetUserId) {
     const normalizedRequesterId = normalizeDiscordId(requesterId);
     const normalizedTargetUserId = normalizeDiscordId(targetUserId);
@@ -1751,24 +1770,38 @@ function ConfigPanel(props) {
                 if (status === 409) {
                     return syncInAppLoopback(currentRelayUrl(), activeUserId).catch(() => null).then(() => {
                         const latest = readMobileState(activeUserId);
-                        return pushRemoteConfig(
+                        return readRemoteProfileState(currentRelayUrl(), activeUserId, activeUserId).then(
+                            remote => {
+                                const remoteRevision = Number(remote?.revision);
+                                const expectedRevision = Number.isFinite(remoteRevision)
+                                    ? Math.max(latest.revision, remoteRevision)
+                                    : latest.revision;
+                                const allowedEditors = Array.isArray(remote?.allowed_editors)
+                                    ? remote.allowed_editors
+                                    : latest.allowed_editors;
+                                return { expectedRevision, allowedEditors };
+                            },
+                            () => ({ expectedRevision: latest.revision, allowedEditors: latest.allowed_editors })
+                        ).then(({ expectedRevision, allowedEditors }) => pushRemoteConfig(
                             currentRelayUrl(),
                             activeUserId,
                             activeUserId,
                             merged,
-                            latest.revision
+                            expectedRevision
                         ).then(() => {
                             writeMobileState({
                                 owner_discord_id: activeUserId,
                                 config: merged,
-                                allowed_editors: latest.allowed_editors,
-                                revision: latest.revision + 1,
+                                allowed_editors: allowedEditors,
+                                revision: expectedRevision + 1,
                                 last_writer_id: activeUserId
                             });
                             interceptConfig = merged;
                             lastSavedSnapshotRef.current = JSON.stringify(merged);
                             setStatus("Auto-saved profile config");
-                        }, retryErr => setStatus(`Auto-save failed after conflict retry: ${String(retryErr)}`));
+                        }));
+                    }).catch(retryErr => {
+                        setStatus(`Auto-save failed after conflict retry: ${String(retryErr)}`);
                     });
                 }
                 setStatus(`Auto-save failed: ${String(err)}`);

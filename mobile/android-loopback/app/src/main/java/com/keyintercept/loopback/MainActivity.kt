@@ -1,19 +1,24 @@
 package com.keyintercept.loopback
 
+import android.Manifest
 import android.app.ActivityManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import java.net.HttpURLConnection
 import java.net.URL
@@ -21,7 +26,22 @@ import java.net.URL
 class MainActivity : ComponentActivity() {
     private var statusText: TextView? = null
     private var logsText: TextView? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val recentLogs = ArrayDeque<String>()
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        appendLog(
+            if (granted) "notification permission granted"
+            else "notification permission denied; foreground notification visibility may be limited"
+        )
+    }
+    private val statusPoller = object : Runnable {
+        override fun run() {
+            restorePersistedServiceStatus()
+            mainHandler.postDelayed(this, 1000)
+        }
+    }
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != LoopbackService.ACTION_STATUS) return
@@ -53,6 +73,7 @@ class MainActivity : ComponentActivity() {
         val startButton = Button(this).apply {
             text = "Start Background Service"
             setOnClickListener {
+                requestNotificationPermissionIfNeeded()
                 startLoopbackService()
                 requestBatteryOptimizationExemptionIfNeeded()
             }
@@ -93,10 +114,12 @@ class MainActivity : ComponentActivity() {
             @Suppress("DEPRECATION")
             registerReceiver(statusReceiver, filter)
         }
+        mainHandler.post(statusPoller)
     }
 
     override fun onStop() {
         runCatching { unregisterReceiver(statusReceiver) }
+        mainHandler.removeCallbacks(statusPoller)
         super.onStop()
     }
 
@@ -122,6 +145,14 @@ class MainActivity : ComponentActivity() {
         }
         startActivity(intent)
         appendLog("requested battery optimization exemption")
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
     private fun startLoopbackService() {
