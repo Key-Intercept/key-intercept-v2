@@ -1835,7 +1835,7 @@ function ConfigPanel(props) {
             return;
         }
         const { merged, snapshot } = buildConfigSnapshot(editableConfig, censoredWordsText);
-        if (snapshot === lastSavedSnapshotRef.current) return;
+        if (!isOwnProfile && snapshot === lastSavedSnapshotRef.current) return;
         setStatus("Auto-saving...");
         const enqueueSave = () => saveStructuredConfig(merged);
         const previous = saveQueueRef.current;

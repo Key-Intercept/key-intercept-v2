@@ -1935,6 +1935,7 @@ function ConfigPanel(props: any) {
         });
         if (isOwnProfile) {
             appliedConfig = await saveLocalConfig(activeUserId, mergedConfig);
+            updateFromConfig(appliedConfig);
             if (!options?.quiet) setStatus("Auto-saved local config");
         } else {
             await pushRemoteConfig(settings.store.relayUrl, activeUserId, profileUserId, mergedConfig);
@@ -1947,7 +1948,7 @@ function ConfigPanel(props: any) {
             isOwnProfile,
             summary: configLogSummary(appliedConfig)
         });
-    }, [activeUserId, censoredWordsText, isOwnProfile, profileUserId]);
+    }, [activeUserId, censoredWordsText, isOwnProfile, profileUserId, updateFromConfig]);
 
     React.useEffect(() => {
         if (!(isOwnProfile || canViewRemote)) return;
@@ -1962,7 +1963,8 @@ function ConfigPanel(props: any) {
             censored_words: fromLines(censoredWordsText)
         });
         const nextSnapshot = JSON.stringify(nextConfig);
-        if (nextSnapshot === lastSavedSnapshotRef.current) return;
+        const forcePushToLoopback = isOwnProfile && activeLoopbackTransport === "in_app_mobile";
+        if (!forcePushToLoopback && nextSnapshot === lastSavedSnapshotRef.current) return;
 
         console.info(`${LOG_PREFIX} autosave:enqueue`, {
             activeUserId,
