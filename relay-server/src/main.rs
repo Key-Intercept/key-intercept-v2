@@ -1052,6 +1052,22 @@ async fn get_mobile_sync(
 
     let after_revision = query.after_revision.unwrap_or(0);
 
+    if let Some(snapshot) = read_mobile_snapshot(&state, &owner_id).await {
+        if snapshot.revision <= after_revision {
+            return StatusCode::NO_CONTENT.into_response();
+        }
+        return Json(MobileSyncResponse {
+            owner_id: owner_id.clone(),
+            revision: snapshot.revision,
+            last_writer_id: snapshot.last_writer_id,
+            config: snapshot.config,
+            allowed_editors: snapshot.allowed_editors,
+            operations: Vec::new(),
+            pending_requests: Vec::new(),
+        })
+        .into_response();
+    }
+
     let config_response = dispatch_desktop_command(
         &state,
         &owner_id,
@@ -1112,21 +1128,7 @@ async fn get_mobile_sync(
         config_response.status,
         StatusCode::NOT_FOUND | StatusCode::BAD_GATEWAY
     ) {
-        if let Some(snapshot) = read_mobile_snapshot(&state, &owner_id).await {
-            if snapshot.revision <= after_revision {
-                return StatusCode::NO_CONTENT.into_response();
-            }
-            return Json(MobileSyncResponse {
-                owner_id: owner_id.clone(),
-                revision: snapshot.revision,
-                last_writer_id: snapshot.last_writer_id,
-                config: snapshot.config,
-                allowed_editors: snapshot.allowed_editors,
-                operations: Vec::new(),
-                pending_requests: Vec::new(),
-            })
-            .into_response();
-        }
+        return StatusCode::NO_CONTENT.into_response();
     }
 
     desktop_command_to_http_response(config_response)

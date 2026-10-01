@@ -1474,6 +1474,12 @@ function bootstrapConfig() {
 }
 
 function patchSendMessage() {
+    if (typeof unpatchSendMessage === "function") {
+        try {
+            unpatchSendMessage();
+        } catch {}
+        unpatchSendMessage = null;
+    }
     const before = globalThis?.vendetta?.patcher?.before;
     const MessageActions = findByProps?.("sendMessage");
     if (!before || !MessageActions?.sendMessage) {
