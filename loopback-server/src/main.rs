@@ -89,6 +89,7 @@ struct RegisterRelayPeerPayload {
     owner_id: String,
     base_url: String,
     shared_token: Option<String>,
+    device_type: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -99,15 +100,25 @@ struct RelayDesktopRequestsResponse {
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum RelayDesktopCommand {
-    ReadConfig { requester_id: String },
+    ReadConfig {
+        requester_id: String,
+    },
     PutConfig {
         editor_id: String,
         config: Value,
         expected_revision: Option<u64>,
     },
-    AddAllowedEditor { owner_id: String, editor_id: String },
-    RemoveAllowedEditor { owner_id: String, editor_id: String },
-    ReadAllowedEditors { requester_id: String },
+    AddAllowedEditor {
+        owner_id: String,
+        editor_id: String,
+    },
+    RemoveAllowedEditor {
+        owner_id: String,
+        editor_id: String,
+    },
+    ReadAllowedEditors {
+        requester_id: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -576,6 +587,7 @@ async fn register_relay_peer(
         owner_id: owner_discord_id.to_string(),
         base_url: format!("http://127.0.0.1:{loopback_port}"),
         shared_token: shared_token.map(ToOwned::to_owned),
+        device_type: Some("pc".to_string()),
     };
     client
         .post(register_url)

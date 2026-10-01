@@ -1,4 +1,6 @@
-use crate::schema::{Config, DroneConfig, LocalConfig, Rule, RuleGroup, ScopeFilterMode, WhitelistItem};
+use crate::schema::{
+    Config, DroneConfig, LocalConfig, Rule, RuleGroup, ScopeFilterMode, WhitelistItem,
+};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -213,9 +215,11 @@ impl ConfigStore {
                             backup_path.display(),
                             err
                         );
-                        fs::write(&backup_path, existing.as_bytes()).await.with_context(|| {
-                            format!("failed to write backup {}", backup_path.display())
-                        })?;
+                        fs::write(&backup_path, existing.as_bytes())
+                            .await
+                            .with_context(|| {
+                                format!("failed to write backup {}", backup_path.display())
+                            })?;
                         let fresh = PersistedState::new(owner_discord_id.clone());
                         fs::write(&path, serde_json::to_vec_pretty(&fresh)?)
                             .await
@@ -367,7 +371,8 @@ impl ConfigStore {
         {
             let known_modified = *self.file_modified_at.read().await;
             let known_fingerprint = *self.file_fingerprint.read().await;
-            if known_modified == current_modified && known_fingerprint == Some(current_fingerprint) {
+            if known_modified == current_modified && known_fingerprint == Some(current_fingerprint)
+            {
                 return Ok(false);
             }
         }
@@ -524,9 +529,12 @@ mod tests {
     async fn load_or_create_migrates_legacy_local_config_format() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("config.json");
-        fs::write(&path, serde_json::to_vec_pretty(&LocalConfig::default()).unwrap())
-            .await
-            .unwrap();
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&LocalConfig::default()).unwrap(),
+        )
+        .await
+        .unwrap();
 
         let store = ConfigStore::load_or_create(&path, "owner".to_string())
             .await
@@ -571,9 +579,7 @@ mod tests {
     async fn load_or_create_recovers_from_corrupt_config_file() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("config.json");
-        fs::write(&path, b"{invalid json")
-            .await
-            .unwrap();
+        fs::write(&path, b"{invalid json").await.unwrap();
 
         let store = ConfigStore::load_or_create(&path, "owner".to_string())
             .await
@@ -652,10 +658,8 @@ mod tests {
             .unwrap();
         sleep(Duration::from_millis(20)).await;
 
-        let mut raw: serde_json::Value = serde_json::from_str(
-            &fs::read_to_string(&path).await.unwrap(),
-        )
-        .unwrap();
+        let mut raw: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).await.unwrap()).unwrap();
         let object = raw.as_object_mut().unwrap();
         object.insert(
             "rules_groups".to_string(),

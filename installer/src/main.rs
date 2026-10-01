@@ -155,9 +155,9 @@ async fn run() -> Result<()> {
                 if install_into_vencord {
                     if let Some(plugin_file) = plugin_file {
                         install_plugin_into_vencord(
-                            installer_tools
-                                .as_ref()
-                                .ok_or_else(|| anyhow!("missing installer tools for vencord install"))?,
+                            installer_tools.as_ref().ok_or_else(|| {
+                                anyhow!("missing installer tools for vencord install")
+                            })?,
                             &plugin_file,
                             &args.plugin_file_name,
                             &args.vencord_plugin_folder,
@@ -185,9 +185,9 @@ async fn run() -> Result<()> {
                 loopback_installed = true;
                 if install_into_vencord {
                     install_plugin_into_vencord(
-                        installer_tools
-                            .as_ref()
-                            .ok_or_else(|| anyhow!("missing installer tools for vencord install"))?,
+                        installer_tools.as_ref().ok_or_else(|| {
+                            anyhow!("missing installer tools for vencord install")
+                        })?,
                         &plugin_file,
                         &args.plugin_file_name,
                         &args.vencord_plugin_folder,
@@ -563,10 +563,7 @@ fn pnpm_install_args() -> [&'static str; 2] {
     ["install", "--prod=false"]
 }
 
-fn find_local_sources(
-    loopback_binary_name: &str,
-    plugin_file_name: &str,
-) -> Option<LocalSources> {
+fn find_local_sources(loopback_binary_name: &str, plugin_file_name: &str) -> Option<LocalSources> {
     let cwd = env::current_dir().ok()?;
     if let Some(artifact_sources) =
         local_artifacts_from_dir(&cwd, loopback_binary_name, plugin_file_name)
@@ -577,11 +574,9 @@ fn find_local_sources(
     if let Ok(exe_path) = env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
             if exe_dir != cwd.as_path() {
-                if let Some(artifact_sources) = local_artifacts_from_dir(
-                    exe_dir,
-                    loopback_binary_name,
-                    plugin_file_name,
-                ) {
+                if let Some(artifact_sources) =
+                    local_artifacts_from_dir(exe_dir, loopback_binary_name, plugin_file_name)
+                {
                     return Some(artifact_sources);
                 }
             }
