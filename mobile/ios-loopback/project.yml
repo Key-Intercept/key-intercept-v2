@@ -1,0 +1,34 @@
+name: KeyInterceptLoopback
+options:
+  deploymentTarget:
+    iOS: "16.0"
+configs:
+  Debug: debug
+  Release: release
+targets:
+  KeyInterceptLoopback:
+    type: application
+    platform: iOS
+    sources:
+      - path: KeyInterceptLoopback
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.keyintercept.loopback.ios
+        INFOPLIST_FILE: KeyInterceptLoopback/Info.plist
+        SWIFT_VERSION: 5.0
+        TARGETED_DEVICE_FAMILY: 1
+        CODE_SIGNING_ALLOWED: NO
+    info:
+      path: KeyInterceptLoopback/Info.plist
+      properties:
+        CFBundleDisplayName: Key Intercept Loopback
+        UILaunchScreen: {}
+        UIBackgroundModes:
+          - audio
+          - fetch
+        NSLocalNetworkUsageDescription: Key Intercept Loopback uses localhost to communicate with Discord plugins.
+        NSBluetoothAlwaysUsageDescription: Not used.
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait

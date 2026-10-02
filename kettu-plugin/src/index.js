@@ -1,7 +1,10 @@
 const LOG_PREFIX = "[key-intercept/kettu]";
 const MOBILE_STATE_KEY = "key-intercept/mobile-loopback-state/v1";
 const RELAY_URL_STORAGE_KEY = "key-intercept/relay-url";
-const DEFAULT_RELAY_URL = "https://kirelay.thomaslower.com";
+const DEVELOPER_MODE_ENABLED = "__KEY_INTERCEPT_DEVELOPER_MODE__" === "true";
+const DEFAULT_RELAY_URL = DEVELOPER_MODE_ENABLED
+    ? "http://127.0.0.1:46001"
+    : "https://kirelay.thomaslower.com";
 const BOOTSTRAP_USER_RETRY_LIMIT = 20;
 const BOOTSTRAP_USER_RETRY_DELAY_MS = 1500;
 const farFuture = "9999-12-31T23:59:59.000Z";
@@ -378,6 +381,26 @@ function relayBaseUrl(relayUrl) {
     return String(relayUrl || "").trim().replace(/\/$/, "");
 }
 
+function normalizeConfigSource(value) {
+    const normalized = String(value ?? "").trim().toLowerCase();
+    if (normalized === "pc" || normalized === "desktop") return "pc";
+    if (normalized === "mobile") return "mobile";
+    return "auto";
+}
+
+function isLikelyMobileRuntime() {
+    const platformOs = String(
+        globalThis?.vendetta?.metro?.common?.ReactNative?.Platform?.OS
+        ?? ReactNativeRef?.Platform?.OS
+        ?? ""
+    ).toLowerCase();
+    if (platformOs === "android" || platformOs === "ios") return true;
+    if (typeof navigator !== "undefined" && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent ?? "")) {
+        return true;
+    }
+    return false;
+}
+
 function currentRelayUrl() {
     const storage = getStorageBackend();
     const configured = storage?.getItem(RELAY_URL_STORAGE_KEY)?.trim();
@@ -479,6 +502,10 @@ function syncInAppLoopback(relayUrl, ownerId) {
             debugLog("syncInAppLoopback:not_found", { ownerId });
             return null;
         }
+        if (response.status === 204) {
+            debugLog("syncInAppLoopback:no_content", { ownerId, localRevision: local.revision });
+            return null;
+        }
         if (!response.ok) throw new Error(`Mobile relay sync failed: ${response.status}`);
         return response.json().then(payload => {
             const relayRevision = Number.isFinite(payload.revision) ? payload.revision : local.revision;
@@ -487,14 +514,18 @@ function syncInAppLoopback(relayUrl, ownerId) {
             const normalizedRelayEditors = nextAllowedEditors.filter(validateDiscordId).sort();
             const editorsChanged = normalizedRelayEditors.length !== normalizedLocalEditors.length
                 || normalizedRelayEditors.some((value, index) => value !== normalizedLocalEditors[index]);
-            if (relayRevision <= local.revision && !editorsChanged) {
+            const mergedLocalConfig = mergeLocalConfig(local.config);
+            const mergedRelayConfig = mergeLocalConfig(payload.config);
+            const configChanged = JSON.stringify(mergedRelayConfig) !== JSON.stringify(mergedLocalConfig);
+            if (relayRevision <= local.revision && !editorsChanged && !configChanged) {
                 debugLog("syncInAppLoopback:no_change", { ownerId, relayRevision, localRevision: local.revision });
                 return;
             }
 
+            const shouldApplyRelayConfig = relayRevision > local.revision || configChanged;
             writeMobileState({
                 owner_discord_id: ownerId,
-                config: relayRevision > local.revision ? mergeLocalConfig(payload.config) : local.config,
+                config: shouldApplyRelayConfig ? mergedRelayConfig : mergedLocalConfig,
                 allowed_editors: nextAllowedEditors,
                 revision: Math.max(local.revision, relayRevision),
                 last_writer_id: typeof payload.last_writer_id === "string" ? payload.last_writer_id : ownerId
@@ -503,7 +534,8 @@ function syncInAppLoopback(relayUrl, ownerId) {
                 ownerId,
                 relayRevision,
                 localRevision: local.revision,
-                editorsChanged
+                editorsChanged,
+                configChanged
             });
             return payload;
         });
@@ -682,18 +714,23 @@ function readLocalConfig(ownerId) {
 function saveLocalConfig(ownerId, config, editorId = ownerId) {
     const previous = readMobileState(ownerId);
     const mergedConfig = mergeLocalConfig(config);
-    const nextState = writeMobileState({
+    writeMobileState({
         owner_discord_id: ownerId,
         config: mergedConfig,
         allowed_editors: previous.allowed_editors,
         revision: previous.revision + 1,
         last_writer_id: editorId
     });
-    interceptConfig = mergedConfig;
-    return uploadMobileSnapshot(currentRelayUrl(), ownerId).then(() => nextState);
+    return uploadMobileSnapshot(currentRelayUrl(), ownerId).then(
+        () => syncInAppLoopback(currentRelayUrl(), ownerId).catch(() => null)
+    ).then(() => {
+        const latest = readLocalConfig(ownerId);
+        interceptConfig = latest;
+        return latest;
+    });
 }
 
-function pushRemoteConfig(relayUrl, editorId, targetUserId, config, expectedRevision) {
+function pushRemoteConfig(relayUrl, editorId, targetUserId, config, expectedRevision, source) {
     const normalizedEditorId = normalizeDiscordId(editorId);
     const normalizedTargetUserId = normalizeDiscordId(targetUserId);
     if (!normalizedEditorId || !normalizedTargetUserId) {
@@ -702,7 +739,9 @@ function pushRemoteConfig(relayUrl, editorId, targetUserId, config, expectedRevi
         return Promise.reject(err);
     }
     debugLog("pushRemoteConfig:start", { editorId: normalizedEditorId, targetUserId: normalizedTargetUserId, relayUrl: relayBaseUrl(relayUrl) });
-    return fetch(`${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/config`, {
+    const normalizedSource = normalizeConfigSource(source);
+    const sourceQuery = normalizedSource === "auto" ? "" : `?source=${encodeURIComponent(normalizedSource)}`;
+    return fetch(`${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/config${sourceQuery}`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -756,7 +795,7 @@ function getIdentityValidationError(requesterId, targetUserId, isOwnProfile) {
     return null;
 }
 
-function readRemoteConfig(relayUrl, requesterId, targetUserId) {
+function readRemoteConfig(relayUrl, requesterId, targetUserId, source) {
     const normalizedRequesterId = normalizeDiscordId(requesterId);
     const normalizedTargetUserId = normalizeDiscordId(targetUserId);
     if (!normalizedRequesterId || !normalizedTargetUserId) {
@@ -765,14 +804,16 @@ function readRemoteConfig(relayUrl, requesterId, targetUserId) {
         return Promise.reject(err);
     }
     debugLog("readRemoteConfig:start", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, relayUrl: relayBaseUrl(relayUrl) });
-    const profileStateUrl = `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/profile-state?requester_id=${encodeURIComponent(normalizedRequesterId)}`;
-    const legacyConfigUrl = `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/config?requester_id=${encodeURIComponent(normalizedRequesterId)}`;
+    const normalizedSource = normalizeConfigSource(source);
+    const sourceQuery = normalizedSource === "auto" ? "" : `&source=${encodeURIComponent(normalizedSource)}`;
+    const profileStateUrl = `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/profile-state?requester_id=${encodeURIComponent(normalizedRequesterId)}${sourceQuery}`;
+    const legacyConfigUrl = `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/config?requester_id=${encodeURIComponent(normalizedRequesterId)}${sourceQuery}`;
     return fetch(profileStateUrl, { cache: "no-store" }).then(response => {
         if (response.ok) {
             debugLog("readRemoteConfig:success", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, status: response.status, endpoint: "profile-state" });
             return response.json();
         }
-        if (response.status === 404 || response.status === 400) {
+        if (!response.ok) {
             const fallbackSourceStatus = response.status;
             return fetch(legacyConfigUrl, { cache: "no-store" }).then(legacyResponse => {
                 if (!legacyResponse.ok) {
@@ -841,6 +882,27 @@ function readRemoteConfig(relayUrl, requesterId, targetUserId) {
             throw err;
         });
     }).then(payload => mergeLocalConfig(payload?.config ?? payload));
+}
+
+function readRemoteProfileState(relayUrl, requesterId, targetUserId, source) {
+    const normalizedRequesterId = normalizeDiscordId(requesterId);
+    const normalizedTargetUserId = normalizeDiscordId(targetUserId);
+    if (!normalizedRequesterId || !normalizedTargetUserId) {
+        const err = new Error("Relay profile-state read failed: 400");
+        err.status = 400;
+        return Promise.reject(err);
+    }
+    const normalizedSource = normalizeConfigSource(source);
+    const sourceQuery = normalizedSource === "auto" ? "" : `&source=${encodeURIComponent(normalizedSource)}`;
+    const profileStateUrl = `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/profile-state?requester_id=${encodeURIComponent(normalizedRequesterId)}${sourceQuery}`;
+    return fetch(profileStateUrl, { cache: "no-store" }).then(response => {
+        if (!response.ok) {
+            const err = new Error(`Relay profile-state read failed: ${response.status}`);
+            err.status = response.status;
+            throw err;
+        }
+        return response.json();
+    });
 }
 
 function requestRemoteAccess(relayUrl, requesterId, targetUserId) {
@@ -1372,7 +1434,28 @@ function bootstrapConfig() {
     const syncForCurrentUser = () => {
         const currentUser = UserStore?.getCurrentUser?.();
         if (!validateDiscordId(currentUser?.id)) return false;
-        readRemoteConfig(currentRelayUrl(), currentUser.id, currentUser.id).then(remoteConfig => {
+        const bootstrapSource = isLikelyMobileRuntime() ? "mobile" : "pc";
+        if (bootstrapSource === "mobile") {
+            interceptConfig = mergeLocalConfig(readMobileState(currentUser.id).config);
+            ensureMobileRelayPresence(currentRelayUrl(), currentUser.id, "bootstrap-mobile")
+                .then(() => syncInAppLoopback(currentRelayUrl(), currentUser.id))
+                .catch(() => null)
+                .then(() => {
+                    interceptConfig = mergeLocalConfig(readMobileState(currentUser.id).config);
+                    console.log(`${LOG_PREFIX} config ready`);
+                })
+                .catch(err => {
+                    interceptConfig = mergeLocalConfig(readMobileState(currentUser.id).config);
+                    console.log(`${LOG_PREFIX} config bootstrap mobile fallback`, err);
+                });
+            return true;
+        }
+        readRemoteConfig(
+            currentRelayUrl(),
+            currentUser.id,
+            currentUser.id,
+            bootstrapSource
+        ).then(remoteConfig => {
             interceptConfig = mergeLocalConfig(remoteConfig);
             const previous = readMobileState(currentUser.id);
             writeMobileState({
@@ -1414,6 +1497,12 @@ function bootstrapConfig() {
 }
 
 function patchSendMessage() {
+    if (typeof unpatchSendMessage === "function") {
+        try {
+            unpatchSendMessage();
+        } catch {}
+        unpatchSendMessage = null;
+    }
     const before = globalThis?.vendetta?.patcher?.before;
     const MessageActions = findByProps?.("sendMessage");
     if (!before || !MessageActions?.sendMessage) {
@@ -1508,7 +1597,8 @@ function ConfigPanel(props) {
     const forcedProfileUserId = normalizeDiscordId(props?.forcedProfileUserId);
     const profileUserId = forcedProfileUserId ?? getProfileUserId(props) ?? activeUserId;
     const entrypoint = typeof props?.entrypoint === "string" ? props.entrypoint : "unknown";
-    const isOwnProfile = (validateDiscordId(profileUserId) && profileUserId === activeUserId) ?? true;
+    const hasValidProfileTarget = validateDiscordId(profileUserId);
+    const isOwnProfile = !hasValidProfileTarget || profileUserId === activeUserId;
     const panelOpenInfo = getProfilePanelOpenInfo(props);
     const isPanelOpen = panelOpenInfo.isOpen;
     const hasExplicitPanelOpenState = panelOpenInfo.hasExplicitState;
@@ -1530,6 +1620,9 @@ function ConfigPanel(props) {
     }
     const [relayUrl, setRelayUrl] = relayUrlState;
     const [status, setStatus] = useState("");
+    const ownConfigSource = isLikelyMobileRuntime() ? "mobile" : "pc";
+    const [availableProfileSources, setAvailableProfileSources] = useState([]);
+    const [resolvedProfileSource, setResolvedProfileSource] = useState(ownConfigSource);
     const [newEditorId, setNewEditorId] = useState("");
     const [manualScopeId, setManualScopeId] = useState("");
     const [allowedEditors, setAllowedEditors] = useState(() => {
@@ -1592,17 +1685,27 @@ function ConfigPanel(props) {
                 return;
             }
             if (isOwnProfile) {
+                const preferredSource = ownConfigSource;
                 let loadedRemote = false;
                 let syncedEditors = null;
+                if (preferredSource !== "mobile") {
+                    try {
+                        const remoteState = await readRemoteProfileState(nextRelayUrl, activeUserId, activeUserId, preferredSource);
+                        updateFromConfig(remoteState?.config ?? remoteState);
+                        const nextSources = Array.isArray(remoteState?.available_sources)
+                            ? remoteState.available_sources.map(normalizeConfigSource).filter(value => value !== "auto")
+                            : [];
+                        if (nextSources.length > 0) {
+                            setAvailableProfileSources(nextSources);
+                        }
+                        const resolvedSource = normalizeConfigSource(remoteState?.source || preferredSource);
+                        setResolvedProfileSource(resolvedSource);
+                        loadedRemote = true;
+                        setCanViewRemote(true);
+                        setStatus(`Loaded profile config (${resolvedSource})`);
+                    } catch {}
+                }
                 try {
-                    const remote = await readRemoteConfig(nextRelayUrl, activeUserId, activeUserId);
-                    updateFromConfig(remote);
-                    loadedRemote = true;
-                    setCanViewRemote(true);
-                    setStatus("Loaded profile config");
-                } catch {}
-                try {
-                    await ensureMobileRelayPresence(nextRelayUrl, activeUserId, "refresh-self");
                     let syncPayload = await syncInAppLoopback(nextRelayUrl, activeUserId);
                     if (!syncPayload) {
                         await ensureMobileRelayPresence(nextRelayUrl, activeUserId, "refresh-self-retry");
@@ -1615,6 +1718,8 @@ function ConfigPanel(props) {
                 if (!loadedRemote) {
                     const local = readLocalConfig(activeUserId);
                     updateFromConfig(local);
+                    setResolvedProfileSource("mobile");
+                    setAvailableProfileSources(["mobile"]);
                 }
                 setAllowedEditors((syncedEditors ?? getAllowedEditors(activeUserId).allowed_editors).sort());
                 let access = { requests: [] };
@@ -1637,7 +1742,24 @@ function ConfigPanel(props) {
         } finally {
             refreshInFlightRef.current = false;
         }
-    }, [activeUserId, isOwnProfile, isPanelOpen, profileUserId, updateFromConfig]);
+    }, [activeUserId, isOwnProfile, isPanelOpen, ownConfigSource, profileUserId, updateFromConfig]);
+
+    useEffect(() => {
+        if (!isPanelOpen) return;
+        skipAutosaveRef.current = true;
+        setCanViewRemote(isOwnProfile);
+        if (!isOwnProfile) {
+            setAvailableProfileSources([]);
+            setResolvedProfileSource("auto");
+        }
+        if (!isOwnProfile) {
+            setAllowedEditors([]);
+            setPendingRequests([]);
+            setStatus(`Loading ${profileUserId}'s profile config...`);
+        } else {
+            setStatus("Loading your profile config...");
+        }
+    }, [activeUserId, isOwnProfile, isPanelOpen, profileUserId]);
 
     useEffect(() => {
         try {
@@ -1707,31 +1829,90 @@ function ConfigPanel(props) {
         if (!activeUserId) return null;
         const { merged } = buildConfigSnapshot(baseConfig, censoredWordsText);
         if (isOwnProfile) {
+            const preferredSource = ownConfigSource;
+            if (preferredSource === "mobile") {
+                return saveLocalConfig(activeUserId, merged, activeUserId).then(latest => {
+                    updateFromConfig(latest);
+                    setResolvedProfileSource("mobile");
+                    setStatus("Auto-saved profile config (mobile)");
+                }, err => setStatus(`Auto-save failed: ${String(err)}`));
+            }
             const previous = readMobileState(activeUserId);
             return pushRemoteConfig(
                 currentRelayUrl(),
                 activeUserId,
                 activeUserId,
                 merged,
-                previous.revision
+                previous.revision,
+                preferredSource
             ).then(() => {
-                writeMobileState({
-                    owner_discord_id: activeUserId,
-                    config: merged,
-                    allowed_editors: previous.allowed_editors,
-                    revision: previous.revision + 1,
-                    last_writer_id: activeUserId
+                return syncInAppLoopback(currentRelayUrl(), activeUserId).catch(() => null).then(syncPayload => {
+                    if (!syncPayload) {
+                        writeMobileState({
+                            owner_discord_id: activeUserId,
+                            config: merged,
+                            allowed_editors: previous.allowed_editors,
+                            revision: previous.revision + 1,
+                            last_writer_id: activeUserId
+                        });
+                    }
+                    const latest = readLocalConfig(activeUserId);
+                    interceptConfig = latest;
+                    updateFromConfig(latest);
                 });
-                interceptConfig = merged;
-                lastSavedSnapshotRef.current = JSON.stringify(merged);
+            }).then(() => {
                 setStatus("Auto-saved profile config");
             }, err => {
                 const status = parseErrorStatusCode(err);
                 if (status === 404) {
-                    return saveLocalConfig(activeUserId, merged, activeUserId).then(() => {
-                        lastSavedSnapshotRef.current = JSON.stringify(merged);
+                    return saveLocalConfig(activeUserId, merged, activeUserId).then(latest => {
+                        updateFromConfig(latest);
                         setStatus("Auto-saved profile config");
                     }, fallbackErr => setStatus(`Auto-save failed: ${String(fallbackErr)}`));
+                }
+                if (status === 409) {
+                    return syncInAppLoopback(currentRelayUrl(), activeUserId).catch(() => null).then(() => {
+                        const latest = readMobileState(activeUserId);
+                        return readRemoteProfileState(currentRelayUrl(), activeUserId, activeUserId, preferredSource).then(
+                            remote => {
+                                const remoteRevision = Number(remote?.revision);
+                                const expectedRevision = Number.isFinite(remoteRevision)
+                                    ? Math.max(latest.revision, remoteRevision)
+                                    : latest.revision;
+                                const allowedEditors = Array.isArray(remote?.allowed_editors)
+                                    ? remote.allowed_editors
+                                    : latest.allowed_editors;
+                                return { expectedRevision, allowedEditors };
+                            },
+                            () => ({ expectedRevision: latest.revision, allowedEditors: latest.allowed_editors })
+                        ).then(({ expectedRevision, allowedEditors }) => pushRemoteConfig(
+                            currentRelayUrl(),
+                            activeUserId,
+                            activeUserId,
+                            merged,
+                            expectedRevision,
+                            preferredSource
+                        ).then(() => {
+                            return syncInAppLoopback(currentRelayUrl(), activeUserId).catch(() => null).then(syncPayload => {
+                                if (!syncPayload) {
+                                    writeMobileState({
+                                        owner_discord_id: activeUserId,
+                                        config: merged,
+                                        allowed_editors: allowedEditors,
+                                        revision: expectedRevision + 1,
+                                        last_writer_id: activeUserId
+                                    });
+                                }
+                            });
+                        }).then(() => {
+                            const latest = readLocalConfig(activeUserId);
+                            interceptConfig = latest;
+                            updateFromConfig(latest);
+                            setStatus("Auto-saved profile config");
+                        }));
+                    }).catch(retryErr => {
+                        setStatus(`Auto-save failed after conflict retry: ${String(retryErr)}`);
+                    });
                 }
                 setStatus(`Auto-save failed: ${String(err)}`);
             });
@@ -1740,7 +1921,7 @@ function ConfigPanel(props) {
             lastSavedSnapshotRef.current = JSON.stringify(merged);
             setStatus(`Auto-saved ${profileUserId}'s profile config`);
         }, err => setStatus(`Auto-save failed: ${String(err)}`));
-    }, [activeUserId, censoredWordsText, isOwnProfile, profileUserId]);
+    }, [activeUserId, censoredWordsText, isOwnProfile, ownConfigSource, profileUserId, updateFromConfig]);
 
     useEffect(() => {
         if (!(isOwnProfile || canViewRemote) || !isPanelOpen) return;
@@ -1749,7 +1930,7 @@ function ConfigPanel(props) {
             return;
         }
         const { merged, snapshot } = buildConfigSnapshot(editableConfig, censoredWordsText);
-        if (snapshot === lastSavedSnapshotRef.current) return;
+        if (!isOwnProfile && snapshot === lastSavedSnapshotRef.current) return;
         setStatus("Auto-saving...");
         const enqueueSave = () => saveStructuredConfig(merged);
         const previous = saveQueueRef.current;
@@ -2187,6 +2368,15 @@ function ConfigPanel(props) {
                 style: inputStyle
             }),
             button("Save Relay URL", saveRelayUrl)
+        )) : null,
+
+        isOwnProfile ? section("config-source", "Config Source", h(
+            View,
+            null,
+            h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, `Current source: ${resolvedProfileSource}`),
+            availableProfileSources.length > 1
+                ? h(Text, { style: { color: "#b5bac1", marginTop: 4 } }, `Available sources: ${availableProfileSources.join(", ")}`)
+                : null
         )) : null,
         
         (!isOwnProfile && canViewRemote) ? section("Sub Contol", "Sub Control", h(

@@ -1,6 +1,3 @@
-mod schema;
-mod store;
-
 use anyhow::Result;
 use axum::{
     Json, Router,
@@ -12,14 +9,33 @@ use axum::{
     response::IntoResponse,
     routing::{delete, get},
 };
-use schema::{LocalConfig, is_discord_id};
+use loopback_core::{ConfigStore, LocalConfig, is_discord_id};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf};
-use store::ConfigStore;
 use tokio::time::{Duration, Instant, sleep};
 use tower_http::cors::CorsLayer;
 use tracing::{error, info, warn};
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
+fn developer_mode_enabled() -> bool {
+    cfg!(feature = "developer-build")
+        || env_flag("KEY_INTERCEPT_DEVELOPER_MODE")
+        || env_flag("KEY_INTERCEPT_DEBUG_MODE")
+}
+
+fn developer_default_relay_url() -> Option<String> {
+    developer_mode_enabled().then_some("http://127.0.0.1:46001".to_string())
+}
 
 #[derive(Clone)]
 struct AppState {
@@ -73,6 +89,7 @@ struct RegisterRelayPeerPayload {
     owner_id: String,
     base_url: String,
     shared_token: Option<String>,
+    device_type: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -83,13 +100,25 @@ struct RelayDesktopRequestsResponse {
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum RelayDesktopCommand {
-    ReadConfig { requester_id: String },
+    ReadConfig {
+        requester_id: String,
+    },
     PutConfig {
         editor_id: String,
         config: Value,
         expected_revision: Option<u64>,
     },
-    AddAllowedEditor { owner_id: String, editor_id: String },
+    AddAllowedEditor {
+        owner_id: String,
+        editor_id: String,
+    },
+    RemoveAllowedEditor {
+        owner_id: String,
+        editor_id: String,
+    },
+    ReadAllowedEditors {
+        requester_id: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -125,7 +154,8 @@ async fn main() -> Result<()> {
     let relay_server_url = std::env::var("RELAY_SERVER_URL")
         .ok()
         .map(|value| value.trim().trim_end_matches('/').to_string())
-        .filter(|value| !value.is_empty());
+        .filter(|value| !value.is_empty())
+        .or_else(developer_default_relay_url);
     let shared_token = std::env::var("LOOPBACK_SHARED_TOKEN")
         .ok()
         .map(|value| value.trim().to_string())
@@ -557,6 +587,7 @@ async fn register_relay_peer(
         owner_id: owner_discord_id.to_string(),
         base_url: format!("http://127.0.0.1:{loopback_port}"),
         shared_token: shared_token.map(ToOwned::to_owned),
+        device_type: Some("pc".to_string()),
     };
     client
         .post(register_url)
@@ -692,6 +723,46 @@ async fn execute_desktop_command(
                 Ok(()) => (StatusCode::NO_CONTENT, None, None),
                 Err(err) => (StatusCode::FORBIDDEN, None, Some(err.to_string())),
             }
+        }
+        RelayDesktopCommand::RemoveAllowedEditor {
+            owner_id,
+            editor_id,
+        } => {
+            if owner_id != owner_discord_id {
+                return (
+                    StatusCode::FORBIDDEN,
+                    None,
+                    Some("owner_id does not match this loopback owner".to_string()),
+                );
+            }
+            if !is_discord_id(&editor_id) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    None,
+                    Some("editor_id must be numeric".to_string()),
+                );
+            }
+            match store.remove_editor(&owner_id, &editor_id).await {
+                Ok(()) => (StatusCode::NO_CONTENT, None, None),
+                Err(err) => (StatusCode::FORBIDDEN, None, Some(err.to_string())),
+            }
+        }
+        RelayDesktopCommand::ReadAllowedEditors { requester_id } => {
+            let stored = store.get().await;
+            if requester_id != stored.owner_discord_id {
+                return (
+                    StatusCode::FORBIDDEN,
+                    None,
+                    Some("only owner can read allowed editors".to_string()),
+                );
+            }
+            let mut allowed = stored.allowed_editors.into_iter().collect::<Vec<_>>();
+            allowed.sort();
+            (
+                StatusCode::OK,
+                Some(serde_json::json!({ "allowed_editors": allowed })),
+                None,
+            )
         }
     }
 }

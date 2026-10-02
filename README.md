@@ -66,15 +66,19 @@ To install on Android:
 3. Open Kettu.
 4. Go to Profile > Settings > Plugins.
 5. Click the plus button in the bottom right hand corner.
-6. Type in the source [https://key-intercept.github.io/key-intercept-v2/](https://key-intercept.github.io/key-intercept-v2/).
-7. Click install.
-8. Make sure the plugin is enabled.
+6. Download `key-intercept-loopback-android.apk` from [Releases](https://github.com/Key-intercept/key-intercept-v2/releases/latest).
+7. Install and open **Key Intercept Loopback** (see [this guide](https://www.lifewire.com/install-apk-on-android-4177185) for how to install an APK if unsure.
+8. Tap **Start Background Service**.
+9. Tap **Fix Battery Optimization**.
+10. Enable the plugin.
+
+The notification should show **Key Intercept Loopback is running in the background**.
+
+> Note: I have no apple devices and refuse to get any, so I have no way of testing this.
+> Also note: you will need a mac to install this unless you know how to sideload without mac
 
 ### IOS
 To install on IOS:
-
-> Note: I have no apple devices and refuse to get any, so I have no way of testing this.
-> Also note: you will need a pc to install this unless you know how to sideload without PC
 
 1. Download iloader on PC
 2. Connect your phone to PC via USB
@@ -90,7 +94,41 @@ To install on IOS:
 12. Click the plus button in the bottom right hand corner.
 13. Type in the source [https://key-intercept.github.io/key-intercept-v2/](https://key-intercept.github.io/key-intercept-v2/).
 14. Click install.
-15. Make sure the plugin is enabled.
+15. Download `key-intercept-loopback-ios.ipa` from [Releases](https://github.com/Key-intercept/key-intercept-v2/releases/latest).
+16. Sideload the IPA using the above steps.
+17. Open **Key Intercept Loopback**.
+18. Tap **Start Loopback** (the app will claim to be playing audio, this is so it doesnt close (blame apple)).
+19. Enable the plugin.
+
+The app should show **Key Intercept Loopback is running in the background**.
+
+### Developer mode relay defaults (build args)
+
+Use developer build args when building debug/dev artifacts:
+
+```sh
+# Rust (relay/loopback/installer)
+cargo run -p relay-server --features developer-build
+cargo run -p loopback-server --features developer-build
+
+# Android
+cd /home/runner/work/key-intercept-v2/key-intercept-v2/mobile/android-loopback
+gradle :app:assembleDebug -PdeveloperBuild=true
+
+# Kettu plugin
+npm --prefix kettu-plugin run build:developer
+```
+
+When enabled and explicit relay settings are not provided:
+- `relay-server` defaults to port `46001`
+- `loopback-server` defaults relay URL to `http://127.0.0.1:46001`
+- installer default relay URL becomes `http://127.0.0.1:46001`
+
+For the self-hosted desktop plugin, you can also enable developer relay defaults at runtime by setting browser local storage:
+
+```js
+localStorage.setItem("key-intercept/developer-mode", "true")
+```
 
 ## Usage
 
