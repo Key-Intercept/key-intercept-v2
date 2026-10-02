@@ -389,8 +389,16 @@ function normalizeConfigSource(value) {
 }
 
 function isLikelyMobileRuntime() {
-    if (typeof navigator === "undefined") return false;
-    return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent ?? "");
+    const platformOs = String(
+        globalThis?.vendetta?.metro?.common?.ReactNative?.Platform?.OS
+        ?? ReactNativeRef?.Platform?.OS
+        ?? ""
+    ).toLowerCase();
+    if (platformOs === "android" || platformOs === "ios") return true;
+    if (typeof navigator !== "undefined" && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent ?? "")) {
+        return true;
+    }
+    return false;
 }
 
 function currentRelayUrl() {
