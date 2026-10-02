@@ -1,7 +1,6 @@
 const LOG_PREFIX = "[key-intercept/kettu]";
 const MOBILE_STATE_KEY = "key-intercept/mobile-loopback-state/v1";
 const RELAY_URL_STORAGE_KEY = "key-intercept/relay-url";
-const CONFIG_SOURCE_PREF_KEY = "key-intercept/config-source-preference";
 const DEVELOPER_MODE_ENABLED = "__KEY_INTERCEPT_DEVELOPER_MODE__" === "true";
 const DEFAULT_RELAY_URL = DEVELOPER_MODE_ENABLED
     ? "http://127.0.0.1:46001"
@@ -1427,11 +1426,7 @@ function bootstrapConfig() {
     const syncForCurrentUser = () => {
         const currentUser = UserStore?.getCurrentUser?.();
         if (!validateDiscordId(currentUser?.id)) return false;
-        const storage = getStorageBackend();
-        const preferredSource = normalizeConfigSource(storage?.getItem(CONFIG_SOURCE_PREF_KEY));
-        const bootstrapSource = preferredSource === "auto"
-            ? (isLikelyMobileRuntime() ? "mobile" : "auto")
-            : preferredSource;
+        const bootstrapSource = isLikelyMobileRuntime() ? "mobile" : "pc";
         if (bootstrapSource === "mobile") {
             interceptConfig = mergeLocalConfig(readMobileState(currentUser.id).config);
             ensureMobileRelayPresence(currentRelayUrl(), currentUser.id, "bootstrap-mobile")
@@ -1617,14 +1612,9 @@ function ConfigPanel(props) {
     }
     const [relayUrl, setRelayUrl] = relayUrlState;
     const [status, setStatus] = useState("");
-    const [ownConfigSource, setOwnConfigSource] = useState(() => {
-        const storage = getStorageBackend();
-        const preferred = storage?.getItem(CONFIG_SOURCE_PREF_KEY);
-        if (preferred) return normalizeConfigSource(preferred);
-        return isLikelyMobileRuntime() ? "mobile" : "auto";
-    });
+    const ownConfigSource = isLikelyMobileRuntime() ? "mobile" : "pc";
     const [availableProfileSources, setAvailableProfileSources] = useState([]);
-    const [resolvedProfileSource, setResolvedProfileSource] = useState("auto");
+    const [resolvedProfileSource, setResolvedProfileSource] = useState(ownConfigSource);
     const [newEditorId, setNewEditorId] = useState("");
     const [manualScopeId, setManualScopeId] = useState("");
     const [allowedEditors, setAllowedEditors] = useState(() => {
@@ -1687,7 +1677,7 @@ function ConfigPanel(props) {
                 return;
             }
             if (isOwnProfile) {
-                const preferredSource = normalizeConfigSource(ownConfigSource);
+                const preferredSource = ownConfigSource;
                 let loadedRemote = false;
                 let syncedEditors = null;
                 if (preferredSource !== "mobile") {
@@ -1827,20 +1817,11 @@ function ConfigPanel(props) {
         setStatus("Saved relay URL");
     }, [relayUrl]);
 
-    const setOwnConfigSourcePreference = useCallback(nextSource => {
-        const normalized = normalizeConfigSource(nextSource);
-        const storage = getStorageBackend();
-        storage?.setItem(CONFIG_SOURCE_PREF_KEY, normalized);
-        setOwnConfigSource(normalized);
-        setResolvedProfileSource(normalized);
-        setStatus(`Preferred config source set to ${normalized}`);
-    }, []);
-
     const saveStructuredConfig = useCallback(baseConfig => {
         if (!activeUserId) return null;
         const { merged } = buildConfigSnapshot(baseConfig, censoredWordsText);
         if (isOwnProfile) {
-            const preferredSource = normalizeConfigSource(ownConfigSource);
+            const preferredSource = ownConfigSource;
             if (preferredSource === "mobile") {
                 return saveLocalConfig(activeUserId, merged, activeUserId).then(latest => {
                     updateFromConfig(latest);
@@ -2387,12 +2368,7 @@ function ConfigPanel(props) {
             h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, `Current source: ${resolvedProfileSource}`),
             availableProfileSources.length > 1
                 ? h(Text, { style: { color: "#b5bac1", marginTop: 4 } }, `Available sources: ${availableProfileSources.join(", ")}`)
-                : null,
-            h(View, { style: { marginTop: 6, flexDirection: "row", flexWrap: "wrap" } },
-                button("Auto", () => setOwnConfigSourcePreference("auto"), { active: ownConfigSource === "auto", noTopMargin: true, key: "config-source-auto" }),
-                button("PC", () => setOwnConfigSourcePreference("pc"), { active: ownConfigSource === "pc", noTopMargin: true, key: "config-source-pc" }),
-                button("Mobile", () => setOwnConfigSourcePreference("mobile"), { active: ownConfigSource === "mobile", noTopMargin: true, key: "config-source-mobile" })
-            )
+                : null
         )) : null,
         
         (!isOwnProfile && canViewRemote) ? section("Sub Contol", "Sub Control", h(
