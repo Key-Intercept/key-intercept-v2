@@ -1643,6 +1643,7 @@ function ConfigPanel(props) {
     const lastSavedSnapshotRef = useRef("");
     const saveQueueRef = useRef(null);
     const refreshInFlightRef = useRef(false);
+    const remoteSourceRef = useRef("mobile");
     const profileDebugRef = useRef("");
 
     const blocked_by_dom = editableConfig.config.blocked_by_dom;
@@ -1733,10 +1734,22 @@ function ConfigPanel(props) {
                 return;
             }
 
-            const remote = await readRemoteConfig(nextRelayUrl, activeUserId, profileUserId);
+            let remote;
+            try {
+                remote = await readRemoteConfig(nextRelayUrl, activeUserId, profileUserId, "mobile");
+                remoteSourceRef.current = "mobile";
+                setResolvedProfileSource("mobile");
+                setAvailableProfileSources(["mobile"]);
+            } catch (err) {
+                const status = parseErrorStatusCode(err);
+                if (status !== 404) throw err;
+                remote = await readRemoteConfig(nextRelayUrl, activeUserId, profileUserId, "auto");
+                remoteSourceRef.current = "auto";
+                setResolvedProfileSource("auto");
+            }
             updateFromConfig(remote);
             setCanViewRemote(true);
-            setStatus(`Loaded ${profileUserId}'s profile config`);
+            setStatus(`Loaded ${profileUserId}'s profile config (${remoteSourceRef.current})`);
         } catch (err) {
             setCanViewRemote(false);
             setStatus(formatConfigAccessError(err, profileUserId));
@@ -1752,6 +1765,7 @@ function ConfigPanel(props) {
         if (!isOwnProfile) {
             setAvailableProfileSources([]);
             setResolvedProfileSource("auto");
+            remoteSourceRef.current = "mobile";
         }
         if (!isOwnProfile) {
             setAllowedEditors([]);
@@ -1918,7 +1932,14 @@ function ConfigPanel(props) {
                 setStatus(`Auto-save failed: ${String(err)}`);
             });
         }
-        return pushRemoteConfig(currentRelayUrl(), activeUserId, profileUserId, merged).then(() => {
+        return pushRemoteConfig(
+            currentRelayUrl(),
+            activeUserId,
+            profileUserId,
+            merged,
+            undefined,
+            remoteSourceRef.current
+        ).then(() => {
             lastSavedSnapshotRef.current = JSON.stringify(merged);
             setStatus(`Auto-saved ${profileUserId}'s profile config`);
         }, err => setStatus(`Auto-save failed: ${String(err)}`));
