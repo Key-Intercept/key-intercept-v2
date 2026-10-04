@@ -1600,8 +1600,9 @@ function ConfigPanel(props) {
     const hasValidProfileTarget = validateDiscordId(profileUserId);
     const isOwnProfile = !hasValidProfileTarget || profileUserId === activeUserId;
     const panelOpenInfo = getProfilePanelOpenInfo(props);
-    const isPanelOpen = panelOpenInfo.isOpen;
-    const hasExplicitPanelOpenState = panelOpenInfo.hasExplicitState;
+    const isEmbeddedSettingsLauncher = entrypoint.startsWith("settings-launcher:");
+    const isPanelOpen = isEmbeddedSettingsLauncher ? true : panelOpenInfo.isOpen;
+    const hasExplicitPanelOpenState = isEmbeddedSettingsLauncher ? false : panelOpenInfo.hasExplicitState;
     const requestedPanelHeight = Number(props?.maxPanelHeight);
     const windowHeight = Number(Dimensions?.get?.("window")?.height);
     const defaultMaxPanelHeight = Number.isFinite(windowHeight)
