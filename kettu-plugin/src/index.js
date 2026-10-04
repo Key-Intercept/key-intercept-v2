@@ -1434,7 +1434,7 @@ function bootstrapConfig() {
     const syncForCurrentUser = () => {
         const currentUser = UserStore?.getCurrentUser?.();
         if (!validateDiscordId(currentUser?.id)) return false;
-        const bootstrapSource = isLikelyMobileRuntime() ? "mobile" : "pc";
+        const bootstrapSource = "mobile";
         if (bootstrapSource === "mobile") {
             interceptConfig = mergeLocalConfig(readMobileState(currentUser.id).config);
             ensureMobileRelayPresence(currentRelayUrl(), currentUser.id, "bootstrap-mobile")
@@ -1621,7 +1621,7 @@ function ConfigPanel(props) {
     }
     const [relayUrl, setRelayUrl] = relayUrlState;
     const [status, setStatus] = useState("");
-    const ownConfigSource = isLikelyMobileRuntime() ? "mobile" : "pc";
+    const ownConfigSource = "mobile";
     const [availableProfileSources, setAvailableProfileSources] = useState([]);
     const [resolvedProfileSource, setResolvedProfileSource] = useState(ownConfigSource);
     const [newEditorId, setNewEditorId] = useState("");
