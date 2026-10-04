@@ -686,7 +686,8 @@ async function pushRemoteConfig(
     editorId: string,
     targetUserId: string,
     config: LocalConfig,
-    expectedRevision?: number
+    expectedRevision?: number,
+    source: "auto" | "pc" | "mobile" = "auto"
 ) {
     const normalizedEditorId = normalizeDiscordId(editorId);
     const normalizedTargetUserId = normalizeDiscordId(targetUserId);
@@ -695,7 +696,8 @@ async function pushRemoteConfig(
         err.status = 400;
         throw err;
     }
-    const response = await fetch(`${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/config`, {
+    const sourceQuery = source === "auto" ? "" : `?source=${encodeURIComponent(source)}`;
+    const response = await fetch(`${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/config${sourceQuery}`, {
         method: "PUT",
         headers: {
             "content-type": "application/json"
@@ -751,7 +753,12 @@ function getIdentityValidationError(requesterId: string, targetUserId: string, i
     return null;
 }
 
-async function readRemoteConfig(relayUrl: string, requesterId: string, targetUserId: string): Promise<LocalConfig> {
+async function readRemoteConfig(
+    relayUrl: string,
+    requesterId: string,
+    targetUserId: string,
+    source: "auto" | "pc" | "mobile" = "auto"
+): Promise<LocalConfig> {
     const normalizedRequesterId = normalizeDiscordId(requesterId);
     const normalizedTargetUserId = normalizeDiscordId(targetUserId);
     if (!normalizedRequesterId || !normalizedTargetUserId) {
@@ -765,8 +772,9 @@ async function readRemoteConfig(relayUrl: string, requesterId: string, targetUse
         targetUserId: normalizedTargetUserId,
         relayUrl: relayBaseUrl(relayUrl)
     });
-    const profileStateUrl = `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/profile-state?requester_id=${encodeURIComponent(normalizedRequesterId)}`;
-    const legacyConfigUrl = `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/config?requester_id=${encodeURIComponent(normalizedRequesterId)}`;
+    const sourceQuery = source === "auto" ? "" : `&source=${encodeURIComponent(source)}`;
+    const profileStateUrl = `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/profile-state?requester_id=${encodeURIComponent(normalizedRequesterId)}${sourceQuery}`;
+    const legacyConfigUrl = `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/config?requester_id=${encodeURIComponent(normalizedRequesterId)}${sourceQuery}`;
     let response = await fetch(profileStateUrl, { cache: "no-store" });
     let endpoint = "profile-state";
     let fallbackSourceStatus: number | null = null;
@@ -1648,6 +1656,7 @@ function ConfigPanel(props: any) {
     const lastSavedSnapshotRef = React.useRef("");
     const saveQueueRef = React.useRef(Promise.resolve());
     const refreshInFlightRef = React.useRef(false);
+    const remoteSourceRef = React.useRef<"auto" | "pc" | "mobile">("mobile");
     const stopKeyPropagation = React.useCallback((event: React.KeyboardEvent) => {
         event.stopPropagation();
     }, []);
@@ -1729,7 +1738,16 @@ function ConfigPanel(props: any) {
                 return;
             }
 
-            const remote = await readRemoteConfig(settings.store.relayUrl, activeUserId, profileUserId);
+            let remote: LocalConfig;
+            try {
+                remote = await readRemoteConfig(settings.store.relayUrl, activeUserId, profileUserId, "mobile");
+                remoteSourceRef.current = "mobile";
+            } catch (err) {
+                const status = parseErrorStatusCode(err);
+                if (status !== 404) throw err;
+                remote = await readRemoteConfig(settings.store.relayUrl, activeUserId, profileUserId, "auto");
+                remoteSourceRef.current = "auto";
+            }
             updateFromConfig(remote);
             setCanViewRemote(true);
             console.info(`${LOG_PREFIX} refresh:success`, {
@@ -1939,7 +1957,14 @@ function ConfigPanel(props: any) {
             updateFromConfig(appliedConfig);
             if (!options?.quiet) setStatus("Auto-saved local config");
         } else {
-            await pushRemoteConfig(settings.store.relayUrl, activeUserId, profileUserId, mergedConfig);
+            await pushRemoteConfig(
+                settings.store.relayUrl,
+                activeUserId,
+                profileUserId,
+                mergedConfig,
+                undefined,
+                remoteSourceRef.current
+            );
             if (!options?.quiet) setStatus(`Auto-saved ${profileUserId}'s config via relay`);
         }
         lastSavedSnapshotRef.current = JSON.stringify(appliedConfig);
