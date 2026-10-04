@@ -1734,20 +1734,42 @@ function ConfigPanel(props) {
                 return;
             }
 
-            let remote;
+            let remoteState;
             try {
-                remote = await readRemoteConfig(nextRelayUrl, activeUserId, profileUserId, "mobile");
-                remoteSourceRef.current = "mobile";
-                setResolvedProfileSource("mobile");
-                setAvailableProfileSources(["mobile"]);
+                remoteState = await readRemoteProfileState(nextRelayUrl, activeUserId, profileUserId, "mobile");
+                const resolvedSource = normalizeConfigSource(remoteState?.source || "mobile");
+                remoteSourceRef.current = resolvedSource;
+                setResolvedProfileSource(resolvedSource);
+                const nextSources = Array.isArray(remoteState?.available_sources)
+                    ? remoteState.available_sources.map(normalizeConfigSource).filter(value => value !== "auto")
+                    : [];
+                setAvailableProfileSources(nextSources.length > 0 ? nextSources : [resolvedSource]);
             } catch (err) {
                 const status = parseErrorStatusCode(err);
                 if (status !== 404) throw err;
-                remote = await readRemoteConfig(nextRelayUrl, activeUserId, profileUserId, "auto");
-                remoteSourceRef.current = "auto";
-                setResolvedProfileSource("auto");
+                try {
+                    remoteState = await readRemoteProfileState(nextRelayUrl, activeUserId, profileUserId, "auto");
+                    const resolvedSource = normalizeConfigSource(remoteState?.source || "auto");
+                    remoteSourceRef.current = resolvedSource;
+                    setResolvedProfileSource(resolvedSource);
+                    const nextSources = Array.isArray(remoteState?.available_sources)
+                        ? remoteState.available_sources.map(normalizeConfigSource).filter(value => value !== "auto")
+                        : [];
+                    if (nextSources.length > 0) setAvailableProfileSources(nextSources);
+                } catch (fallbackErr) {
+                    const fallbackStatus = parseErrorStatusCode(fallbackErr);
+                    if (fallbackStatus !== 404) throw fallbackErr;
+                    const legacyRemote = await readRemoteConfig(nextRelayUrl, activeUserId, profileUserId, "auto");
+                    remoteSourceRef.current = "auto";
+                    setResolvedProfileSource("auto");
+                    setAvailableProfileSources([]);
+                    updateFromConfig(legacyRemote);
+                    setCanViewRemote(true);
+                    setStatus(`Loaded ${profileUserId}'s profile config (${remoteSourceRef.current})`);
+                    return;
+                }
             }
-            updateFromConfig(remote);
+            updateFromConfig(remoteState?.config ?? remoteState);
             setCanViewRemote(true);
             setStatus(`Loaded ${profileUserId}'s profile config (${remoteSourceRef.current})`);
         } catch (err) {
