@@ -89,6 +89,7 @@ let registeredProfileActionFallback = null;
 const fallbackMobileStateByOwner = new Map();
 let cachedStorageBackend = null;
 let cachedMMKVStore = null;
+let remoteFetchTraceCounter = 0;
 
 function getMMKVStore() {
     if (cachedMMKVStore && typeof cachedMMKVStore === "object") return cachedMMKVStore;
@@ -126,6 +127,22 @@ function isDebugEnabled() {
 
 function debugLog(event, payload) {
     console.log(`${LOG_PREFIX} ${event}`, payload);
+}
+
+function nextRemoteFetchTraceId() {
+    remoteFetchTraceCounter += 1;
+    return `rf-${Date.now()}-${remoteFetchTraceCounter}`;
+}
+
+function summarizeRemoteFetchError(error) {
+    return {
+        status: parseErrorStatusCode(error),
+        relayStatus: Number(error?.relayStatus),
+        relayError: typeof error?.relayError === "string" ? error.relayError : undefined,
+        endpoint: typeof error?.endpoint === "string" ? error.endpoint : undefined,
+        source: typeof error?.source === "string" ? error.source : undefined,
+        message: String(error?.message ?? error ?? "")
+    };
 }
 
 function toLines(values) {
@@ -803,7 +820,12 @@ function readRemoteConfig(relayUrl, requesterId, targetUserId, source) {
         err.status = 400;
         return Promise.reject(err);
     }
-    debugLog("readRemoteConfig:start", { requesterId: normalizedRequesterId, targetUserId: normalizedTargetUserId, relayUrl: relayBaseUrl(relayUrl) });
+    debugLog("readRemoteConfig:start", {
+        requesterId: normalizedRequesterId,
+        targetUserId: normalizedTargetUserId,
+        source: normalizeConfigSource(source),
+        relayUrl: relayBaseUrl(relayUrl)
+    });
     const normalizedSource = normalizeConfigSource(source);
     const sourceQuery = normalizedSource === "auto" ? "" : `&source=${encodeURIComponent(normalizedSource)}`;
     const profileStateUrl = `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/profile-state?requester_id=${encodeURIComponent(normalizedRequesterId)}${sourceQuery}`;
@@ -895,13 +917,53 @@ function readRemoteProfileState(relayUrl, requesterId, targetUserId, source) {
     const normalizedSource = normalizeConfigSource(source);
     const sourceQuery = normalizedSource === "auto" ? "" : `&source=${encodeURIComponent(normalizedSource)}`;
     const profileStateUrl = `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/profile-state?requester_id=${encodeURIComponent(normalizedRequesterId)}${sourceQuery}`;
+    debugLog("readRemoteProfileState:start", {
+        requesterId: normalizedRequesterId,
+        targetUserId: normalizedTargetUserId,
+        source: normalizedSource,
+        relayUrl: relayBaseUrl(relayUrl)
+    });
     return fetch(profileStateUrl, { cache: "no-store" }).then(response => {
         if (!response.ok) {
-            const err = new Error(`Relay profile-state read failed: ${response.status}`);
-            err.status = response.status;
-            throw err;
+            return response.text().then(body => {
+                let payload = null;
+                try {
+                    payload = body ? JSON.parse(body) : null;
+                } catch {}
+                const relayError = typeof payload?.error === "string"
+                    ? payload.error
+                    : String(body || "").slice(0, 300);
+                const err = new Error(`Relay profile-state read failed: ${response.status}`);
+                err.status = response.status;
+                err.relayStatus = response.status;
+                err.relayError = relayError;
+                err.endpoint = "profile-state";
+                err.source = normalizedSource;
+                debugLog("readRemoteProfileState:failed", {
+                    requesterId: normalizedRequesterId,
+                    targetUserId: normalizedTargetUserId,
+                    source: normalizedSource,
+                    status: response.status,
+                    relayError
+                });
+                throw err;
+            });
         }
-        return response.json();
+        return response.json().then(payload => {
+            const resolvedSource = normalizeConfigSource(payload?.source || normalizedSource);
+            const availableSources = Array.isArray(payload?.available_sources)
+                ? payload.available_sources.map(normalizeConfigSource).filter(value => value !== "auto")
+                : [];
+            debugLog("readRemoteProfileState:success", {
+                requesterId: normalizedRequesterId,
+                targetUserId: normalizedTargetUserId,
+                source: normalizedSource,
+                resolvedSource,
+                availableSources,
+                status: response.status
+            });
+            return payload;
+        });
     });
 }
 
@@ -1676,6 +1738,7 @@ function ConfigPanel(props) {
     const refresh = useCallback(async () => {
         if (refreshInFlightRef.current || !isPanelOpen) return;
         refreshInFlightRef.current = true;
+        let remoteFetchTraceId = null;
         const nextRelayUrl = currentRelayUrl();
         setRelayUrl(nextRelayUrl);
         try {
@@ -1734,10 +1797,23 @@ function ConfigPanel(props) {
                 return;
             }
 
+            const fetchTraceId = nextRemoteFetchTraceId();
+            remoteFetchTraceId = fetchTraceId;
+            debugLog("refresh:remote_fetch_cycle:start", {
+                traceId: fetchTraceId,
+                activeUserId,
+                profileUserId,
+                relayUrl: relayBaseUrl(nextRelayUrl)
+            });
             let remoteState;
             try {
                 remoteState = await readRemoteProfileState(nextRelayUrl, activeUserId, profileUserId, "mobile");
                 const resolvedSource = normalizeConfigSource(remoteState?.source || "mobile");
+                debugLog("refresh:remote_fetch_cycle:mobile_success", {
+                    traceId: fetchTraceId,
+                    requestedSource: "mobile",
+                    resolvedSource
+                });
                 remoteSourceRef.current = resolvedSource;
                 setResolvedProfileSource(resolvedSource);
                 const nextSources = Array.isArray(remoteState?.available_sources)
@@ -1746,10 +1822,20 @@ function ConfigPanel(props) {
                 setAvailableProfileSources(nextSources.length > 0 ? nextSources : [resolvedSource]);
             } catch (err) {
                 const status = parseErrorStatusCode(err);
+                debugLog("refresh:remote_fetch_cycle:mobile_failed", {
+                    traceId: fetchTraceId,
+                    requestedSource: "mobile",
+                    ...summarizeRemoteFetchError(err)
+                });
                 if (status !== 404) throw err;
                 try {
                     remoteState = await readRemoteProfileState(nextRelayUrl, activeUserId, profileUserId, "auto");
                     const resolvedSource = normalizeConfigSource(remoteState?.source || "auto");
+                    debugLog("refresh:remote_fetch_cycle:auto_success", {
+                        traceId: fetchTraceId,
+                        requestedSource: "auto",
+                        resolvedSource
+                    });
                     remoteSourceRef.current = resolvedSource;
                     setResolvedProfileSource(resolvedSource);
                     const nextSources = Array.isArray(remoteState?.available_sources)
@@ -1758,7 +1844,16 @@ function ConfigPanel(props) {
                     if (nextSources.length > 0) setAvailableProfileSources(nextSources);
                 } catch (fallbackErr) {
                     const fallbackStatus = parseErrorStatusCode(fallbackErr);
+                    debugLog("refresh:remote_fetch_cycle:auto_failed", {
+                        traceId: fetchTraceId,
+                        requestedSource: "auto",
+                        ...summarizeRemoteFetchError(fallbackErr)
+                    });
                     if (fallbackStatus !== 404) throw fallbackErr;
+                    debugLog("refresh:remote_fetch_cycle:legacy_fallback_start", {
+                        traceId: fetchTraceId,
+                        requestedSource: "auto"
+                    });
                     const legacyRemote = await readRemoteConfig(nextRelayUrl, activeUserId, profileUserId, "auto");
                     remoteSourceRef.current = "auto";
                     setResolvedProfileSource("auto");
@@ -1766,15 +1861,31 @@ function ConfigPanel(props) {
                     updateFromConfig(legacyRemote);
                     setCanViewRemote(true);
                     setStatus(`Loaded ${profileUserId}'s profile config (${remoteSourceRef.current})`);
+                    debugLog("refresh:remote_fetch_cycle:legacy_fallback_success", {
+                        traceId: fetchTraceId,
+                        resolvedSource: remoteSourceRef.current
+                    });
                     return;
                 }
             }
             updateFromConfig(remoteState?.config ?? remoteState);
             setCanViewRemote(true);
             setStatus(`Loaded ${profileUserId}'s profile config (${remoteSourceRef.current})`);
+            debugLog("refresh:remote_fetch_cycle:complete", {
+                traceId: fetchTraceId,
+                resolvedSource: remoteSourceRef.current
+            });
         } catch (err) {
             setCanViewRemote(false);
-            setStatus(formatConfigAccessError(err, profileUserId));
+            const fetchTraceId = remoteFetchTraceId || nextRemoteFetchTraceId();
+            debugLog("refresh:remote_fetch_cycle:failed", {
+                traceId: fetchTraceId,
+                activeUserId,
+                profileUserId,
+                ...summarizeRemoteFetchError(err)
+            });
+            const nextStatus = formatConfigAccessError(err, profileUserId);
+            setStatus(`${nextStatus} (trace ${fetchTraceId})`);
         } finally {
             refreshInFlightRef.current = false;
         }
