@@ -7,6 +7,7 @@ const DEFAULT_RELAY_URL = DEVELOPER_MODE_ENABLED
     : "https://kirelay.thomaslower.com";
 const BOOTSTRAP_USER_RETRY_LIMIT = 20;
 const BOOTSTRAP_USER_RETRY_DELAY_MS = 1500;
+const FETCH_DEBUG_HISTORY_LIMIT = 12;
 const farFuture = "9999-12-31T23:59:59.000Z";
 const epoch = "1970-01-01T00:00:00.000Z";
 const permanentTimestamp = new Date(farFuture).getTime();
@@ -127,6 +128,15 @@ function isDebugEnabled() {
 
 function debugLog(event, payload) {
     console.log(`${LOG_PREFIX} ${event}`, payload);
+}
+
+function fetchDebugLog(event, payload, level = "warn") {
+    const logger = level === "error"
+        ? console.error
+        : level === "log"
+            ? console.log
+            : console.warn;
+    logger(`${LOG_PREFIX} ${event}`, payload);
 }
 
 function nextRemoteFetchTraceId() {
@@ -1701,6 +1711,8 @@ function ConfigPanel(props) {
     const [isRulesEditorOpen, setIsRulesEditorOpen] = useState(false);
     const [isPetTypeDropdownOpen, setIsPetTypeDropdownOpen] = useState(false);
     const [nowMs, setNowMs] = useState(() => Date.now());
+    const [fetchDiagnostics, setFetchDiagnostics] = useState(null);
+    const [fetchHistory, setFetchHistory] = useState([]);
     const skipAutosaveRef = useRef(true);
     const lastSavedSnapshotRef = useRef("");
     const saveQueueRef = useRef(null);
@@ -1733,6 +1745,20 @@ function ConfigPanel(props) {
         setEditableConfig(merged);
         setCensoredWordsText(toLines(merged.censored_words));
         lastSavedSnapshotRef.current = JSON.stringify(merged);
+    }, []);
+
+    const recordFetchDiagnostic = useCallback((step, detail = {}) => {
+        const entry = {
+            timestamp: new Date().toISOString(),
+            step,
+            ...detail
+        };
+        setFetchDiagnostics(entry);
+        setFetchHistory(prev => [entry, ...prev].slice(0, FETCH_DEBUG_HISTORY_LIMIT));
+        const level = detail?.outcome === "failure" || /failed/i.test(String(step))
+            ? "error"
+            : "warn";
+        fetchDebugLog(`remote_fetch_cycle:${step}`, entry, level);
     }, []);
 
     const refresh = useCallback(async () => {
@@ -1799,6 +1825,14 @@ function ConfigPanel(props) {
 
             const fetchTraceId = nextRemoteFetchTraceId();
             remoteFetchTraceId = fetchTraceId;
+            recordFetchDiagnostic("start", {
+                traceId: fetchTraceId,
+                activeUserId,
+                profileUserId,
+                relayUrl: relayBaseUrl(nextRelayUrl),
+                requestedSource: "mobile",
+                outcome: "running"
+            });
             debugLog("refresh:remote_fetch_cycle:start", {
                 traceId: fetchTraceId,
                 activeUserId,
@@ -1814,6 +1848,12 @@ function ConfigPanel(props) {
                     requestedSource: "mobile",
                     resolvedSource
                 });
+                recordFetchDiagnostic("mobile_success", {
+                    traceId: fetchTraceId,
+                    requestedSource: "mobile",
+                    resolvedSource,
+                    outcome: "success"
+                });
                 remoteSourceRef.current = resolvedSource;
                 setResolvedProfileSource(resolvedSource);
                 const nextSources = Array.isArray(remoteState?.available_sources)
@@ -1827,6 +1867,12 @@ function ConfigPanel(props) {
                     requestedSource: "mobile",
                     ...summarizeRemoteFetchError(err)
                 });
+                recordFetchDiagnostic("mobile_failed", {
+                    traceId: fetchTraceId,
+                    requestedSource: "mobile",
+                    outcome: "failure",
+                    ...summarizeRemoteFetchError(err)
+                });
                 if (status !== 404) throw err;
                 try {
                     remoteState = await readRemoteProfileState(nextRelayUrl, activeUserId, profileUserId, "auto");
@@ -1835,6 +1881,12 @@ function ConfigPanel(props) {
                         traceId: fetchTraceId,
                         requestedSource: "auto",
                         resolvedSource
+                    });
+                    recordFetchDiagnostic("auto_success", {
+                        traceId: fetchTraceId,
+                        requestedSource: "auto",
+                        resolvedSource,
+                        outcome: "success"
                     });
                     remoteSourceRef.current = resolvedSource;
                     setResolvedProfileSource(resolvedSource);
@@ -1849,10 +1901,21 @@ function ConfigPanel(props) {
                         requestedSource: "auto",
                         ...summarizeRemoteFetchError(fallbackErr)
                     });
+                    recordFetchDiagnostic("auto_failed", {
+                        traceId: fetchTraceId,
+                        requestedSource: "auto",
+                        outcome: "failure",
+                        ...summarizeRemoteFetchError(fallbackErr)
+                    });
                     if (fallbackStatus !== 404) throw fallbackErr;
                     debugLog("refresh:remote_fetch_cycle:legacy_fallback_start", {
                         traceId: fetchTraceId,
                         requestedSource: "auto"
+                    });
+                    recordFetchDiagnostic("legacy_fallback_start", {
+                        traceId: fetchTraceId,
+                        requestedSource: "auto",
+                        outcome: "running"
                     });
                     const legacyRemote = await readRemoteConfig(nextRelayUrl, activeUserId, profileUserId, "auto");
                     remoteSourceRef.current = "auto";
@@ -1865,6 +1928,12 @@ function ConfigPanel(props) {
                         traceId: fetchTraceId,
                         resolvedSource: remoteSourceRef.current
                     });
+                    recordFetchDiagnostic("legacy_fallback_success", {
+                        traceId: fetchTraceId,
+                        requestedSource: "auto",
+                        resolvedSource: remoteSourceRef.current,
+                        outcome: "success"
+                    });
                     return;
                 }
             }
@@ -1875,6 +1944,12 @@ function ConfigPanel(props) {
                 traceId: fetchTraceId,
                 resolvedSource: remoteSourceRef.current
             });
+            recordFetchDiagnostic("complete", {
+                traceId: fetchTraceId,
+                requestedSource: remoteSourceRef.current,
+                resolvedSource: remoteSourceRef.current,
+                outcome: "success"
+            });
         } catch (err) {
             setCanViewRemote(false);
             const fetchTraceId = remoteFetchTraceId || nextRemoteFetchTraceId();
@@ -1884,12 +1959,20 @@ function ConfigPanel(props) {
                 profileUserId,
                 ...summarizeRemoteFetchError(err)
             });
+            recordFetchDiagnostic("failed", {
+                traceId: fetchTraceId,
+                activeUserId,
+                profileUserId,
+                requestedSource: remoteSourceRef.current,
+                outcome: "failure",
+                ...summarizeRemoteFetchError(err)
+            });
             const nextStatus = formatConfigAccessError(err, profileUserId);
             setStatus(`${nextStatus} (trace ${fetchTraceId})`);
         } finally {
             refreshInFlightRef.current = false;
         }
-    }, [activeUserId, isOwnProfile, isPanelOpen, ownConfigSource, profileUserId, updateFromConfig]);
+    }, [activeUserId, isOwnProfile, isPanelOpen, ownConfigSource, profileUserId, recordFetchDiagnostic, updateFromConfig]);
 
     useEffect(() => {
         if (!isPanelOpen) return;
@@ -1899,6 +1982,8 @@ function ConfigPanel(props) {
             setAvailableProfileSources([]);
             setResolvedProfileSource("auto");
             remoteSourceRef.current = "mobile";
+            setFetchDiagnostics(null);
+            setFetchHistory([]);
         }
         if (!isOwnProfile) {
             setAllowedEditors([]);
@@ -2487,6 +2572,23 @@ function ConfigPanel(props) {
         button(`Deny ${requesterId}`, () => denyAccessRequest(currentRelayUrl(), activeUserId, requesterId).then(refresh), { danger: true })
     ));
 
+    const fetchHistoryRows = fetchHistory.slice(0, 8).map((entry, index) => h(
+        View,
+        {
+            key: `fetch-history-${index}-${entry.traceId ?? "none"}-${entry.timestamp ?? "time"}`,
+            style: {
+                marginTop: 6,
+                padding: 8,
+                borderRadius: 8,
+                borderWidth: 1,
+                borderColor: "#3f4147"
+            }
+        },
+        h(Text, { style: { color: "#f2f3f5" } }, `${entry.timestamp ?? "unknown"} | ${entry.step ?? "step"} | trace ${entry.traceId ?? "n/a"}`),
+        h(Text, { style: { color: "#b5bac1", marginTop: 4 } }, `req=${entry.requestedSource ?? "n/a"} res=${entry.resolvedSource ?? "n/a"} status=${entry.status ?? "n/a"}`),
+        entry.relayError ? h(Text, { style: { color: "#ffadad", marginTop: 4 } }, `relay: ${entry.relayError}`) : null
+    ));
+
     let selectedPetType = petTypeOptions[0];
     for (let i = 0; i < petTypeOptions.length; i++) {
         if (petTypeOptions[i].value === editableConfig.config.pet_type) {
@@ -2564,6 +2666,23 @@ function ConfigPanel(props) {
                     setStatus(`Access request sent to ${profileUserId}. Ask them to open Key Intercept and approve the request.`);
                 }, err => setStatus(formatConfigAccessError(err, profileUserId)));
             })
+        )) : null,
+
+        !isOwnProfile ? section("fetch-diagnostics", "Fetch Diagnostics", h(
+            View,
+            null,
+            h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, "Always-on diagnostics for remote profile fetches."),
+            h(Text, { style: { color: "#f2f3f5", marginTop: 6 } }, `Latest trace: ${fetchDiagnostics?.traceId ?? "n/a"}`),
+            h(Text, { style: { color: "#f2f3f5", marginTop: 4 } }, `Latest step: ${fetchDiagnostics?.step ?? "n/a"}`),
+            h(Text, { style: { color: "#f2f3f5", marginTop: 4 } }, `Requested source: ${fetchDiagnostics?.requestedSource ?? "n/a"}`),
+            h(Text, { style: { color: "#f2f3f5", marginTop: 4 } }, `Resolved source: ${fetchDiagnostics?.resolvedSource ?? "n/a"}`),
+            h(Text, { style: { color: "#f2f3f5", marginTop: 4 } }, `Status: ${fetchDiagnostics?.status ?? "n/a"} / relay ${fetchDiagnostics?.relayStatus ?? "n/a"}`),
+            fetchDiagnostics?.relayError
+                ? h(Text, { style: { color: "#ffadad", marginTop: 4 } }, `Relay error: ${fetchDiagnostics.relayError}`)
+                : null,
+            fetchHistoryRows.length
+                ? h(View, { style: { marginTop: 8 } }, ...fetchHistoryRows)
+                : h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, "No fetch attempts recorded yet.")
         )) : null,
 
         (isOwnProfile && !blocked_by_dom) || (!isOwnProfile && canViewRemote) ? section("gag", "Gag", renderTimeoutControls("gag_end", "Gag timeout")) : null,
