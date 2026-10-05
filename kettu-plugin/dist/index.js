@@ -1844,6 +1844,15 @@ function ConfigPanel(props) {
                 return;
             }
             if (isOwnProfile) {
+                const ownTraceId = nextRemoteFetchTraceId();
+                remoteFetchTraceId = ownTraceId;
+                recordFetchDiagnostic("own_profile_refresh_start", {
+                    traceId: ownTraceId,
+                    activeUserId,
+                    profileUserId,
+                    requestedSource: ownConfigSource,
+                    outcome: "running"
+                });
                 const preferredSource = ownConfigSource;
                 let loadedRemote = false;
                 let syncedEditors = null;
@@ -1867,13 +1876,30 @@ function ConfigPanel(props) {
                 try {
                     let syncPayload = await syncInAppLoopback(nextRelayUrl, ownOwnerId);
                     if (!syncPayload) {
+                        recordFetchDiagnostic("own_profile_sync_retry", {
+                            traceId: ownTraceId,
+                            activeUserId,
+                            profileUserId,
+                            requestedSource: preferredSource,
+                            outcome: "running",
+                            relayError: "mobile sync returned no payload; publishing snapshot and retrying"
+                        });
                         await ensureMobileRelayPresence(nextRelayUrl, ownOwnerId, "refresh-self-retry");
                         syncPayload = await syncInAppLoopback(nextRelayUrl, ownOwnerId);
                     }
                     if (Array.isArray(syncPayload?.allowed_editors)) {
                         syncedEditors = syncPayload.allowed_editors.filter(validateDiscordId);
                     }
-                } catch {}
+                } catch (syncErr) {
+                    recordFetchDiagnostic("own_profile_sync_failed", {
+                        traceId: ownTraceId,
+                        activeUserId,
+                        profileUserId,
+                        requestedSource: preferredSource,
+                        outcome: "failure",
+                        ...summarizeRemoteFetchError(syncErr)
+                    });
+                }
                 if (!loadedRemote) {
                     const local = readLocalConfig(ownOwnerId);
                     updateFromConfig(local);
@@ -1888,6 +1914,14 @@ function ConfigPanel(props) {
                 setPendingRequests(access.requests.sort());
                 setCanViewRemote(true);
                 if (!loadedRemote) setStatus("Loaded local profile config");
+                recordFetchDiagnostic("own_profile_refresh_complete", {
+                    traceId: ownTraceId,
+                    activeUserId,
+                    profileUserId,
+                    requestedSource: preferredSource,
+                    resolvedSource: loadedRemote ? resolvedProfileSource : "mobile",
+                    outcome: "success"
+                });
                 return;
             }
 
@@ -2753,6 +2787,7 @@ function ConfigPanel(props) {
             View,
             null,
             h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, "Always-on diagnostics for remote profile fetches."),
+            h(Text, { style: { color: "#b5bac1", marginTop: 4 } }, "Kettu mobile uses local in-app state + relay sync (not direct Android loopback HTTP)."),
             h(Text, { style: { color: "#f2f3f5", marginTop: 6 } }, `Latest trace: ${fetchDiagnostics?.traceId ?? "n/a"}`),
             h(Text, { style: { color: "#f2f3f5", marginTop: 4 } }, `Latest step: ${fetchDiagnostics?.step ?? "n/a"}`),
             h(Text, { style: { color: "#f2f3f5", marginTop: 4 } }, `Requested source: ${fetchDiagnostics?.requestedSource ?? "n/a"}`),
