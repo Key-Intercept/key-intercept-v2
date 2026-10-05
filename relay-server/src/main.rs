@@ -51,10 +51,12 @@ fn default_relay_port() -> u16 {
 struct AppState {
     peers: Arc<RwLock<HashMap<String, RegisteredPeer>>>,
     mobile_snapshots: Arc<RwLock<HashMap<String, MobileSnapshotRecord>>>,
+    mobile_access_requests: Arc<RwLock<HashMap<String, Vec<AccessRequestRecord>>>>,
     desktop_requests: Arc<RwLock<HashMap<String, Vec<DesktopQueuedRequest>>>>,
     desktop_request_notifiers: Arc<RwLock<HashMap<String, Arc<Notify>>>>,
     desktop_waiters: Arc<RwLock<HashMap<u64, oneshot::Sender<DesktopCommandResponse>>>>,
     next_desktop_request_id: Arc<AtomicU64>,
+    next_access_request_id: Arc<AtomicU64>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -200,7 +202,7 @@ struct ErrorResponse {
     error: String,
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum AccessRequestStatus {
     RequestCreated,
@@ -355,10 +357,12 @@ async fn main() -> Result<()> {
         .with_state(AppState {
             peers: Arc::new(RwLock::new(HashMap::new())),
             mobile_snapshots: Arc::new(RwLock::new(HashMap::new())),
+            mobile_access_requests: Arc::new(RwLock::new(HashMap::new())),
             desktop_requests: Arc::new(RwLock::new(HashMap::new())),
             desktop_request_notifiers: Arc::new(RwLock::new(HashMap::new())),
             desktop_waiters: Arc::new(RwLock::new(HashMap::new())),
             next_desktop_request_id: Arc::new(AtomicU64::new(1)),
+            next_access_request_id: Arc::new(AtomicU64::new(1)),
         });
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -422,6 +426,19 @@ async fn read_mobile_snapshot(state: &AppState, owner_id: &str) -> Option<Mobile
     state.mobile_snapshots.read().await.get(owner_id).cloned()
 }
 
+async fn pending_access_requests_for_owner(state: &AppState, owner_id: &str) -> Vec<AccessRequestRecord> {
+    state
+        .mobile_access_requests
+        .read()
+        .await
+        .get(owner_id)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|record| record.state == AccessRequestStatus::RequestCreated)
+        .collect()
+}
+
 fn mobile_snapshot_allows(
     snapshot: &MobileSnapshotRecord,
     owner_id: &str,
@@ -482,6 +499,11 @@ async fn get_canonical_profile_state(
                 }
             };
             let mut allowed_editors = Vec::new();
+            let pending_requests = if query.requester_id == owner_id {
+                pending_access_requests_for_owner(&state, &owner_id).await
+            } else {
+                Vec::new()
+            };
             if query.requester_id == owner_id {
                 let allowed_response = dispatch_desktop_command(
                     &state,
@@ -510,7 +532,7 @@ async fn get_canonical_profile_state(
                 last_writer_id: owner_id,
                 config,
                 allowed_editors,
-                pending_requests: Vec::new(),
+                pending_requests,
                 source: ConfigSource::Pc.as_str().to_string(),
                 available_sources,
             })
@@ -543,6 +565,11 @@ async fn get_canonical_profile_state(
             } else {
                 Vec::new()
             };
+            let pending_requests = if query.requester_id == owner_id {
+                pending_access_requests_for_owner(&state, &owner_id).await
+            } else {
+                Vec::new()
+            };
             allowed_editors.sort();
             return Json(CanonicalProfileStateResponse {
                 owner_id: owner_id.clone(),
@@ -550,7 +577,7 @@ async fn get_canonical_profile_state(
                 last_writer_id: snapshot.last_writer_id,
                 config: snapshot.config,
                 allowed_editors,
-                pending_requests: Vec::new(),
+                pending_requests,
                 source: ConfigSource::Mobile.as_str().to_string(),
                 available_sources,
             })
@@ -772,10 +799,48 @@ async fn create_access_request(
             .into_response();
     }
 
+    let request_id = state.next_access_request_id.fetch_add(1, Ordering::Relaxed);
+    let created_revision = state
+        .mobile_snapshots
+        .read()
+        .await
+        .get(&owner_id)
+        .map(|snapshot| snapshot.revision)
+        .unwrap_or(0);
+    let mut requests = state.mobile_access_requests.write().await;
+    let owner_requests = requests.entry(owner_id.clone()).or_default();
+    if let Some(existing) = owner_requests
+        .iter()
+        .find(|record| {
+            record.requester_id == payload.requester_id
+                && record.state == AccessRequestStatus::RequestCreated
+        })
+        .cloned()
+    {
+        return (
+            StatusCode::ACCEPTED,
+            Json(AccessRequestMutationResponse {
+                request_id: existing.request_id,
+                requester_id: existing.requester_id,
+                state: existing.state,
+                synced_to_desktop: false,
+            }),
+        )
+            .into_response();
+    }
+    owner_requests.push(AccessRequestRecord {
+        request_id,
+        requester_id: payload.requester_id.clone(),
+        state: AccessRequestStatus::RequestCreated,
+        created_revision,
+        updated_revision: created_revision,
+        updated_by: payload.requester_id.clone(),
+    });
+
     (
         StatusCode::ACCEPTED,
         Json(AccessRequestMutationResponse {
-            request_id: 0,
+            request_id,
             requester_id: payload.requester_id,
             state: AccessRequestStatus::RequestCreated,
             synced_to_desktop: false,
@@ -785,6 +850,7 @@ async fn create_access_request(
 }
 
 async fn list_access_requests(
+    State(state): State<AppState>,
     Path(owner_id): Path<String>,
     Query(query): Query<ConfigReadQuery>,
 ) -> impl IntoResponse {
@@ -808,11 +874,13 @@ async fn list_access_requests(
             .into_response();
     }
 
-    Json(AccessRequestsResponse {
-        requests: Vec::new(),
-        details: Vec::new(),
-    })
-    .into_response()
+    let details = pending_access_requests_for_owner(&state, &owner_id).await;
+    let requests = details
+        .iter()
+        .map(|record| record.requester_id.clone())
+        .collect();
+
+    Json(AccessRequestsResponse { requests, details }).into_response()
 }
 
 async fn approve_access_request(
@@ -875,6 +943,29 @@ async fn approve_access_request(
             }
         } else {
             return desktop_command_to_http_response(response);
+        }
+    }
+
+    {
+        let mut requests = state.mobile_access_requests.write().await;
+        let owner_requests = requests.entry(owner_id.clone()).or_default();
+        if let Some(record) = owner_requests
+            .iter_mut()
+            .find(|record| record.requester_id == requester_id)
+        {
+            record.state = AccessRequestStatus::Approved;
+            record.updated_revision = record.updated_revision.saturating_add(1);
+            record.updated_by = owner_id.clone();
+        } else {
+            let request_id = state.next_access_request_id.fetch_add(1, Ordering::Relaxed);
+            owner_requests.push(AccessRequestRecord {
+                request_id,
+                requester_id: requester_id.clone(),
+                state: AccessRequestStatus::Approved,
+                created_revision: 0,
+                updated_revision: 1,
+                updated_by: owner_id.clone(),
+            });
         }
     }
 
@@ -945,6 +1036,29 @@ async fn deny_access_request(
             }
         } else {
             return desktop_command_to_http_response(response);
+        }
+    }
+
+    {
+        let mut requests = state.mobile_access_requests.write().await;
+        let owner_requests = requests.entry(owner_id.clone()).or_default();
+        if let Some(record) = owner_requests
+            .iter_mut()
+            .find(|record| record.requester_id == requester_id)
+        {
+            record.state = AccessRequestStatus::Denied;
+            record.updated_revision = record.updated_revision.saturating_add(1);
+            record.updated_by = owner_id.clone();
+        } else {
+            let request_id = state.next_access_request_id.fetch_add(1, Ordering::Relaxed);
+            owner_requests.push(AccessRequestRecord {
+                request_id,
+                requester_id: requester_id.clone(),
+                state: AccessRequestStatus::Denied,
+                created_revision: 0,
+                updated_revision: 1,
+                updated_by: owner_id.clone(),
+            });
         }
     }
 
@@ -1494,10 +1608,12 @@ mod tests {
         AppState {
             peers: Arc::new(RwLock::new(HashMap::new())),
             mobile_snapshots: Arc::new(RwLock::new(HashMap::new())),
+            mobile_access_requests: Arc::new(RwLock::new(HashMap::new())),
             desktop_requests: Arc::new(RwLock::new(HashMap::new())),
             desktop_request_notifiers: Arc::new(RwLock::new(HashMap::new())),
             desktop_waiters: Arc::new(RwLock::new(HashMap::new())),
             next_desktop_request_id: Arc::new(AtomicU64::new(1)),
+            next_access_request_id: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -1694,6 +1810,72 @@ mod tests {
         let snapshots = state.mobile_snapshots.read().await;
         let snapshot = snapshots.get("111").expect("snapshot exists");
         assert!(snapshot.allowed_editors.iter().any(|id| id == "222"));
+    }
+
+    #[tokio::test]
+    async fn create_access_request_records_pending_request_for_mobile_owner() {
+        let state = test_state();
+        state.mobile_snapshots.write().await.insert(
+            "111".to_string(),
+            MobileSnapshotRecord {
+                revision: 1,
+                last_writer_id: "111".to_string(),
+                config: sample_config(),
+                allowed_editors: vec![],
+            },
+        );
+
+        let response = create_access_request(
+            State(state.clone()),
+            Path("111".to_string()),
+            Json(AccessRequestPayload {
+                requester_id: "222".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let pending = pending_access_requests_for_owner(&state, "111").await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].requester_id, "222");
+        assert_eq!(pending[0].state, AccessRequestStatus::RequestCreated);
+    }
+
+    #[tokio::test]
+    async fn approve_access_request_clears_pending_queue_for_requester() {
+        let state = test_state();
+        state.mobile_snapshots.write().await.insert(
+            "111".to_string(),
+            MobileSnapshotRecord {
+                revision: 1,
+                last_writer_id: "111".to_string(),
+                config: sample_config(),
+                allowed_editors: vec![],
+            },
+        );
+        let _ = create_access_request(
+            State(state.clone()),
+            Path("111".to_string()),
+            Json(AccessRequestPayload {
+                requester_id: "222".to_string(),
+            }),
+        )
+        .await;
+
+        let response = approve_access_request(
+            State(state.clone()),
+            Path(("111".to_string(), "222".to_string())),
+            Json(AccessRequestApprovalPayload {
+                owner_id: "111".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let pending = pending_access_requests_for_owner(&state, "111").await;
+        assert!(pending.is_empty());
     }
 
     #[tokio::test]

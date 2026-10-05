@@ -627,9 +627,14 @@ function normalizeDiscordId(value) {
 function resolveSessionUserId(props) {
     const candidates = [
         currentUser()?.id,
+        globalThis?.vendetta?.metro?.common?.UserStore?.getCurrentUser?.()?.id,
+        globalThis?.vendetta?.stores?.UserStore?.getCurrentUser?.()?.id,
+        globalThis?.vendetta?.metro?.common?.SessionStore?.getSession?.()?.user?.id,
         props?.currentUserId,
         props?.viewerId,
         props?.requesterId,
+        props?.currentUser?.id,
+        props?.user?.id,
         props?.account?.id
     ];
     for (let i = 0; i < candidates.length; i++) {
@@ -812,8 +817,12 @@ function formatConfigAccessError(error, targetUserId) {
     return "Unable to load this profile config.";
 }
 
-function getIdentityValidationError(requesterId, targetUserId, isOwnProfile) {
+function getIdentityValidationError(requesterId, targetUserId, isOwnProfile, options = {}) {
+    const allowOwnProfileFallbackRequester = Boolean(options.allowOwnProfileFallbackRequester);
     if (!validateDiscordId(requesterId)) {
+        if (isOwnProfile && allowOwnProfileFallbackRequester && validateDiscordId(targetUserId)) {
+            return null;
+        }
         return "Unable to determine your Discord account for this session. Close and reopen the profile, then try again.";
     }
     if (!isOwnProfile && !validateDiscordId(targetUserId)) {
@@ -1665,12 +1674,29 @@ function ConfigPanel(props) {
     const useRef = resolveReactHook(React, "useRef");
     const useCallback = resolveReactHook(React, "useCallback") ?? (callback => callback);
     if (!h || !useState || !useEffect || !useRef) return null;
-    const activeUserId = resolveSessionUserId(props);
+    const initialActiveUserId = resolveSessionUserId(props);
+    let activeUserState;
+    try {
+        activeUserState = useState(initialActiveUserId);
+    } catch {
+        return null;
+    }
+    const [resolvedActiveUserId, setResolvedActiveUserId] = activeUserState;
+    const activeUserId = validateDiscordId(resolvedActiveUserId)
+        ? resolvedActiveUserId
+        : resolveSessionUserId(props);
     const forcedProfileUserId = normalizeDiscordId(props?.forcedProfileUserId);
+    const launcherSource = typeof props?.launcherSource === "string" ? props.launcherSource : "";
+    const launcherSelfUserId = normalizeDiscordId(props?.launcherSelfUserId);
     const profileUserId = forcedProfileUserId ?? getProfileUserId(props) ?? activeUserId;
     const entrypoint = typeof props?.entrypoint === "string" ? props.entrypoint : "unknown";
     const hasValidProfileTarget = validateDiscordId(profileUserId);
-    const isOwnProfile = !hasValidProfileTarget || profileUserId === activeUserId;
+    const effectiveOwnUserId = validateDiscordId(activeUserId)
+        ? activeUserId
+        : (launcherSource.startsWith("settings:self") ? (launcherSelfUserId || forcedProfileUserId) : "");
+    const isOwnProfile = !hasValidProfileTarget
+        || (validateDiscordId(activeUserId) && profileUserId === activeUserId)
+        || (validateDiscordId(effectiveOwnUserId) && profileUserId === effectiveOwnUserId);
     const panelOpenInfo = getProfilePanelOpenInfo(props);
     const isEmbeddedSettingsLauncher = entrypoint.startsWith("settings-launcher:");
     const isPanelOpen = isEmbeddedSettingsLauncher ? true : panelOpenInfo.isOpen;
@@ -1738,6 +1764,17 @@ function ConfigPanel(props) {
         });
     }, [activeUserId, entrypoint, forcedProfileUserId, isOwnProfile, isPanelOpen, profileUserId, props]);
 
+    useEffect(() => {
+        const update = () => {
+            const nextUserId = resolveSessionUserId(props);
+            if (!validateDiscordId(nextUserId)) return;
+            setResolvedActiveUserId(current => (current === nextUserId ? current : nextUserId));
+        };
+        update();
+        const handle = setInterval(update, 1200);
+        return () => clearInterval(handle);
+    }, [entrypoint, profileUserId, setResolvedActiveUserId]);
+
     const updateFromConfig = useCallback(config => {
         const merged = mergeLocalConfig(config);
         interceptConfig = merged;
@@ -1762,16 +1799,47 @@ function ConfigPanel(props) {
     }, []);
 
     const refresh = useCallback(async () => {
-        if (refreshInFlightRef.current || !isPanelOpen) return;
+        if (!isPanelOpen) {
+            recordFetchDiagnostic("skip_panel_closed", {
+                traceId: nextRemoteFetchTraceId(),
+                activeUserId,
+                profileUserId,
+                outcome: "skipped"
+            });
+            return;
+        }
+        if (refreshInFlightRef.current) {
+            recordFetchDiagnostic("skip_refresh_in_flight", {
+                traceId: nextRemoteFetchTraceId(),
+                activeUserId,
+                profileUserId,
+                outcome: "skipped"
+            });
+            return;
+        }
         refreshInFlightRef.current = true;
         let remoteFetchTraceId = null;
         const nextRelayUrl = currentRelayUrl();
         setRelayUrl(nextRelayUrl);
         try {
-            const identityError = getIdentityValidationError(activeUserId, profileUserId, isOwnProfile);
+            const requesterId = validateDiscordId(activeUserId) ? activeUserId : "";
+            const ownOwnerId = isOwnProfile && validateDiscordId(effectiveOwnUserId) ? effectiveOwnUserId : requesterId;
+            const identityError = getIdentityValidationError(requesterId, profileUserId, isOwnProfile, {
+                allowOwnProfileFallbackRequester: Boolean(ownOwnerId)
+            });
             if (identityError) {
                 setCanViewRemote(false);
                 setStatus(identityError);
+                recordFetchDiagnostic("preflight_identity_failed", {
+                    traceId: nextRemoteFetchTraceId(),
+                    activeUserId,
+                    requesterId,
+                    profileUserId,
+                    isOwnProfile,
+                    outcome: "failure",
+                    status: 400,
+                    relayError: "invalid requester or target identity"
+                });
                 debugLog("refresh:blocked_invalid_identity", { activeUserId, profileUserId, isOwnProfile });
                 return;
             }
@@ -1781,7 +1849,7 @@ function ConfigPanel(props) {
                 let syncedEditors = null;
                 if (preferredSource !== "mobile") {
                     try {
-                        const remoteState = await readRemoteProfileState(nextRelayUrl, activeUserId, activeUserId, preferredSource);
+                        const remoteState = await readRemoteProfileState(nextRelayUrl, ownOwnerId, ownOwnerId, preferredSource);
                         updateFromConfig(remoteState?.config ?? remoteState);
                         const nextSources = Array.isArray(remoteState?.available_sources)
                             ? remoteState.available_sources.map(normalizeConfigSource).filter(value => value !== "auto")
@@ -1797,25 +1865,25 @@ function ConfigPanel(props) {
                     } catch {}
                 }
                 try {
-                    let syncPayload = await syncInAppLoopback(nextRelayUrl, activeUserId);
+                    let syncPayload = await syncInAppLoopback(nextRelayUrl, ownOwnerId);
                     if (!syncPayload) {
-                        await ensureMobileRelayPresence(nextRelayUrl, activeUserId, "refresh-self-retry");
-                        syncPayload = await syncInAppLoopback(nextRelayUrl, activeUserId);
+                        await ensureMobileRelayPresence(nextRelayUrl, ownOwnerId, "refresh-self-retry");
+                        syncPayload = await syncInAppLoopback(nextRelayUrl, ownOwnerId);
                     }
                     if (Array.isArray(syncPayload?.allowed_editors)) {
                         syncedEditors = syncPayload.allowed_editors.filter(validateDiscordId);
                     }
                 } catch {}
                 if (!loadedRemote) {
-                    const local = readLocalConfig(activeUserId);
+                    const local = readLocalConfig(ownOwnerId);
                     updateFromConfig(local);
                     setResolvedProfileSource("mobile");
                     setAvailableProfileSources(["mobile"]);
                 }
-                setAllowedEditors((syncedEditors ?? getAllowedEditors(activeUserId).allowed_editors).sort());
+                setAllowedEditors((syncedEditors ?? getAllowedEditors(ownOwnerId).allowed_editors).sort());
                 let access = { requests: [] };
                 try {
-                    access = await getAccessRequests(nextRelayUrl, activeUserId);
+                    access = await getAccessRequests(nextRelayUrl, ownOwnerId);
                 } catch {}
                 setPendingRequests(access.requests.sort());
                 setCanViewRemote(true);
@@ -1841,7 +1909,7 @@ function ConfigPanel(props) {
             });
             let remoteState;
             try {
-                remoteState = await readRemoteProfileState(nextRelayUrl, activeUserId, profileUserId, "mobile");
+                remoteState = await readRemoteProfileState(nextRelayUrl, requesterId, profileUserId, "mobile");
                 const resolvedSource = normalizeConfigSource(remoteState?.source || "mobile");
                 debugLog("refresh:remote_fetch_cycle:mobile_success", {
                     traceId: fetchTraceId,
@@ -1875,7 +1943,7 @@ function ConfigPanel(props) {
                 });
                 if (status !== 404) throw err;
                 try {
-                    remoteState = await readRemoteProfileState(nextRelayUrl, activeUserId, profileUserId, "auto");
+                    remoteState = await readRemoteProfileState(nextRelayUrl, requesterId, profileUserId, "auto");
                     const resolvedSource = normalizeConfigSource(remoteState?.source || "auto");
                     debugLog("refresh:remote_fetch_cycle:auto_success", {
                         traceId: fetchTraceId,
@@ -1917,7 +1985,7 @@ function ConfigPanel(props) {
                         requestedSource: "auto",
                         outcome: "running"
                     });
-                    const legacyRemote = await readRemoteConfig(nextRelayUrl, activeUserId, profileUserId, "auto");
+                    const legacyRemote = await readRemoteConfig(nextRelayUrl, requesterId, profileUserId, "auto");
                     remoteSourceRef.current = "auto";
                     setResolvedProfileSource("auto");
                     setAvailableProfileSources([]);
@@ -1972,7 +2040,7 @@ function ConfigPanel(props) {
         } finally {
             refreshInFlightRef.current = false;
         }
-    }, [activeUserId, isOwnProfile, isPanelOpen, ownConfigSource, profileUserId, recordFetchDiagnostic, updateFromConfig]);
+    }, [activeUserId, effectiveOwnUserId, isOwnProfile, isPanelOpen, ownConfigSource, profileUserId, recordFetchDiagnostic, updateFromConfig]);
 
     useEffect(() => {
         if (!isPanelOpen) return;
@@ -1982,8 +2050,6 @@ function ConfigPanel(props) {
             setAvailableProfileSources([]);
             setResolvedProfileSource("auto");
             remoteSourceRef.current = "mobile";
-            setFetchDiagnostics(null);
-            setFetchHistory([]);
         }
         if (!isOwnProfile) {
             setAllowedEditors([]);
@@ -2059,37 +2125,52 @@ function ConfigPanel(props) {
     }, [relayUrl]);
 
     const saveStructuredConfig = useCallback(baseConfig => {
-        if (!activeUserId) return null;
+        const requesterId = validateDiscordId(activeUserId) ? activeUserId : "";
+        const ownOwnerId = isOwnProfile && validateDiscordId(effectiveOwnUserId) ? effectiveOwnUserId : requesterId;
+        if (!requesterId && !ownOwnerId) {
+            const traceId = nextRemoteFetchTraceId();
+            recordFetchDiagnostic("preflight_save_identity_failed", {
+                traceId,
+                activeUserId,
+                profileUserId,
+                isOwnProfile,
+                outcome: "failure",
+                status: 400,
+                relayError: "missing requester identity for save"
+            });
+            setStatus(`Unable to determine your Discord account for saving config. (trace ${traceId})`);
+            return null;
+        }
         const { merged } = buildConfigSnapshot(baseConfig, censoredWordsText);
         if (isOwnProfile) {
             const preferredSource = ownConfigSource;
             if (preferredSource === "mobile") {
-                return saveLocalConfig(activeUserId, merged, activeUserId).then(latest => {
+                return saveLocalConfig(ownOwnerId, merged, ownOwnerId).then(latest => {
                     updateFromConfig(latest);
                     setResolvedProfileSource("mobile");
                     setStatus("Auto-saved profile config (mobile)");
                 }, err => setStatus(`Auto-save failed: ${String(err)}`));
             }
-            const previous = readMobileState(activeUserId);
+            const previous = readMobileState(ownOwnerId);
             return pushRemoteConfig(
                 currentRelayUrl(),
-                activeUserId,
-                activeUserId,
+                ownOwnerId,
+                ownOwnerId,
                 merged,
                 previous.revision,
                 preferredSource
             ).then(() => {
-                return syncInAppLoopback(currentRelayUrl(), activeUserId).catch(() => null).then(syncPayload => {
+                return syncInAppLoopback(currentRelayUrl(), ownOwnerId).catch(() => null).then(syncPayload => {
                     if (!syncPayload) {
                         writeMobileState({
-                            owner_discord_id: activeUserId,
+                            owner_discord_id: ownOwnerId,
                             config: merged,
                             allowed_editors: previous.allowed_editors,
                             revision: previous.revision + 1,
-                            last_writer_id: activeUserId
+                            last_writer_id: ownOwnerId
                         });
                     }
-                    const latest = readLocalConfig(activeUserId);
+                    const latest = readLocalConfig(ownOwnerId);
                     interceptConfig = latest;
                     updateFromConfig(latest);
                 });
@@ -2098,15 +2179,15 @@ function ConfigPanel(props) {
             }, err => {
                 const status = parseErrorStatusCode(err);
                 if (status === 404) {
-                    return saveLocalConfig(activeUserId, merged, activeUserId).then(latest => {
+                    return saveLocalConfig(ownOwnerId, merged, ownOwnerId).then(latest => {
                         updateFromConfig(latest);
                         setStatus("Auto-saved profile config");
                     }, fallbackErr => setStatus(`Auto-save failed: ${String(fallbackErr)}`));
                 }
                 if (status === 409) {
-                    return syncInAppLoopback(currentRelayUrl(), activeUserId).catch(() => null).then(() => {
-                        const latest = readMobileState(activeUserId);
-                        return readRemoteProfileState(currentRelayUrl(), activeUserId, activeUserId, preferredSource).then(
+                    return syncInAppLoopback(currentRelayUrl(), ownOwnerId).catch(() => null).then(() => {
+                        const latest = readMobileState(ownOwnerId);
+                        return readRemoteProfileState(currentRelayUrl(), ownOwnerId, ownOwnerId, preferredSource).then(
                             remote => {
                                 const remoteRevision = Number(remote?.revision);
                                 const expectedRevision = Number.isFinite(remoteRevision)
@@ -2120,25 +2201,25 @@ function ConfigPanel(props) {
                             () => ({ expectedRevision: latest.revision, allowedEditors: latest.allowed_editors })
                         ).then(({ expectedRevision, allowedEditors }) => pushRemoteConfig(
                             currentRelayUrl(),
-                            activeUserId,
-                            activeUserId,
+                            ownOwnerId,
+                            ownOwnerId,
                             merged,
                             expectedRevision,
                             preferredSource
                         ).then(() => {
-                            return syncInAppLoopback(currentRelayUrl(), activeUserId).catch(() => null).then(syncPayload => {
+                            return syncInAppLoopback(currentRelayUrl(), ownOwnerId).catch(() => null).then(syncPayload => {
                                 if (!syncPayload) {
                                     writeMobileState({
-                                        owner_discord_id: activeUserId,
+                                        owner_discord_id: ownOwnerId,
                                         config: merged,
                                         allowed_editors: allowedEditors,
                                         revision: expectedRevision + 1,
-                                        last_writer_id: activeUserId
+                                        last_writer_id: ownOwnerId
                                     });
                                 }
                             });
                         }).then(() => {
-                            const latest = readLocalConfig(activeUserId);
+                            const latest = readLocalConfig(ownOwnerId);
                             interceptConfig = latest;
                             updateFromConfig(latest);
                             setStatus("Auto-saved profile config");
@@ -2152,7 +2233,7 @@ function ConfigPanel(props) {
         }
         return pushRemoteConfig(
             currentRelayUrl(),
-            activeUserId,
+            requesterId,
             profileUserId,
             merged,
             undefined,
@@ -2161,7 +2242,7 @@ function ConfigPanel(props) {
             lastSavedSnapshotRef.current = JSON.stringify(merged);
             setStatus(`Auto-saved ${profileUserId}'s profile config`);
         }, err => setStatus(`Auto-save failed: ${String(err)}`));
-    }, [activeUserId, censoredWordsText, isOwnProfile, ownConfigSource, profileUserId, updateFromConfig]);
+    }, [activeUserId, censoredWordsText, effectiveOwnUserId, isOwnProfile, ownConfigSource, profileUserId, recordFetchDiagnostic, updateFromConfig]);
 
     useEffect(() => {
         if (!(isOwnProfile || canViewRemote) || !isPanelOpen) return;
@@ -2668,7 +2749,7 @@ function ConfigPanel(props) {
             })
         )) : null,
 
-        !isOwnProfile ? section("fetch-diagnostics", "Fetch Diagnostics", h(
+        section("fetch-diagnostics", "Fetch Diagnostics", h(
             View,
             null,
             h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, "Always-on diagnostics for remote profile fetches."),
@@ -2683,7 +2764,7 @@ function ConfigPanel(props) {
             fetchHistoryRows.length
                 ? h(View, { style: { marginTop: 8 } }, ...fetchHistoryRows)
                 : h(Text, { style: { color: "#b5bac1", marginTop: 6 } }, "No fetch attempts recorded yet.")
-        )) : null,
+        )),
 
         (isOwnProfile && !blocked_by_dom) || (!isOwnProfile && canViewRemote) ? section("gag", "Gag", renderTimeoutControls("gag_end", "Gag timeout")) : null,
 
@@ -2973,6 +3054,7 @@ function ConfigLauncherPanel(props) {
     const [targetUserInput, setTargetUserInput] = targetUserInputState;
     const [selectedUserId, setSelectedUserId] = useState(validateDiscordId(activeUserId) ? activeUserId : "");
     const [launcherStatus, setLauncherStatus] = useState("");
+    const [launcherSource, setLauncherSource] = useState("settings:self");
     const [launcherRevision, setLauncherRevision] = useState(0);
     const lastConsumedLaunchRef = useRef("");
     const windowHeight = Number(Dimensions?.get?.("window")?.height);
@@ -2992,6 +3074,7 @@ function ConfigLauncherPanel(props) {
         const launchKey = `${pending.source}:${pending.targetUserId}`;
         lastConsumedLaunchRef.current = launchKey;
         setSelectedUserId(pending.targetUserId);
+        setLauncherSource(pending.source);
         setLauncherRevision(revision => revision + 1);
         setLauncherStatus(`Opened target ${pending.targetUserId} from ${pending.source}`);
         console.log(`${LOG_PREFIX} launcher consumed pending request`, pending);
@@ -3005,6 +3088,7 @@ function ConfigLauncherPanel(props) {
         const launchKey = `${source}:${targetUserId}`;
         lastConsumedLaunchRef.current = launchKey;
         setSelectedUserId(targetUserId);
+        setLauncherSource(source);
         setLauncherRevision(revision => revision + 1);
         setLauncherStatus(`Opened target ${targetUserId}`);
         console.log(`${LOG_PREFIX} launcher invoked`, { source, targetUserId });
@@ -3071,6 +3155,8 @@ function ConfigLauncherPanel(props) {
         h(ConfigPanel, {
             ...props,
             forcedProfileUserId: selectedUserId,
+            launcherSource,
+            launcherSelfUserId: activeUserId,
             entrypoint: `settings-launcher:${launcherRevision}`,
             maxPanelHeight: launcherPanelHeight,
             isOpen: true
