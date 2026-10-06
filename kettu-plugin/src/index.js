@@ -91,6 +91,9 @@ const fallbackMobileStateByOwner = new Map();
 let cachedStorageBackend = null;
 let cachedMMKVStore = null;
 let remoteFetchTraceCounter = 0;
+let lastResolvedSessionUserId = "";
+let mobileBackgroundSyncInterval = null;
+let mobileBackgroundSyncRunning = false;
 
 function getMMKVStore() {
     if (cachedMMKVStore && typeof cachedMMKVStore === "object") return cachedMMKVStore;
@@ -639,9 +642,12 @@ function resolveSessionUserId(props) {
     ];
     for (let i = 0; i < candidates.length; i++) {
         const normalized = normalizeDiscordId(candidates[i]);
-        if (normalized) return normalized;
+        if (normalized) {
+            lastResolvedSessionUserId = normalized;
+            return normalized;
+        }
     }
-    return "";
+    return lastResolvedSessionUserId;
 }
 
 function requestProfileEditorLaunch(targetUserId, source) {
@@ -760,6 +766,40 @@ function saveLocalConfig(ownerId, config, editorId = ownerId) {
         interceptConfig = latest;
         return latest;
     });
+}
+
+function startBackgroundMobileSyncWatcher() {
+    if (mobileBackgroundSyncInterval) return;
+    mobileBackgroundSyncInterval = setInterval(() => {
+        if (mobileBackgroundSyncRunning) return;
+        const ownerId = resolveSessionUserId(null);
+        if (!validateDiscordId(ownerId)) return;
+        mobileBackgroundSyncRunning = true;
+        syncInAppLoopback(currentRelayUrl(), ownerId)
+            .catch(() => null)
+            .then(syncPayload => {
+                if (!syncPayload) {
+                    return ensureMobileRelayPresence(currentRelayUrl(), ownerId, "background-sync")
+                        .then(() => syncInAppLoopback(currentRelayUrl(), ownerId).catch(() => null));
+                }
+                return syncPayload;
+            })
+            .then(() => {
+                const latest = readLocalConfig(ownerId);
+                interceptConfig = latest;
+            })
+            .finally(() => {
+                mobileBackgroundSyncRunning = false;
+            });
+    }, 2500);
+}
+
+function stopBackgroundMobileSyncWatcher() {
+    if (mobileBackgroundSyncInterval) {
+        clearInterval(mobileBackgroundSyncInterval);
+        mobileBackgroundSyncInterval = null;
+    }
+    mobileBackgroundSyncRunning = false;
 }
 
 function pushRemoteConfig(relayUrl, editorId, targetUserId, config, expectedRevision, source) {
@@ -3282,6 +3322,7 @@ const plugin = {
             throw new Error("Vendetta modules unavailable");
         }
         return bootstrapConfig().then(() => {
+            startBackgroundMobileSyncWatcher();
             patchSendMessage();
             const profileActionRegistered = registerProfileActionFallback();
             console.log(`${LOG_PREFIX} entrypoints registered`, {
@@ -3306,6 +3347,7 @@ const plugin = {
             }
             registeredProfileActionFallback = null;
         }
+        stopBackgroundMobileSyncWatcher();
     },
     settings: props => {
         const { React } = getReactTools();
