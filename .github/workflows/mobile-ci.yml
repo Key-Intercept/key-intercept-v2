@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+env:
+  ANDROID_DEBUG_APK_NAME: key-intercept-loopback-android-debug.apk
+  IOS_IPA_NAME: key-intercept-loopback-ios.ipa
+
 jobs:
   build-android-loopback:
     runs-on: ubuntu-latest
@@ -31,13 +35,16 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build Android debug APK
-        run: gradle :app:assembleDebug
+        run: |
+          gradle :app:assembleDebug
+          mkdir -p ../../dist
+          cp app/build/outputs/apk/debug/app-debug.apk ../../dist/${ANDROID_DEBUG_APK_NAME}
 
       - name: Upload Android debug APK
         uses: actions/upload-artifact@v4
         with:
           name: key-intercept-loopback-android-debug
-          path: mobile/android-loopback/app/build/outputs/apk/debug/app-debug.apk
+          path: dist/${ANDROID_DEBUG_APK_NAME}
 
   build-ios-loopback:
     runs-on: macos-latest
@@ -70,10 +77,10 @@ jobs:
           rm -rf build/Payload
           mkdir -p build/Payload
           cp -R build/KeyInterceptLoopback.xcarchive/Products/Applications/KeyInterceptLoopback.app build/Payload/
-          (cd build && zip -qry key-intercept-loopback-ios.ipa Payload)
+          (cd build && zip -qry ${IOS_IPA_NAME} Payload)
 
       - name: Upload iOS IPA
         uses: actions/upload-artifact@v4
         with:
           name: key-intercept-loopback-ios
-          path: mobile/ios-loopback/build/key-intercept-loopback-ios.ipa
+          path: mobile/ios-loopback/build/${{ env.IOS_IPA_NAME }}

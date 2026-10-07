@@ -11,6 +11,10 @@ permissions:
   pages: write
   id-token: write
 
+env:
+  ANDROID_RELEASE_APK_NAME: key-intercept-loopback-android.apk
+  IOS_RELEASE_IPA_NAME: key-intercept-loopback-ios.ipa
+
 jobs:
   determine-version:
     runs-on: ubuntu-latest
@@ -217,21 +221,21 @@ jobs:
             exit 1
           fi
           mkdir -p ../../dist
-          cp "${UNSIGNED_APK}" ../../dist/key-intercept-loopback-android.apk
+          cp "${UNSIGNED_APK}" ../../dist/${ANDROID_RELEASE_APK_NAME}
           "${APKSIGNER}" sign \
             --ks /tmp/key-intercept-release.jks \
             --ks-key-alias "${ANDROID_RELEASE_KEY_ALIAS}" \
             --ks-pass "pass:${ANDROID_RELEASE_KEYSTORE_PASSWORD}" \
             --key-pass "pass:${ANDROID_RELEASE_KEY_PASSWORD}" \
-            ../../dist/key-intercept-loopback-android.apk
-          "${APKSIGNER}" verify ../../dist/key-intercept-loopback-android.apk
+            ../../dist/${ANDROID_RELEASE_APK_NAME}
+          "${APKSIGNER}" verify ../../dist/${ANDROID_RELEASE_APK_NAME}
 
       - name: Upload Android APK
         if: matrix.target == 'android'
         uses: actions/upload-artifact@v4
         with:
           name: key-intercept-loopback-android
-          path: dist/key-intercept-loopback-android.apk
+          path: dist/${{ env.ANDROID_RELEASE_APK_NAME }}
 
       - name: Install XcodeGen
         if: matrix.target == 'ios'
@@ -254,14 +258,14 @@ jobs:
           mkdir -p build/Payload
           cp -R build/KeyInterceptLoopback.xcarchive/Products/Applications/KeyInterceptLoopback.app build/Payload/
           mkdir -p ../../dist
-          (cd build && zip -qry ../../dist/key-intercept-loopback-ios.ipa Payload)
+          (cd build && zip -qry ../../dist/${IOS_RELEASE_IPA_NAME} Payload)
 
       - name: Upload iOS IPA
         if: matrix.target == 'ios'
         uses: actions/upload-artifact@v4
         with:
           name: key-intercept-loopback-ios
-          path: dist/key-intercept-loopback-ios.ipa
+          path: dist/${{ env.IOS_RELEASE_IPA_NAME }}
 
   publish-release:
     runs-on: ubuntu-latest
@@ -294,6 +298,11 @@ jobs:
           pattern: key-intercept-loopback-*
           merge-multiple: true
           path: release-assets
+
+      - name: Verify mobile release asset names
+        run: |
+          test -f "release-assets/${ANDROID_RELEASE_APK_NAME}"
+          test -f "release-assets/${IOS_RELEASE_IPA_NAME}"
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
