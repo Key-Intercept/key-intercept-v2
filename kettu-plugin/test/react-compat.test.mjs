@@ -24,8 +24,8 @@ const requiredSnippets = [
     "appendContextMenuOpenConfigItem(children, props, \"user-context\");",
     "label: \"Open Key Intercept Config Popup\"",
     "const [resolvedActiveUserId, setResolvedActiveUserId] = activeUserState;",
-    "recordFetchDiagnostic(\"preflight_identity_failed\"",
-    "section(\"fetch-diagnostics\", \"Fetch Diagnostics\""
+    "function applyRawJsonConfigPatch(currentConfig, rawJsonText) {",
+    "section(\"raw-json-apply\", \"Raw JSON Apply\""
 ];
 
 for (const snippet of requiredSnippets) {
@@ -39,7 +39,7 @@ const forbiddenSnippets = [
     "React.useRef(",
     "React.createElement(",
     "return h ? h(ConfigPanel, props) : ConfigPanel(props);",
-    "!isOwnProfile ? section(\"fetch-diagnostics\", \"Fetch Diagnostics\""
+    "section(\"fetch-diagnostics\", \"Fetch Diagnostics\""
 ];
 
 for (const snippet of forbiddenSnippets) {

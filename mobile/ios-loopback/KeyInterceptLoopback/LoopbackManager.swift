@@ -5,19 +5,44 @@ import UserNotifications
 
 final class LoopbackManager: ObservableObject {
     @Published var isRunning = false
+    @Published var statusMessage = "Key Intercept Loopback is currently stopped"
+    @Published var logs: [String] = []
 
     private var listener: NWListener?
     private var audioPlayer: AVAudioPlayer?
     private let queue = DispatchQueue(label: "keyintercept.loopback.listener")
     private let store = IOSConfigStore()
+    private static let maxLogLines = 12
+    private static let statusPrefsKey = "key_intercept_loopback_status_message"
+    private static let logsPrefsKey = "key_intercept_loopback_logs"
+    private static let defaultLoopbackPort = 35491
+    private let loopbackPort: UInt16
+
+    init() {
+        let configuredPort = Bundle.main.object(forInfoDictionaryKey: "KEY_INTERCEPT_LOOPBACK_PORT") as? String
+        let parsedPort = UInt16(configuredPort ?? "")
+        loopbackPort = parsedPort ?? Self.defaultLoopbackPort
+        restorePersistedStatus()
+    }
 
     func start() {
         guard !isRunning else { return }
+        appendLog("requested start")
+        updateStatus("Key Intercept Loopback is starting in the background")
         startSilentAudio()
-        startLocalServer()
+        let serverStarted = startLocalServer()
+        guard serverStarted else {
+            audioPlayer?.stop()
+            audioPlayer = nil
+            updateStatus("Key Intercept Loopback failed to start")
+            return
+        }
         requestNotificationPermission()
         showRunningNotification()
-        DispatchQueue.main.async { self.isRunning = true }
+        DispatchQueue.main.async {
+            self.isRunning = true
+            self.updateStatus("Key Intercept Loopback is running in the background")
+        }
     }
 
     func stop() {
@@ -25,7 +50,11 @@ final class LoopbackManager: ObservableObject {
         listener = nil
         audioPlayer?.stop()
         audioPlayer = nil
-        DispatchQueue.main.async { self.isRunning = false }
+        DispatchQueue.main.async {
+            self.isRunning = false
+            self.updateStatus("Key Intercept Loopback is currently stopped")
+            self.appendLog("requested stop")
+        }
     }
 
     private func startSilentAudio() {
@@ -40,17 +69,39 @@ final class LoopbackManager: ObservableObject {
         audioPlayer?.play()
     }
 
-    private func startLocalServer() {
+    private func startLocalServer() -> Bool {
         do {
-            let listener = try NWListener(using: .tcp, on: 35491)
+            let listener = try NWListener(using: .tcp, on: loopbackPort)
             listener.newConnectionHandler = { [weak self] connection in
                 self?.handle(connection: connection)
             }
-            listener.stateUpdateHandler = { _ in }
+            listener.stateUpdateHandler = { [weak self] state in
+                guard let self else { return }
+                switch state {
+                case .failed(let error):
+                    DispatchQueue.main.async {
+                        self.isRunning = false
+                        self.updateStatus("Key Intercept Loopback failed to start: \(error.localizedDescription)")
+                        self.appendLog("listener failed: \(error.localizedDescription)")
+                    }
+                case .ready:
+                    DispatchQueue.main.async {
+                        self.appendLog("listening on 127.0.0.1:\(self.loopbackPort)")
+                    }
+                default:
+                    break
+                }
+            }
             listener.start(queue: queue)
             self.listener = listener
+            return true
         } catch {
-            print("Failed to start loopback listener: \(error)")
+            DispatchQueue.main.async {
+                self.isRunning = false
+                self.updateStatus("Key Intercept Loopback failed to start: \(error.localizedDescription)")
+                self.appendLog("listener start failed: \(error.localizedDescription)")
+            }
+            return false
         }
     }
 
@@ -164,5 +215,35 @@ final class LoopbackManager: ObservableObject {
         content.body = "Key Intercept Loopback is running in the background"
         let request = UNNotificationRequest(identifier: "loopback-running", content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
+    }
+
+    private func updateStatus(_ message: String) {
+        statusMessage = message
+        UserDefaults.standard.set(message, forKey: Self.statusPrefsKey)
+    }
+
+    private func appendLog(_ line: String) {
+        let text = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        var nextLogs = logs
+        nextLogs.append(text)
+        if nextLogs.count > Self.maxLogLines {
+            nextLogs = Array(nextLogs.suffix(Self.maxLogLines))
+        }
+        logs = nextLogs
+        UserDefaults.standard.set(nextLogs.joined(separator: "\n"), forKey: Self.logsPrefsKey)
+    }
+
+    private func restorePersistedStatus() {
+        let defaults = UserDefaults.standard
+        if let persistedStatus = defaults.string(forKey: Self.statusPrefsKey), !persistedStatus.isEmpty {
+            statusMessage = persistedStatus
+        }
+        if let persistedLogs = defaults.string(forKey: Self.logsPrefsKey), !persistedLogs.isEmpty {
+            logs = Array(persistedLogs
+                .split(separator: "\n")
+                .map(String.init)
+                .suffix(Self.maxLogLines))
+        }
     }
 }

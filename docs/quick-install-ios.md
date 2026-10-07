@@ -27,6 +27,13 @@ The app enables silent audio keepalive in the background mode to keep the local 
 - If iOS suspends background tasks, reopen app and restart loopback.
 - Ensure the sideload signature is still valid.
 
+## Android parity checklist (release QA)
+- Start/stop UX parity: iOS now shows running/stopped/failed status and recent startup logs in-app.
+- Background persistence parity: Android uses foreground service + battery exemption; iOS uses silent-audio keepalive (`UIBackgroundModes: audio`) due platform limits.
+- Loopback API parity: `/health`, `/config`, and `/allowed-editors` routes enforce the same requester/owner access rules.
+- Localhost behavior parity: both apps bind loopback on `127.0.0.1` and default to port `35491` (iOS port is configurable via `KEY_INTERCEPT_LOOPBACK_PORT` build setting).
+- Config storage parity: both increment revision on config writes and persist allowed editors/config to local app storage.
+
 ## Screenshot checklist for release notes
 - App initial screen
 - Running state text
