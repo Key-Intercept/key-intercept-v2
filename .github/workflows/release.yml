@@ -200,11 +200,11 @@ jobs:
           ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
           ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
         run: |
+          SHOULD_SIGN_APK=true
           if [ -z "${ANDROID_RELEASE_KEYSTORE_BASE64}" ] || [ -z "${ANDROID_RELEASE_KEYSTORE_PASSWORD}" ] || [ -z "${ANDROID_RELEASE_KEY_ALIAS}" ] || [ -z "${ANDROID_RELEASE_KEY_PASSWORD}" ]; then
-            echo "Missing required Android signing secrets." >&2
-            exit 1
+            echo "Android signing secrets are missing. Building unsigned release APK." >&2
+            SHOULD_SIGN_APK=false
           fi
-          echo "${ANDROID_RELEASE_KEYSTORE_BASE64}" | base64 --decode > /tmp/key-intercept-release.jks
           gradle :app:assembleRelease
           UNSIGNED_APK="app/build/outputs/apk/release/app-release-unsigned.apk"
           if [ ! -f "${UNSIGNED_APK}" ]; then
@@ -214,21 +214,26 @@ jobs:
             echo "Release APK not found after build." >&2
             exit 1
           fi
-          BUILD_TOOLS_DIR="${ANDROID_HOME}/build-tools/$(ls -1 "${ANDROID_HOME}/build-tools" | sort -V | tail -n1)"
-          APKSIGNER="${BUILD_TOOLS_DIR}/apksigner"
-          if [ ! -x "${APKSIGNER}" ]; then
-            echo "apksigner not found at ${APKSIGNER}" >&2
-            exit 1
-          fi
           mkdir -p ../../dist
           cp "${UNSIGNED_APK}" ../../dist/${ANDROID_RELEASE_APK_NAME}
-          "${APKSIGNER}" sign \
-            --ks /tmp/key-intercept-release.jks \
-            --ks-key-alias "${ANDROID_RELEASE_KEY_ALIAS}" \
-            --ks-pass "pass:${ANDROID_RELEASE_KEYSTORE_PASSWORD}" \
-            --key-pass "pass:${ANDROID_RELEASE_KEY_PASSWORD}" \
-            ../../dist/${ANDROID_RELEASE_APK_NAME}
-          "${APKSIGNER}" verify ../../dist/${ANDROID_RELEASE_APK_NAME}
+          if [ "${SHOULD_SIGN_APK}" = "true" ]; then
+            echo "${ANDROID_RELEASE_KEYSTORE_BASE64}" | base64 --decode > /tmp/key-intercept-release.jks
+            BUILD_TOOLS_DIR="${ANDROID_HOME}/build-tools/$(ls -1 "${ANDROID_HOME}/build-tools" | sort -V | tail -n1)"
+            APKSIGNER="${BUILD_TOOLS_DIR}/apksigner"
+            if [ ! -x "${APKSIGNER}" ]; then
+              echo "apksigner not found at ${APKSIGNER}" >&2
+              exit 1
+            fi
+            "${APKSIGNER}" sign \
+              --ks /tmp/key-intercept-release.jks \
+              --ks-key-alias "${ANDROID_RELEASE_KEY_ALIAS}" \
+              --ks-pass "pass:${ANDROID_RELEASE_KEYSTORE_PASSWORD}" \
+              --key-pass "pass:${ANDROID_RELEASE_KEY_PASSWORD}" \
+              ../../dist/${ANDROID_RELEASE_APK_NAME}
+            "${APKSIGNER}" verify ../../dist/${ANDROID_RELEASE_APK_NAME}
+          else
+            echo "Skipping APK signing."
+          fi
 
       - name: Upload Android APK
         if: matrix.target == 'android'
