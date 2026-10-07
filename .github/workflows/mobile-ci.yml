@@ -54,7 +54,7 @@ jobs:
       - name: Generate project
         run: xcodegen generate
 
-      - name: Build iOS app
+      - name: Build iOS app archive
         run: |
           xcodebuild \
             -project KeyInterceptLoopback.xcodeproj \
@@ -62,4 +62,18 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO \
-            build
+            -archivePath build/KeyInterceptLoopback.xcarchive \
+            archive
+
+      - name: Package sideloadable IPA
+        run: |
+          rm -rf build/Payload
+          mkdir -p build/Payload
+          cp -R build/KeyInterceptLoopback.xcarchive/Products/Applications/KeyInterceptLoopback.app build/Payload/
+          (cd build && zip -qry key-intercept-loopback-ios.ipa Payload)
+
+      - name: Upload iOS IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: key-intercept-loopback-ios
+          path: mobile/ios-loopback/build/key-intercept-loopback-ios.ipa

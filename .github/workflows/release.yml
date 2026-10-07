@@ -219,8 +219,11 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             -archivePath build/KeyInterceptLoopback.xcarchive \
             archive
+          rm -rf build/Payload
+          mkdir -p build/Payload
+          cp -R build/KeyInterceptLoopback.xcarchive/Products/Applications/KeyInterceptLoopback.app build/Payload/
           mkdir -p ../../dist
-          ditto -c -k --sequesterRsrc --keepParent build/KeyInterceptLoopback.xcarchive ../../dist/key-intercept-loopback-ios.ipa
+          (cd build && zip -qry ../../dist/key-intercept-loopback-ios.ipa Payload)
 
       - name: Upload iOS IPA
         if: matrix.target == 'ios'
