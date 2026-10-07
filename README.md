@@ -35,28 +35,30 @@ For mac users, the [Linux](#linux) install might work, but I have no way of test
 ### Windows
 To install on Windows:
 
-1. Go to [Releases](https://github.com/Key-intercept/key-intercept-v2/releases/latest)
-2. Click `key-intercept-installer-windows-x86_64.zip` to download the installer.
-3. Unzip the downloaded file.
-4. Run the .exe file.
-5. Enter your discord user ID when requested.
-6. When the terminal appears to be waiting, press enter.
-7. Start Discord.
-8. Go to Discord settings -> plugins and enable key-intercept.
+1. Make sure you have manually installed [Git](https://git-scm.com/install/windows) and [NodeJS](https://nodejs.org/en/download/current)
+2. Go to [Releases](https://github.com/Key-intercept/key-intercept-v2/releases/latest)
+3. Click `key-intercept-installer-windows-x86_64.zip` to download the installer.
+4. Unzip the downloaded file.
+5. Run the .exe file.
+6. Enter your discord user ID when requested.
+7. When the terminal appears to be waiting, press enter.
+8. Start Discord.
+9. Go to Discord settings -> plugins and enable key-intercept.
 
 ### Linux
 To install on Linux:
 
-1. Go to [Releases](https://github.com/Key-Intercept/key-intercept-v2/releases/latest)
-2. Click `key-intercept-installer-linux-x86_64.tar.gz` to download the installer.
-3. Extract the installer by running
+1. Make sure you have manually installed [Git](https://git-scm.com/install/linux) and [NodeJS](https://nodejs.org/en/download/current)
+2. Go to [Releases](https://github.com/Key-Intercept/key-intercept-v2/releases/latest)
+3. Click `key-intercept-installer-linux-x86_64.tar.gz` to download the installer.
+4. Extract the installer by running
 ```sh
 tar -xf <file location>
 ```
-4. Run the file with the command line arg `--user-discord-id` followed by your Discord user-discord-id
-5. When the terminal appears to be waiting, press enter.
-6. Start Discord.
-7. Go to Discord settings -> plugins and enable key-intercept.
+5. Run the file with the command line arg `--user-discord-id` followed by your Discord user-discord-id
+6. When the terminal appears to be waiting, press enter.
+7. Start Discord.
+8. Go to Discord settings -> plugins and enable key-intercept.
 
 ### Android
 To install on Android:
@@ -69,7 +71,6 @@ To install on Android:
 6. Download `key-intercept-loopback-android.apk` from [Releases](https://github.com/Key-intercept/key-intercept-v2/releases/latest).
 7. Install and open **Key Intercept Loopback** (see [this guide](https://www.lifewire.com/install-apk-on-android-4177185) for how to install an APK if unsure.
 8. Tap **Start Background Service**.
-9. Tap **Fix Battery Optimization**.
 10. Enable the plugin.
 
 The notification should show **Key Intercept Loopback is running in the background**.
