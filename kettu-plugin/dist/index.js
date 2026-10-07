@@ -637,7 +637,6 @@ function resolveSessionUserId(props) {
         props?.viewerId,
         props?.requesterId,
         props?.currentUser?.id,
-        props?.user?.id,
         props?.account?.id
     ];
     for (let i = 0; i < candidates.length; i++) {
@@ -1728,14 +1727,18 @@ function ConfigPanel(props) {
     const forcedProfileUserId = normalizeDiscordId(props?.forcedProfileUserId);
     const launcherSource = typeof props?.launcherSource === "string" ? props.launcherSource : "";
     const launcherSelfUserId = normalizeDiscordId(props?.launcherSelfUserId);
+    const normalizedRequesterId = validateDiscordId(activeUserId)
+        ? activeUserId
+        : (launcherSelfUserId || lastResolvedSessionUserId);
     const profileUserId = forcedProfileUserId ?? getProfileUserId(props) ?? activeUserId;
     const entrypoint = typeof props?.entrypoint === "string" ? props.entrypoint : "unknown";
     const hasValidProfileTarget = validateDiscordId(profileUserId);
-    const effectiveOwnUserId = validateDiscordId(activeUserId)
-        ? activeUserId
+    const effectiveOwnUserId = validateDiscordId(normalizedRequesterId)
+        ? normalizedRequesterId
         : (launcherSource.startsWith("settings:self") ? (launcherSelfUserId || forcedProfileUserId) : "");
+    const ownerProfileId = validateDiscordId(effectiveOwnUserId) ? effectiveOwnUserId : normalizedRequesterId;
     const isOwnProfile = !hasValidProfileTarget
-        || (validateDiscordId(activeUserId) && profileUserId === activeUserId)
+        || (validateDiscordId(normalizedRequesterId) && profileUserId === normalizedRequesterId)
         || (validateDiscordId(effectiveOwnUserId) && profileUserId === effectiveOwnUserId);
     const panelOpenInfo = getProfilePanelOpenInfo(props);
     const isEmbeddedSettingsLauncher = entrypoint.startsWith("settings-launcher:");
@@ -1765,8 +1768,8 @@ function ConfigPanel(props) {
     const [newEditorId, setNewEditorId] = useState("");
     const [manualScopeId, setManualScopeId] = useState("");
     const [allowedEditors, setAllowedEditors] = useState(() => {
-        if (!validateDiscordId(activeUserId)) return [];
-        return getAllowedEditors(activeUserId).allowed_editors.sort();
+        if (!validateDiscordId(ownerProfileId)) return [];
+        return getAllowedEditors(ownerProfileId).allowed_editors.sort();
     });
     const [pendingRequests, setPendingRequests] = useState([]);
     const [canViewRemote, setCanViewRemote] = useState(isOwnProfile);
@@ -1797,12 +1800,14 @@ function ConfigPanel(props) {
             entrypoint,
             forcedProfileUserId,
             activeUserId,
+            normalizedRequesterId,
+            launcherSelfUserId,
             profileUserId,
             isOwnProfile,
             isPanelOpen,
             propKeys
         });
-    }, [activeUserId, entrypoint, forcedProfileUserId, isOwnProfile, isPanelOpen, profileUserId, props]);
+    }, [activeUserId, entrypoint, forcedProfileUserId, isOwnProfile, isPanelOpen, launcherSelfUserId, normalizedRequesterId, profileUserId, props]);
 
     useEffect(() => {
         const update = () => {
@@ -1862,7 +1867,7 @@ function ConfigPanel(props) {
         const nextRelayUrl = currentRelayUrl();
         setRelayUrl(nextRelayUrl);
         try {
-            const requesterId = validateDiscordId(activeUserId) ? activeUserId : "";
+            const requesterId = ownerProfileId;
             const ownOwnerId = isOwnProfile && validateDiscordId(effectiveOwnUserId) ? effectiveOwnUserId : requesterId;
             const identityError = getIdentityValidationError(requesterId, profileUserId, isOwnProfile, {
                 allowOwnProfileFallbackRequester: Boolean(ownOwnerId)
@@ -2199,7 +2204,7 @@ function ConfigPanel(props) {
     }, [relayUrl]);
 
     const saveStructuredConfig = useCallback(baseConfig => {
-        const requesterId = validateDiscordId(activeUserId) ? activeUserId : "";
+        const requesterId = ownerProfileId;
         const ownOwnerId = isOwnProfile && validateDiscordId(effectiveOwnUserId) ? effectiveOwnUserId : requesterId;
         if (!requesterId && !ownOwnerId) {
             const traceId = nextRemoteFetchTraceId();
@@ -2701,7 +2706,7 @@ function ConfigPanel(props) {
         },
         h(Text, { style: { color: "#f2f3f5", marginBottom: 6 } }, editor),
         button(`Remove ${editor}`, () => Promise.resolve()
-            .then(() => removeAllowedEditor(activeUserId, editor))
+            .then(() => removeAllowedEditor(ownerProfileId, editor))
             .then(() => {
                 setAllowedEditors(prev => prev.filter(value => value !== editor));
                 setStatus(`Removed editor ${editor}`);
@@ -2723,8 +2728,8 @@ function ConfigPanel(props) {
             }
         },
         h(Text, { style: { color: "#f2f3f5" } }, requesterId),
-        button(`Approve ${requesterId}`, () => approveAccessRequest(currentRelayUrl(), activeUserId, requesterId).then(refresh)),
-        button(`Deny ${requesterId}`, () => denyAccessRequest(currentRelayUrl(), activeUserId, requesterId).then(refresh), { danger: true })
+        button(`Approve ${requesterId}`, () => approveAccessRequest(currentRelayUrl(), ownerProfileId, requesterId).then(refresh)),
+        button(`Deny ${requesterId}`, () => denyAccessRequest(currentRelayUrl(), ownerProfileId, requesterId).then(refresh), { danger: true })
     ));
 
     const fetchHistoryRows = fetchHistory.slice(0, 8).map((entry, index) => h(
@@ -2812,12 +2817,12 @@ function ConfigPanel(props) {
             null,
             h(Text, { style: { color: "#f2f3f5", marginTop: 6 } }, "You do not currently have permission to view this profile config."),
             button("Request Access", () => {
-                const identityError = getIdentityValidationError(activeUserId, profileUserId, false);
+                const identityError = getIdentityValidationError(ownerProfileId, profileUserId, false);
                 if (identityError) {
                     setStatus(identityError);
                     return Promise.resolve();
                 }
-                return requestRemoteAccess(currentRelayUrl(), activeUserId, profileUserId).then(() => {
+                return requestRemoteAccess(currentRelayUrl(), ownerProfileId, profileUserId).then(() => {
                     setStatus(`Access request sent to ${profileUserId}. Ask them to open Key Intercept and approve the request.`);
                 }, err => setStatus(formatConfigAccessError(err, profileUserId)));
             })
@@ -3085,7 +3090,7 @@ function ConfigPanel(props) {
             button("Add Editor", () => {
                 const editorId = newEditorId.trim();
                 return Promise.resolve()
-                    .then(() => addAllowedEditor(activeUserId, editorId))
+                    .then(() => addAllowedEditor(ownerProfileId, editorId))
                     .then(() => {
                         setAllowedEditors(prev => {
                             if (prev.includes(editorId)) return prev;
@@ -3119,7 +3124,7 @@ function ConfigLauncherPanel(props) {
     const useRef = resolveReactHook(React, "useRef");
     if (!h || !useState || !useEffect || !useRef) return ConfigPanel(props);
 
-    const activeUserId = currentUser()?.id ?? "";
+    const activeUserId = resolveSessionUserId(props);
     let targetUserInputState;
     try {
         targetUserInputState = useState(validateDiscordId(activeUserId) ? activeUserId : "");
