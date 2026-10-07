@@ -22,7 +22,10 @@ const requiredSnippets = [
     "function openProfileEditorPopup(targetUserId, source) {",
     "\"user-context\": (children, props) => {",
     "appendContextMenuOpenConfigItem(children, props, \"user-context\");",
-    "label: \"Open Key Intercept Config Popup\""
+    "label: \"Open Key Intercept Config Popup\"",
+    "const [resolvedActiveUserId, setResolvedActiveUserId] = activeUserState;",
+    "function applyRawJsonConfigPatch(currentConfig, rawJsonText) {",
+    "section(\"raw-json-apply\", \"Raw JSON Apply\""
 ];
 
 for (const snippet of requiredSnippets) {
@@ -35,7 +38,8 @@ const forbiddenSnippets = [
     "React.useEffect(",
     "React.useRef(",
     "React.createElement(",
-    "return h ? h(ConfigPanel, props) : ConfigPanel(props);"
+    "return h ? h(ConfigPanel, props) : ConfigPanel(props);",
+    "section(\"fetch-diagnostics\", \"Fetch Diagnostics\""
 ];
 
 for (const snippet of forbiddenSnippets) {

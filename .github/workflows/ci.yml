@@ -19,10 +19,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Run Rust tests
-        run: cargo test -p loopback-server -p relay-server -p key-intercept-installer
+        run: cargo test -p loopback-core -p loopback-server -p relay-server -p key-intercept-installer
 
       - name: Run Rust checks
-        run: cargo check -p loopback-server -p relay-server -p key-intercept-installer
+        run: cargo check -p loopback-core -p loopback-server -p relay-server -p key-intercept-installer
 
       - name: Run plugin tests
         run: npm --prefix plugin test
@@ -32,3 +32,8 @@ jobs:
 
       - name: Build Kettu plugin
         run: npm --prefix kettu-plugin run build
+
+      - name: Verify Kettu dist artifact metadata
+        run: |
+          test -s kettu-plugin/dist/index.js
+          node -e "const fs=require('fs');const m=JSON.parse(fs.readFileSync('kettu-plugin/dist/manifest.json','utf8'));if(m.main!=='index.js')process.exit(1);if(!/^[A-F0-9]{64}$/.test(String(m.hash||'')))process.exit(1);"

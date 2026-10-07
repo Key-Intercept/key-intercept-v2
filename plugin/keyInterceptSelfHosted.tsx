@@ -8,6 +8,25 @@ const LOOPBACK = "http://127.0.0.1:35491";
 const DISCORD_SECURE_ORIGINS = new Set(["https://discord.com", "https://ptb.discord.com", "https://canary.discord.com"]);
 const LOG_PREFIX = "[key-intercept]";
 const MOBILE_STATE_KEY = "key-intercept/mobile-loopback-state/v1";
+const DEVELOPER_MODE_ENABLED = (() => {
+    const values: unknown[] = [];
+    try {
+        const globalScope = globalThis as Record<string, unknown>;
+        values.push(globalScope.KEY_INTERCEPT_DEVELOPER_MODE);
+        values.push(globalScope.KEY_INTERCEPT_DEBUG_MODE);
+    } catch {}
+    try {
+        values.push(window.localStorage.getItem("key-intercept/developer-mode"));
+    } catch {}
+    for (const value of values) {
+        const normalized = String(value ?? "").trim().toLowerCase();
+        if (normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on") {
+            return true;
+        }
+    }
+    return false;
+})();
+const DEFAULT_RELAY_URL = DEVELOPER_MODE_ENABLED ? "http://127.0.0.1:46001" : "https://kirelay.thomaslower.com";
 
 type Config = {
     rules_end: string;
@@ -349,10 +368,16 @@ async function readLocalConfig(): Promise<LocalConfig> {
 async function saveLocalConfig(userId: string, config: LocalConfig) {
     if (activeLoopbackTransport === "desktop_http") {
         await saveDesktopLoopbackConfig(userId, config);
+        const refreshed = await readDesktopLoopbackConfig(userId);
+        interceptConfig = refreshed;
+        return refreshed;
     } else {
         await saveInAppLoopbackConfig(userId, config);
+        await syncInAppLoopback(settings.store.relayUrl, userId).catch(() => {});
+        const refreshed = readInAppLoopbackConfig(userId);
+        interceptConfig = refreshed;
+        return refreshed;
     }
-    interceptConfig = mergeLocalConfig(config);
 }
 
 async function getAllowedEditors(requesterId: string) {
@@ -661,7 +686,8 @@ async function pushRemoteConfig(
     editorId: string,
     targetUserId: string,
     config: LocalConfig,
-    expectedRevision?: number
+    expectedRevision?: number,
+    source: "auto" | "pc" | "mobile" = "auto"
 ) {
     const normalizedEditorId = normalizeDiscordId(editorId);
     const normalizedTargetUserId = normalizeDiscordId(targetUserId);
@@ -670,7 +696,8 @@ async function pushRemoteConfig(
         err.status = 400;
         throw err;
     }
-    const response = await fetch(`${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/config`, {
+    const sourceQuery = source === "auto" ? "" : `?source=${encodeURIComponent(source)}`;
+    const response = await fetch(`${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/config${sourceQuery}`, {
         method: "PUT",
         headers: {
             "content-type": "application/json"
@@ -726,7 +753,12 @@ function getIdentityValidationError(requesterId: string, targetUserId: string, i
     return null;
 }
 
-async function readRemoteConfig(relayUrl: string, requesterId: string, targetUserId: string): Promise<LocalConfig> {
+async function readRemoteConfig(
+    relayUrl: string,
+    requesterId: string,
+    targetUserId: string,
+    source: "auto" | "pc" | "mobile" = "auto"
+): Promise<LocalConfig> {
     const normalizedRequesterId = normalizeDiscordId(requesterId);
     const normalizedTargetUserId = normalizeDiscordId(targetUserId);
     if (!normalizedRequesterId || !normalizedTargetUserId) {
@@ -740,12 +772,13 @@ async function readRemoteConfig(relayUrl: string, requesterId: string, targetUse
         targetUserId: normalizedTargetUserId,
         relayUrl: relayBaseUrl(relayUrl)
     });
-    const profileStateUrl = `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/profile-state?requester_id=${encodeURIComponent(normalizedRequesterId)}`;
-    const legacyConfigUrl = `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/config?requester_id=${encodeURIComponent(normalizedRequesterId)}`;
+    const sourceQuery = source === "auto" ? "" : `&source=${encodeURIComponent(source)}`;
+    const profileStateUrl = `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/profile-state?requester_id=${encodeURIComponent(normalizedRequesterId)}${sourceQuery}`;
+    const legacyConfigUrl = `${relayBaseUrl(relayUrl)}/users/${normalizedTargetUserId}/config?requester_id=${encodeURIComponent(normalizedRequesterId)}${sourceQuery}`;
     let response = await fetch(profileStateUrl, { cache: "no-store" });
     let endpoint = "profile-state";
     let fallbackSourceStatus: number | null = null;
-    if (response.status === 404 || response.status === 400) {
+    if (!response.ok) {
         fallbackSourceStatus = response.status;
         response = await fetch(legacyConfigUrl, { cache: "no-store" });
         endpoint = "legacy-config";
@@ -896,15 +929,23 @@ async function syncInAppLoopback(relayUrl: string, ownerId: string) {
         await uploadMobileSnapshot(relayUrl, ownerId);
         return;
     }
+    if (response.status === 204) return;
     if (!response.ok) throw new Error(`Mobile relay sync failed: ${response.status}`);
     const payload = await response.json() as MobileSyncPayload;
     const relayRevision = Number.isFinite(payload.revision) ? payload.revision : local.revision;
-    if (relayRevision <= local.revision) return;
+    const relayConfig = mergeLocalConfig(payload.config);
+    const localConfig = mergeLocalConfig(local.config);
+    const configChanged = JSON.stringify(relayConfig) !== JSON.stringify(localConfig);
+    const relayEditors = Array.isArray(payload.allowed_editors) ? payload.allowed_editors.filter(isDiscordId).sort() : [];
+    const localEditors = Array.isArray(local.allowed_editors) ? local.allowed_editors.filter(isDiscordId).sort() : [];
+    const editorsChanged = relayEditors.length !== localEditors.length
+        || relayEditors.some((editorId, index) => editorId !== localEditors[index]);
+    if (relayRevision <= local.revision && !configChanged && !editorsChanged) return;
     writeMobileState({
         owner_discord_id: ownerId,
-        config: mergeLocalConfig(payload.config),
+        config: relayRevision > local.revision || configChanged ? relayConfig : localConfig,
         allowed_editors: Array.isArray(payload.allowed_editors) ? payload.allowed_editors.filter(isDiscordId) : local.allowed_editors,
-        revision: relayRevision,
+        revision: Math.max(local.revision, relayRevision),
         last_writer_id: typeof payload.last_writer_id === "string" && isDiscordId(payload.last_writer_id)
             ? payload.last_writer_id
             : ownerId
@@ -1592,7 +1633,8 @@ function buildScopeTargetFromContext(props: any): ScopeTarget | null {
 function ConfigPanel(props: any) {
     const activeUserId = resolveSessionUserId(props);
     const profileUserId = getProfileUserId(props) ?? activeUserId;
-    const isOwnProfile = isDiscordId(profileUserId) && profileUserId === activeUserId;
+    const hasValidProfileTarget = isDiscordId(profileUserId);
+    const isOwnProfile = !hasValidProfileTarget || profileUserId === activeUserId;
     const panelOpenInfo = getProfilePanelOpenInfo(props);
     const isPanelOpen = panelOpenInfo.isOpen;
     const hasExplicitPanelOpenState = panelOpenInfo.hasExplicitState;
@@ -1614,6 +1656,7 @@ function ConfigPanel(props: any) {
     const lastSavedSnapshotRef = React.useRef("");
     const saveQueueRef = React.useRef(Promise.resolve());
     const refreshInFlightRef = React.useRef(false);
+    const remoteSourceRef = React.useRef<"auto" | "pc" | "mobile">("mobile");
     const stopKeyPropagation = React.useCallback((event: React.KeyboardEvent) => {
         event.stopPropagation();
     }, []);
@@ -1695,7 +1738,16 @@ function ConfigPanel(props: any) {
                 return;
             }
 
-            const remote = await readRemoteConfig(settings.store.relayUrl, activeUserId, profileUserId);
+            let remote: LocalConfig;
+            try {
+                remote = await readRemoteConfig(settings.store.relayUrl, activeUserId, profileUserId, "mobile");
+                remoteSourceRef.current = "mobile";
+            } catch (err) {
+                const status = parseErrorStatusCode(err);
+                if (status !== 404) throw err;
+                remote = await readRemoteConfig(settings.store.relayUrl, activeUserId, profileUserId, "auto");
+                remoteSourceRef.current = "auto";
+            }
             updateFromConfig(remote);
             setCanViewRemote(true);
             console.info(`${LOG_PREFIX} refresh:success`, {
@@ -1712,6 +1764,19 @@ function ConfigPanel(props: any) {
             refreshInFlightRef.current = false;
         }
     }, [activeUserId, isOwnProfile, profileUserId, updateFromConfig]);
+
+    React.useEffect(() => {
+        if (!isPanelOpen) return;
+        skipAutosaveRef.current = true;
+        setCanViewRemote(isOwnProfile);
+        if (!isOwnProfile) {
+            setAllowedEditors([]);
+            setPendingRequests([]);
+            setStatus(`Loading ${profileUserId}'s profile config...`);
+        } else {
+            setStatus("Loading your profile config...");
+        }
+    }, [activeUserId, isOwnProfile, isPanelOpen, profileUserId]);
 
     React.useEffect(() => {
         if (!isPanelOpen) return;
@@ -1879,6 +1944,7 @@ function ConfigPanel(props: any) {
             pet_words: getPetWordsForType(baseConfig.config.pet_type, baseConfig.pet_words),
             censored_words: fromLines(censoredWordsText)
         });
+        let appliedConfig = mergedConfig;
         console.info(`${LOG_PREFIX} saveConfig:start`, {
             activeUserId,
             profileUserId,
@@ -1887,20 +1953,28 @@ function ConfigPanel(props: any) {
             summary: configLogSummary(mergedConfig)
         });
         if (isOwnProfile) {
-            await saveLocalConfig(activeUserId, mergedConfig);
+            appliedConfig = await saveLocalConfig(activeUserId, mergedConfig);
+            updateFromConfig(appliedConfig);
             if (!options?.quiet) setStatus("Auto-saved local config");
         } else {
-            await pushRemoteConfig(settings.store.relayUrl, activeUserId, profileUserId, mergedConfig);
+            await pushRemoteConfig(
+                settings.store.relayUrl,
+                activeUserId,
+                profileUserId,
+                mergedConfig,
+                undefined,
+                remoteSourceRef.current
+            );
             if (!options?.quiet) setStatus(`Auto-saved ${profileUserId}'s config via relay`);
         }
-        lastSavedSnapshotRef.current = JSON.stringify(mergedConfig);
+        lastSavedSnapshotRef.current = JSON.stringify(appliedConfig);
         console.info(`${LOG_PREFIX} saveConfig:success`, {
             activeUserId,
             profileUserId,
             isOwnProfile,
-            summary: configLogSummary(mergedConfig)
+            summary: configLogSummary(appliedConfig)
         });
-    }, [activeUserId, censoredWordsText, isOwnProfile, profileUserId]);
+    }, [activeUserId, censoredWordsText, isOwnProfile, profileUserId, updateFromConfig]);
 
     React.useEffect(() => {
         if (!(isOwnProfile || canViewRemote)) return;
@@ -1915,7 +1989,8 @@ function ConfigPanel(props: any) {
             censored_words: fromLines(censoredWordsText)
         });
         const nextSnapshot = JSON.stringify(nextConfig);
-        if (nextSnapshot === lastSavedSnapshotRef.current) return;
+        const forcePushToLoopback = isOwnProfile && activeLoopbackTransport === "in_app_mobile";
+        if (!forcePushToLoopback && nextSnapshot === lastSavedSnapshotRef.current) return;
 
         console.info(`${LOG_PREFIX} autosave:enqueue`, {
             activeUserId,
@@ -2454,7 +2529,7 @@ const settings = definePluginSettings({
     relayUrl: {
         type: OptionType.STRING,
         description: "Public relay URL",
-        default: "https://kirelay.thomaslower.com"
+        default: DEFAULT_RELAY_URL
     },
     loopbackTransportMode: {
         type: OptionType.STRING,

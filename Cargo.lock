@@ -758,12 +758,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
+name = "loopback-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "loopback-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
  "dirs",
+ "loopback-core",
  "reqwest",
  "serde",
  "serde_json",
