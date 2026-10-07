@@ -263,7 +263,7 @@ jobs:
           mkdir -p build/Payload
           cp -R build/KeyInterceptLoopback.xcarchive/Products/Applications/KeyInterceptLoopback.app build/Payload/
           mkdir -p ../../dist
-          (cd build && zip -qry ../../dist/${IOS_RELEASE_IPA_NAME} Payload)
+          (cd build && zip -qry ../../../dist/${IOS_RELEASE_IPA_NAME} Payload)
 
       - name: Upload iOS IPA
         if: matrix.target == 'ios'
