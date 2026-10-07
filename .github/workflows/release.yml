@@ -217,7 +217,7 @@ jobs:
           mkdir -p ../../dist
           cp "${UNSIGNED_APK}" ../../dist/${ANDROID_RELEASE_APK_NAME}
           if [ "${SHOULD_SIGN_APK}" = "true" ]; then
-            echo "${ANDROID_RELEASE_KEYSTORE_BASE64}" | base64 --decode > /tmp/key-intercept-release.jks
+            printf '%s' "${ANDROID_RELEASE_KEYSTORE_BASE64}" | base64 --decode --ignore-garbage > /tmp/key-intercept-release.jks
             BUILD_TOOLS_DIR="${ANDROID_HOME}/build-tools/$(ls -1 "${ANDROID_HOME}/build-tools" | sort -V | tail -n1)"
             APKSIGNER="${BUILD_TOOLS_DIR}/apksigner"
             if [ ! -x "${APKSIGNER}" ]; then
