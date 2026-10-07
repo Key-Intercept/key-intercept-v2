@@ -15,7 +15,7 @@ final class LoopbackManager: ObservableObject {
     private static let maxLogLines = 12
     private static let statusPrefsKey = "key_intercept_loopback_status_message"
     private static let logsPrefsKey = "key_intercept_loopback_logs"
-    private static let defaultLoopbackPort = 35491
+    private static let defaultLoopbackPort: UInt16 = 35491
     private let loopbackPort: UInt16
 
     init() {
@@ -71,11 +71,19 @@ final class LoopbackManager: ObservableObject {
 
     private func startLocalServer() -> Bool {
         do {
-            let listener = try NWListener(using: .tcp, on: loopbackPort)
+            guard let nwPort = NWEndpoint.Port(rawValue: loopbackPort) else {
+                DispatchQueue.main.async {
+                    self.isRunning = false
+                    self.updateStatus("Key Intercept Loopback failed to start: invalid port")
+                    self.appendLog("listener start failed: invalid port \(self.loopbackPort)")
+                }
+                return false
+            }
+            let listener = try NWListener(using: .tcp, on: nwPort)
             listener.newConnectionHandler = { [weak self] connection in
                 self?.handle(connection: connection)
             }
-            listener.stateUpdateHandler = { [weak self] state in
+            listener.stateUpdateHandler = { [weak self] (state: NWListener.State) in
                 guard let self else { return }
                 switch state {
                 case .failed(let error):
