@@ -1891,6 +1891,8 @@ function ConfigPanel(props) {
     const remoteSourceRef = useRef("mobile");
 
     const blocked_by_dom = editableConfig.config.blocked_by_dom;
+
+    useEffect(() => {
         const update = () => {
             const nextUserId = resolveSessionUserId(props);
             if (!validateDiscordId(nextUserId)) return;
