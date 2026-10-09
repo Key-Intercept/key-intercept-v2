@@ -68,10 +68,12 @@ To install on Android:
 3. Open Kettu.
 4. Go to Profile > Settings > Plugins.
 5. Click the plus button in the bottom right hand corner.
-6. Download `key-intercept-loopback-android.apk` from [Releases](https://github.com/Key-intercept/key-intercept-v2/releases/latest).
-7. Install and open **Key Intercept Loopback** (see [this guide](https://www.lifewire.com/install-apk-on-android-4177185) for how to install an APK if unsure.
-8. Tap **Start Background Service**.
-10. Enable the plugin.
+6. Type in the source [https://key-intercept.github.io/key-intercept-v2/](https://key-intercept.github.io/key-intercept-v2/).
+7. Enable the plugin.
+8. Click install.
+9. Download `key-intercept-loopback-android.apk` from [Releases](https://github.com/Key-intercept/key-intercept-v2/releases/latest).
+10. Install and open **Key Intercept Loopback** (see [this guide](https://www.lifewire.com/install-apk-on-android-4177185) for how to install an APK if unsure.
+11. Tap **Start Background Service**.
 
 The notification should show **Key Intercept Loopback is running in the background**.
 
