@@ -26,6 +26,7 @@ const requiredSnippets = [
     "const [resolvedActiveUserId, setResolvedActiveUserId] = activeUserState;",
     "function applyRawJsonConfigPatch(currentConfig, rawJsonText) {",
     "section(\"raw-json-apply\", \"Raw JSON Apply\"",
+    "const normalizedPetType = typeof rawPetType === \"number\" || typeof rawPetType === \"string\"",
     "mergedConfig.pet_type = petWordsByType[normalizedPetType] ? normalizedPetType : 1;"
 ];
 

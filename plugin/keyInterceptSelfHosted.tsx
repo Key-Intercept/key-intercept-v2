@@ -312,7 +312,10 @@ function mergeLocalConfig(raw: unknown): LocalConfig {
         ...defaultLocalConfig.config,
         ...((source.config as Record<string, unknown>) ?? {})
     } as Config;
-    const normalizedPetType = Number(mergedConfig.pet_type);
+    const rawPetType: unknown = mergedConfig.pet_type;
+    const normalizedPetType = typeof rawPetType === "number" || typeof rawPetType === "string"
+        ? Number(rawPetType)
+        : 1;
     mergedConfig.pet_type = petWordsByType[normalizedPetType] ? normalizedPetType : 1;
 
     return {

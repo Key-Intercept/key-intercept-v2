@@ -24,6 +24,7 @@ const requiredSnippets = [
     "applyStep(\"censored\", applyCensored);",
     "applyStep(\"gag\", applyGag);",
     "const droneResult = applyDrone(msg, channelId);",
+    "const normalizedPetType = typeof rawPetType === \"number\" || typeof rawPetType === \"string\"",
     "mergedConfig.pet_type = petWordsByType[normalizedPetType] ? normalizedPetType : 1;"
 ];
 
