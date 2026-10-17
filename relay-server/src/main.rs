@@ -9,6 +9,7 @@ use axum::{
     response::IntoResponse,
     routing::{delete, get, post},
 };
+use loopback_core::LocalConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -681,9 +682,10 @@ async fn put_remote_config(
         )
             .into_response();
     }
-    if let Err(err) = validate_config_shape(&payload.config) {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: err })).into_response();
-    }
+    let normalized_config = match normalize_config_value(payload.config) {
+        Ok(config) => config,
+        Err(err) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: err })).into_response(),
+    };
 
     let source = parse_config_source(query.source.as_deref());
     let try_desktop = source != ConfigSource::Mobile;
@@ -695,7 +697,7 @@ async fn put_remote_config(
             &owner_id,
             DesktopCommand::PutConfig {
                 editor_id: payload.editor_id.clone(),
-                config: payload.config.clone(),
+                config: normalized_config.clone(),
                 expected_revision: payload.expected_revision,
             },
         )
@@ -742,7 +744,7 @@ async fn put_remote_config(
                     .into_response();
             }
 
-            snapshot.config = payload.config;
+            snapshot.config = normalized_config;
             snapshot.revision = snapshot.revision.saturating_add(1);
             snapshot.last_writer_id = payload.editor_id.clone();
 
@@ -1103,9 +1105,10 @@ async fn upsert_mobile_snapshot(
         )
             .into_response();
     }
-    if let Err(err) = validate_config_shape(&payload.config) {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: err })).into_response();
-    }
+    let normalized_config = match normalize_config_value(payload.config) {
+        Ok(config) => config,
+        Err(err) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: err })).into_response(),
+    };
     if payload.allowed_editors.iter().any(|id| !is_discord_id(id)) {
         return (
             StatusCode::BAD_REQUEST,
@@ -1132,7 +1135,7 @@ async fn upsert_mobile_snapshot(
         MobileSnapshotRecord {
             revision: payload.revision,
             last_writer_id: payload.last_writer_id.unwrap_or_else(|| owner_id.clone()),
-            config: payload.config,
+            config: normalized_config,
             allowed_editors,
         },
     );
@@ -1516,6 +1519,15 @@ fn has_exact_keys(map: &serde_json::Map<String, Value>, expected: &[&str]) -> bo
     expected.iter().all(|k| map.contains_key(*k))
 }
 
+fn normalize_config_value(value: Value) -> Result<Value, String> {
+    validate_config_shape(&value)?;
+    let mut config = serde_json::from_value::<LocalConfig>(value)
+        .map_err(|err| format!("invalid config payload: {err}"))?;
+    config.normalize();
+    config.validate()?;
+    serde_json::to_value(config).map_err(|err| format!("failed to serialize config: {err}"))
+}
+
 fn validate_config_shape(value: &Value) -> Result<(), String> {
     let Some(root) = value.as_object() else {
         return Err("config must be an object".to_string());
@@ -1544,7 +1556,6 @@ fn validate_config_shape(value: &Value) -> Result<(), String> {
         "gag_end",
         "pet_end",
         "pet_amount",
-        "pet_type",
         "bimbo_end",
         "horny_end",
         "bimbo_word_length",
@@ -1555,7 +1566,9 @@ fn validate_config_shape(value: &Value) -> Result<(), String> {
         "debug",
         "blocked_by_dom",
     ];
-    if !has_exact_keys(config, &config_keys) {
+    if !config_keys.iter().all(|key| config.contains_key(*key))
+        || config.keys().any(|key| key != "pet_type" && !config_keys.contains(&key.as_str()))
+    {
         return Err("config.config has unexpected or missing fields".to_string());
     }
 
@@ -1655,6 +1668,29 @@ mod tests {
                 "drone_term": "Drone"
             }
         })
+    }
+
+    #[test]
+    fn normalize_config_value_migrates_invalid_pet_type() {
+        let mut value = sample_config();
+        value["config"]["pet_type"] = json!(0);
+
+        let normalized = normalize_config_value(value).expect("config should normalize");
+
+        assert_eq!(normalized["config"]["pet_type"], json!(1));
+    }
+
+    #[test]
+    fn normalize_config_value_defaults_missing_pet_type() {
+        let mut value = sample_config();
+        value["config"]
+            .as_object_mut()
+            .expect("config object")
+            .remove("pet_type");
+
+        let normalized = normalize_config_value(value).expect("config should default pet type");
+
+        assert_eq!(normalized["config"]["pet_type"], json!(1));
     }
 
     #[tokio::test]
