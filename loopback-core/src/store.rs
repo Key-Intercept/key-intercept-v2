@@ -53,6 +53,28 @@ fn file_content_fingerprint(raw: &str) -> u64 {
     hasher.finish()
 }
 
+fn normalize_raw_pet_type(raw: &str) -> Option<String> {
+    let mut value = serde_json::from_str::<serde_json::Value>(raw).ok()?;
+    let config = value.get_mut("config")?.as_object_mut()?;
+    let pet_config = if config
+        .get("config")
+        .is_some_and(serde_json::Value::is_object)
+    {
+        config.get_mut("config")?.as_object_mut()?
+    } else {
+        config
+    };
+    let valid_pet_type = pet_config
+        .get("pet_type")
+        .and_then(serde_json::Value::as_i64)
+        .is_some_and(|pet_type| (1..=7).contains(&pet_type));
+    if valid_pet_type {
+        return Some(raw.to_string());
+    }
+    pet_config.insert("pet_type".to_string(), serde_json::Value::from(1));
+    serde_json::to_string(&value).ok()
+}
+
 fn apply_legacy_top_level_overrides(raw: &str, state: &mut PersistedState) {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
         return;
@@ -163,16 +185,20 @@ fn migrate_legacy_state(raw: &str, default_owner_discord_id: &str) -> Option<Per
 impl ConfigStore {
     pub async fn load_or_create(path: impl AsRef<Path>, owner_discord_id: String) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
+        let mut raw_was_normalized = false;
         let mut state = if path.exists() {
             let existing = fs::read_to_string(&path)
                 .await
                 .with_context(|| format!("failed to read {}", path.display()))?;
-            match serde_json::from_str::<PersistedState>(&existing) {
+            let normalized_existing =
+                normalize_raw_pet_type(&existing).unwrap_or_else(|| existing.clone());
+            raw_was_normalized = normalized_existing != existing;
+            match serde_json::from_str::<PersistedState>(&normalized_existing) {
                 Ok(mut state) => {
-                    apply_legacy_top_level_overrides(&existing, &mut state);
+                    apply_legacy_top_level_overrides(&normalized_existing, &mut state);
                     state
                 }
-                Err(err) => match serde_json::from_str::<LocalConfig>(&existing) {
+                Err(err) => match serde_json::from_str::<LocalConfig>(&normalized_existing) {
                     Ok(config) => {
                         let migrated = PersistedState {
                             owner_discord_id: owner_discord_id.clone(),
@@ -186,7 +212,9 @@ impl ConfigStore {
                         migrated
                     }
                     Err(_) => {
-                        if let Some(migrated) = migrate_legacy_state(&existing, &owner_discord_id) {
+                        if let Some(migrated) =
+                            migrate_legacy_state(&normalized_existing, &owner_discord_id)
+                        {
                             let mut migrated = migrated;
                             migrated.config.normalize();
                             fs::write(&path, serde_json::to_vec_pretty(&migrated)?)
@@ -242,7 +270,7 @@ impl ConfigStore {
                 .with_context(|| format!("failed to create {}", path.display()))?;
             fresh
         };
-        if state.config.normalize() {
+        if raw_was_normalized || state.config.normalize() {
             fs::write(&path, serde_json::to_vec_pretty(&state)?)
                 .await
                 .with_context(|| format!("failed to normalize {}", path.display()))?;
@@ -385,16 +413,17 @@ impl ConfigStore {
             }
         }
         let mut state = self.state.write().await;
-        let reloaded = match serde_json::from_str::<PersistedState>(&raw) {
+        let normalized_raw = normalize_raw_pet_type(&raw).unwrap_or_else(|| raw.clone());
+        let reloaded = match serde_json::from_str::<PersistedState>(&normalized_raw) {
             Ok(mut parsed) => {
                 if parsed.owner_discord_id.trim().is_empty() {
                     parsed.owner_discord_id = state.owner_discord_id.clone();
                 }
-                apply_legacy_top_level_overrides(&raw, &mut parsed);
+                apply_legacy_top_level_overrides(&normalized_raw, &mut parsed);
                 parsed.revision = state.revision.saturating_add(1);
                 parsed
             }
-            Err(_) => match serde_json::from_str::<LocalConfig>(&raw) {
+            Err(_) => match serde_json::from_str::<LocalConfig>(&normalized_raw) {
                 Ok(parsed_config) => PersistedState {
                     owner_discord_id: state.owner_discord_id.clone(),
                     revision: state.revision.saturating_add(1),
@@ -600,6 +629,29 @@ mod tests {
 
         let backup_path = path.with_extension("corrupt.json");
         assert!(backup_path.exists());
+    }
+
+    #[tokio::test]
+    async fn load_or_create_normalizes_malformed_pet_type_without_losing_state() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let mut persisted = serde_json::to_value(PersistedState::new("owner".to_string())).unwrap();
+        persisted["config"]["config"]["pet_type"] = json!("puppy");
+        persisted["config"]["config"]["censored_replacement"] = json!("#");
+        persisted["revision"] = json!(4);
+        fs::write(&path, serde_json::to_vec_pretty(&persisted).unwrap())
+            .await
+            .unwrap();
+
+        let store = ConfigStore::load_or_create(&path, "fallback-owner".to_string())
+            .await
+            .unwrap();
+        let state = store.get().await;
+
+        assert_eq!(state.revision, 4);
+        assert_eq!(state.config.config.pet_type, 1);
+        assert_eq!(state.config.config.censored_replacement, "#");
+        assert!(!path.with_extension("corrupt.json").exists());
     }
 
     #[tokio::test]
