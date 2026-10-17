@@ -163,7 +163,7 @@ fn migrate_legacy_state(raw: &str, default_owner_discord_id: &str) -> Option<Per
 impl ConfigStore {
     pub async fn load_or_create(path: impl AsRef<Path>, owner_discord_id: String) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let state = if path.exists() {
+        let mut state = if path.exists() {
             let existing = fs::read_to_string(&path)
                 .await
                 .with_context(|| format!("failed to read {}", path.display()))?;
@@ -187,6 +187,8 @@ impl ConfigStore {
                     }
                     Err(_) => {
                         if let Some(migrated) = migrate_legacy_state(&existing, &owner_discord_id) {
+                            let mut migrated = migrated;
+                            migrated.config.normalize();
                             fs::write(&path, serde_json::to_vec_pretty(&migrated)?)
                                 .await
                                 .with_context(|| format!("failed to migrate {}", path.display()))?;
@@ -240,6 +242,11 @@ impl ConfigStore {
                 .with_context(|| format!("failed to create {}", path.display()))?;
             fresh
         };
+        if state.config.normalize() {
+            fs::write(&path, serde_json::to_vec_pretty(&state)?)
+                .await
+                .with_context(|| format!("failed to normalize {}", path.display()))?;
+        }
 
         let file_modified_at = fs::metadata(&path)
             .await
@@ -266,7 +273,7 @@ impl ConfigStore {
     pub async fn update_config(
         &self,
         editor_id: &str,
-        config: LocalConfig,
+        mut config: LocalConfig,
         expected_revision: Option<u64>,
     ) -> Result<()> {
         let mut state = self.state.write().await;
@@ -283,6 +290,7 @@ impl ConfigStore {
             }
         }
 
+        config.normalize();
         state.config = config;
         state.revision = state.revision.saturating_add(1);
         self.persist(&state).await?;
