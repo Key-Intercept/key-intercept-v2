@@ -1624,7 +1624,7 @@ mod tests {
                 "gag_end": "1970-01-01T00:00:00.000Z",
                 "pet_end": "1970-01-01T00:00:00.000Z",
                 "pet_amount": 0.0,
-                "pet_type": 0,
+                "pet_type": 1,
                 "bimbo_end": "1970-01-01T00:00:00.000Z",
                 "horny_end": "1970-01-01T00:00:00.000Z",
                 "bimbo_word_length": 12,

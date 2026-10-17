@@ -315,11 +315,15 @@ function mergeLocalConfig(raw) {
     const sharedScopeList = createSharedScopeList(source.whitelist, source.blacklist);
     const mergedFilterMode = source.filter_mode === "blacklist" ? "blacklist" : "whitelist";
 
+    const mergedConfig = {
+        ...defaultLocalConfig.config,
+        ...((source.config) ?? {})
+    };
+    const normalizedPetType = Number(mergedConfig.pet_type);
+    mergedConfig.pet_type = petWordsByType[normalizedPetType] ? normalizedPetType : 1;
+
     return {
-        config: {
-            ...defaultLocalConfig.config,
-            ...((source.config) ?? {})
-        },
+        config: mergedConfig,
         rules: mergedRules,
         rules_groups: mergedGroups,
         whitelist: sharedScopeList,
