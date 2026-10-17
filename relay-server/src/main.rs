@@ -427,7 +427,10 @@ async fn read_mobile_snapshot(state: &AppState, owner_id: &str) -> Option<Mobile
     state.mobile_snapshots.read().await.get(owner_id).cloned()
 }
 
-async fn pending_access_requests_for_owner(state: &AppState, owner_id: &str) -> Vec<AccessRequestRecord> {
+async fn pending_access_requests_for_owner(
+    state: &AppState,
+    owner_id: &str,
+) -> Vec<AccessRequestRecord> {
     state
         .mobile_access_requests
         .read()
@@ -684,7 +687,9 @@ async fn put_remote_config(
     }
     let normalized_config = match normalize_config_value(payload.config) {
         Ok(config) => config,
-        Err(err) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: err })).into_response(),
+        Err(err) => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: err })).into_response();
+        }
     };
 
     let source = parse_config_source(query.source.as_deref());
@@ -1107,7 +1112,9 @@ async fn upsert_mobile_snapshot(
     }
     let normalized_config = match normalize_config_value(payload.config) {
         Ok(config) => config,
-        Err(err) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: err })).into_response(),
+        Err(err) => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: err })).into_response();
+        }
     };
     if payload.allowed_editors.iter().any(|id| !is_discord_id(id)) {
         return (
@@ -1521,6 +1528,16 @@ fn has_exact_keys(map: &serde_json::Map<String, Value>, expected: &[&str]) -> bo
 
 fn normalize_config_value(value: Value) -> Result<Value, String> {
     validate_config_shape(&value)?;
+    let mut value = value;
+    if let Some(config) = value.get_mut("config").and_then(Value::as_object_mut) {
+        let valid_pet_type = config
+            .get("pet_type")
+            .and_then(Value::as_i64)
+            .is_some_and(|pet_type| (1..=7).contains(&pet_type));
+        if !valid_pet_type {
+            config.insert("pet_type".to_string(), Value::from(1));
+        }
+    }
     let mut config = serde_json::from_value::<LocalConfig>(value)
         .map_err(|err| format!("invalid config payload: {err}"))?;
     config.normalize();
@@ -1567,7 +1584,9 @@ fn validate_config_shape(value: &Value) -> Result<(), String> {
         "blocked_by_dom",
     ];
     if !config_keys.iter().all(|key| config.contains_key(*key))
-        || config.keys().any(|key| key != "pet_type" && !config_keys.contains(&key.as_str()))
+        || config
+            .keys()
+            .any(|key| key != "pet_type" && !config_keys.contains(&key.as_str()))
     {
         return Err("config.config has unexpected or missing fields".to_string());
     }
@@ -1691,6 +1710,18 @@ mod tests {
         let normalized = normalize_config_value(value).expect("config should default pet type");
 
         assert_eq!(normalized["config"]["pet_type"], json!(1));
+    }
+
+    #[test]
+    fn normalize_config_value_defaults_malformed_pet_type() {
+        for pet_type in [json!(0.5), json!(null), json!("puppy")] {
+            let mut value = sample_config();
+            value["config"]["pet_type"] = pet_type;
+
+            let normalized = normalize_config_value(value).expect("config should normalize");
+
+            assert_eq!(normalized["config"]["pet_type"], json!(1));
+        }
     }
 
     #[tokio::test]
