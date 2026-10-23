@@ -7,6 +7,10 @@ pub struct Config {
     pub gag_end: String,
     pub pet_end: String,
     pub pet_amount: f64,
+    #[serde(
+        default = "default_pet_type",
+        deserialize_with = "deserialize_pet_type"
+    )]
     pub pet_type: i64,
     pub bimbo_end: String,
     pub horny_end: String,
@@ -108,7 +112,7 @@ impl Default for LocalConfig {
                 gag_end: "1970-01-01T00:00:00.000Z".to_string(),
                 pet_end: "1970-01-01T00:00:00.000Z".to_string(),
                 pet_amount: 0.0,
-                pet_type: 0,
+                pet_type: 1,
                 bimbo_end: "1970-01-01T00:00:00.000Z".to_string(),
                 horny_end: "1970-01-01T00:00:00.000Z".to_string(),
                 bimbo_word_length: 12,
@@ -143,9 +147,21 @@ impl Default for LocalConfig {
 }
 
 impl LocalConfig {
+    pub fn normalize(&mut self) -> bool {
+        if !(1..=7).contains(&self.config.pet_type) {
+            self.config.pet_type = default_pet_type();
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if !(0.0..=1.0).contains(&self.config.pet_amount) {
             return Err("config.pet_amount must be between 0 and 1".to_string());
+        }
+        if !(1..=7).contains(&self.config.pet_type) {
+            return Err("config.pet_type must be between 1 and 7".to_string());
         }
         if self.config.bimbo_word_length < 1 {
             return Err("config.bimbo_word_length must be at least 1".to_string());
@@ -195,6 +211,21 @@ fn default_group_timeout_end() -> String {
     "9999-12-31T23:59:59.000Z".to_string()
 }
 
+fn default_pet_type() -> i64 {
+    1
+}
+
+fn deserialize_pet_type<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value
+        .as_i64()
+        .filter(|pet_type| (1..=7).contains(pet_type))
+        .unwrap_or_else(default_pet_type))
+}
+
 fn default_group_name() -> String {
     "Unnamed Group".to_string()
 }
@@ -215,7 +246,7 @@ mod tests {
                 "gag_end": "1970-01-01T00:00:00.000Z",
                 "pet_end": "1970-01-01T00:00:00.000Z",
                 "pet_amount": 0.0,
-                "pet_type": 0,
+                "pet_type": 1,
                 "bimbo_end": "1970-01-01T00:00:00.000Z",
                 "horny_end": "1970-01-01T00:00:00.000Z",
                 "bimbo_word_length": 12,
@@ -247,5 +278,63 @@ mod tests {
         assert!(parsed.whitelist.is_empty());
         assert!(parsed.blacklist.is_empty());
         assert!(matches!(parsed.filter_mode, ScopeFilterMode::Whitelist));
+    }
+
+    #[test]
+    fn missing_pet_type_defaults_to_puppy() {
+        let mut value = serde_json::json!({
+            "rules_end": "9999-12-31T23:59:59.000Z",
+            "gag_end": "1970-01-01T00:00:00.000Z",
+            "pet_end": "1970-01-01T00:00:00.000Z",
+            "pet_amount": 0.0,
+            "bimbo_end": "1970-01-01T00:00:00.000Z",
+            "horny_end": "1970-01-01T00:00:00.000Z",
+            "bimbo_word_length": 12,
+            "drone_end": "1970-01-01T00:00:00.000Z",
+            "uwu_end": "1970-01-01T00:00:00.000Z",
+            "censored_end": "1970-01-01T00:00:00.000Z",
+            "censored_replacement": "*",
+            "debug": false
+        });
+        let parsed: super::Config = serde_json::from_value(value.take()).unwrap();
+        assert_eq!(parsed.pet_type, 1);
+    }
+
+    #[test]
+    fn invalid_pet_type_normalizes_to_puppy() {
+        let mut config = LocalConfig::default();
+        config.config.pet_type = 99;
+        assert!(config.normalize());
+        assert_eq!(config.config.pet_type, 1);
+    }
+
+    #[test]
+    fn malformed_pet_type_deserializes_to_puppy() {
+        for malformed in [
+            serde_json::json!(null),
+            serde_json::json!(0.5),
+            serde_json::json!("puppy"),
+            serde_json::json!(true),
+            serde_json::json!([]),
+            serde_json::json!(0),
+            serde_json::json!(8),
+            serde_json::json!(-3),
+        ] {
+            let mut value = serde_json::to_value(LocalConfig::default()).unwrap();
+            value["config"]["pet_type"] = malformed.clone();
+            let parsed: LocalConfig = serde_json::from_value(value)
+                .unwrap_or_else(|err| panic!("pet_type {malformed} should not fail: {err}"));
+            assert_eq!(parsed.config.pet_type, 1, "pet_type {malformed}");
+        }
+    }
+
+    #[test]
+    fn valid_pet_types_survive_deserialization() {
+        for pet_type in 1..=7 {
+            let mut value = serde_json::to_value(LocalConfig::default()).unwrap();
+            value["config"]["pet_type"] = serde_json::json!(pet_type);
+            let parsed: LocalConfig = serde_json::from_value(value).unwrap();
+            assert_eq!(parsed.config.pet_type, pet_type);
+        }
     }
 }

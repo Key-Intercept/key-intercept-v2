@@ -1029,6 +1029,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "loopback-core",
  "reqwest",
  "serde",
  "serde_json",
