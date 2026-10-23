@@ -798,22 +798,38 @@ fn ensure_installer_tools() -> Result<InstallerTools> {
 fn update_nodejs() -> Result<()> {
     #[cfg(windows)]
     {
+        let winget_args = [
+            "--id",
+            "OpenJS.NodeJS",
+            "--exact",
+            "--source",
+            "winget",
+            "--accept-source-agreements",
+            "--accept-package-agreements",
+        ];
         let status = Command::new("winget")
-            .args([
-                "upgrade",
-                "--id",
-                "OpenJS.NodeJS",
-                "--exact",
-                "--source",
-                "winget",
-                "--accept-source-agreements",
-                "--accept-package-agreements",
-            ])
+            .arg("upgrade")
+            .args(winget_args)
             .status()
             .context("failed to execute winget while updating Node.js")?;
 
-        if !status.success() {
-            bail!("winget failed to update Node.js with status {status}");
+        if status.success() {
+            return Ok(());
+        }
+
+        println!(
+            "Warning: winget could not upgrade the registered Node.js package ({status}); trying a fresh Node.js install."
+        );
+        let install_status = Command::new("winget")
+            .arg("install")
+            .args(winget_args)
+            .status()
+            .context("failed to execute winget while installing Node.js")?;
+
+        if !install_status.success() {
+            println!(
+                "Warning: winget could not install Node.js ({install_status}); continuing with the existing installation."
+            );
         }
     }
 
