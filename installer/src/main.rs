@@ -709,6 +709,7 @@ fn sync_vencord_checkout(installer_tools: &InstallerTools, vencord_dir: &Path) -
 }
 
 fn ensure_installer_tools() -> Result<InstallerTools> {
+    update_nodejs()?;
     if !node_tool_exists("node") {
         bail!("node is required to provision installer tools; install Node.js and rerun installer");
     }
@@ -792,6 +793,47 @@ fn ensure_installer_tools() -> Result<InstallerTools> {
         git_template_dir: git_template_dir.is_dir().then_some(git_template_dir),
         pnpm_cli,
     })
+}
+
+fn update_nodejs() -> Result<()> {
+    #[cfg(windows)]
+    {
+        let winget_args = [
+            "--id",
+            "OpenJS.NodeJS",
+            "--exact",
+            "--source",
+            "winget",
+            "--accept-source-agreements",
+            "--accept-package-agreements",
+        ];
+        let status = Command::new("winget")
+            .arg("upgrade")
+            .args(winget_args)
+            .status()
+            .context("failed to execute winget while updating Node.js")?;
+
+        if status.success() {
+            return Ok(());
+        }
+
+        println!(
+            "Warning: winget could not upgrade the registered Node.js package ({status}); trying a fresh Node.js install."
+        );
+        let install_status = Command::new("winget")
+            .arg("install")
+            .args(winget_args)
+            .status()
+            .context("failed to execute winget while installing Node.js")?;
+
+        if !install_status.success() {
+            println!(
+                "Warning: winget could not install Node.js ({install_status}); continuing with the existing installation."
+            );
+        }
+    }
+
+    Ok(())
 }
 
 fn sandbox_pnpm_package_spec() -> String {
