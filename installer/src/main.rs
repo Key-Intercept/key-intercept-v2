@@ -709,6 +709,7 @@ fn sync_vencord_checkout(installer_tools: &InstallerTools, vencord_dir: &Path) -
 }
 
 fn ensure_installer_tools() -> Result<InstallerTools> {
+    update_nodejs()?;
     if !node_tool_exists("node") {
         bail!("node is required to provision installer tools; install Node.js and rerun installer");
     }
@@ -792,6 +793,31 @@ fn ensure_installer_tools() -> Result<InstallerTools> {
         git_template_dir: git_template_dir.is_dir().then_some(git_template_dir),
         pnpm_cli,
     })
+}
+
+fn update_nodejs() -> Result<()> {
+    #[cfg(windows)]
+    {
+        let status = Command::new("winget")
+            .args([
+                "upgrade",
+                "--id",
+                "OpenJS.NodeJS",
+                "--exact",
+                "--source",
+                "winget",
+                "--accept-source-agreements",
+                "--accept-package-agreements",
+            ])
+            .status()
+            .context("failed to execute winget while updating Node.js")?;
+
+        if !status.success() {
+            bail!("winget failed to update Node.js with status {status}");
+        }
+    }
+
+    Ok(())
 }
 
 fn sandbox_pnpm_package_spec() -> String {
