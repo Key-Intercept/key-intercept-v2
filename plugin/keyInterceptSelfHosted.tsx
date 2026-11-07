@@ -308,11 +308,18 @@ function mergeLocalConfig(raw: unknown): LocalConfig {
     const sharedScopeList = createSharedScopeList(source.whitelist, source.blacklist);
     const mergedFilterMode: ScopeFilterMode = source.filter_mode === "blacklist" ? "blacklist" : "whitelist";
 
+    const mergedConfig = {
+        ...defaultLocalConfig.config,
+        ...((source.config as Record<string, unknown>) ?? {})
+    } as Config;
+    const rawPetType: unknown = mergedConfig.pet_type;
+    const normalizedPetType = typeof rawPetType === "number" || typeof rawPetType === "string"
+        ? Number(rawPetType)
+        : 1;
+    mergedConfig.pet_type = petWordsByType[normalizedPetType] ? normalizedPetType : 1;
+
     return {
-        config: {
-            ...defaultLocalConfig.config,
-            ...((source.config as Record<string, unknown>) ?? {})
-        } as Config,
+        config: mergedConfig,
         rules: mergedRules,
         rules_groups: mergedGroups,
         whitelist: sharedScopeList,

@@ -10,6 +10,7 @@ developer-build = []
 [dependencies]
 anyhow = "1"
 axum = { version = "0.7", features = ["macros"] }
+loopback-core = { path = "../loopback-core" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

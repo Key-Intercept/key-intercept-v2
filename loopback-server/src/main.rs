@@ -258,7 +258,7 @@ async fn get_config(
 async fn put_config(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(payload): Json<ConfigPayload>,
+    Json(mut payload): Json<ConfigPayload>,
 ) -> impl IntoResponse {
     let Some(requester_id) = requester_header(&headers) else {
         info!("PUT /config denied: missing x-discord-user-id");
@@ -271,6 +271,7 @@ async fn put_config(
             .into_response();
     };
 
+    payload.config.normalize();
     if let Err(err) = payload.config.validate() {
         info!(
             "PUT /config rejected for requester {}: {}",
@@ -674,7 +675,7 @@ async fn execute_desktop_command(
             config,
             expected_revision,
         } => {
-            let parsed = match serde_json::from_value::<LocalConfig>(config) {
+            let mut parsed = match serde_json::from_value::<LocalConfig>(config) {
                 Ok(config) => config,
                 Err(err) => {
                     return (
@@ -684,6 +685,7 @@ async fn execute_desktop_command(
                     );
                 }
             };
+            parsed.normalize();
             if let Err(err) = parsed.validate() {
                 return (StatusCode::BAD_REQUEST, None, Some(err));
             }
