@@ -486,16 +486,50 @@ fn install_loopback_binary_from_path(source: &Path) -> Result<()> {
         .with_context(|| format!("failed to create {}", target_dir.display()))?;
 
     let target = loopback_binary_target_path()?;
-    fs::copy(&source, &target).with_context(|| {
+    replace_executable(source, &target)
+}
+
+/// Replaces `target` with a copy of `source`, even while `target` is running.
+/// Writing into a running executable fails (`Text file busy` on Linux), so copy
+/// to a sibling temp file and rename it over the target instead. Windows can't
+/// rename onto a running .exe, but can rename the running one aside first.
+fn replace_executable(source: &Path, target: &Path) -> Result<()> {
+    let file_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow!("invalid target path {}", target.display()))?;
+    let staged = target.with_file_name(format!("{file_name}.new"));
+
+    fs::copy(source, &staged).with_context(|| {
         format!(
             "failed to copy loopback binary from {} to {}",
             source.display(),
+            staged.display()
+        )
+    })?;
+    ensure_loopback_binary_executable(&staged)?;
+
+    #[cfg(windows)]
+    if target.exists() {
+        let previous = target.with_file_name(format!("{file_name}.old"));
+        // A leftover .old may still be running from an earlier install; ignore.
+        let _ = fs::remove_file(&previous);
+        fs::rename(target, &previous).with_context(|| {
+            format!(
+                "failed to move existing {} aside to {}",
+                target.display(),
+                previous.display()
+            )
+        })?;
+    }
+
+    fs::rename(&staged, target).with_context(|| {
+        format!(
+            "failed to move {} into place at {}",
+            staged.display(),
             target.display()
         )
     })?;
-
-    ensure_loopback_binary_executable(&target)?;
-
     Ok(())
 }
 
@@ -1321,12 +1355,10 @@ fn configure_loopback_startup(
     fs::write(&service_file, unit)
         .with_context(|| format!("failed to write {}", service_file.display()))?;
     run_systemctl(["--user", "daemon-reload"])?;
-    run_systemctl([
-        "--user",
-        "enable",
-        "--now",
-        "key-intercept-loopback.service",
-    ])?;
+    run_systemctl(["--user", "enable", "key-intercept-loopback.service"])?;
+    // `restart` (not `enable --now`) so an already running service picks up the
+    // freshly installed binary and unit file.
+    run_systemctl(["--user", "restart", "key-intercept-loopback.service"])?;
     Ok(())
 }
 
@@ -1889,6 +1921,41 @@ mod tests {
         assert_eq!(
             find_sandboxed_pnpm_cli(tools_dir.path()),
             Some(bin_dir.join("pnpm.mjs"))
+        );
+    }
+
+    #[test]
+    fn replace_executable_overwrites_existing_target() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source");
+        let target = dir.path().join("target");
+        std::fs::write(&source, "new").unwrap();
+        std::fs::write(&target, "old").unwrap();
+
+        replace_executable(&source, &target).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+        assert!(!dir.path().join("target.new").exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn replace_executable_works_while_target_is_running() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("running-sleep");
+        std::fs::copy("/bin/sleep", &target).unwrap();
+        ensure_loopback_binary_executable(&target).unwrap();
+        let mut child = Command::new(&target).arg("30").spawn().unwrap();
+
+        // A plain fs::copy onto a running binary fails with ETXTBSY.
+        let result = replace_executable(Path::new("/bin/true"), &target);
+        let _ = child.kill();
+        let _ = child.wait();
+
+        result.unwrap();
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            std::fs::read("/bin/true").unwrap()
         );
     }
 
