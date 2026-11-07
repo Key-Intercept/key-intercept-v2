@@ -878,28 +878,35 @@ fn update_nodejs() -> Result<()> {
     Ok(())
 }
 
-fn sandboxed_pnpm_cli_path(tools_dir: &Path) -> PathBuf {
-    tools_dir
-        .join("node_modules")
-        .join("pnpm")
-        .join("bin")
-        .join("pnpm.cjs")
+/// pnpm's Node.js entrypoint: `bin/pnpm.mjs` since pnpm 12, `bin/pnpm.cjs` before.
+/// Both run under plain Node.js, so they work even when npm blocks pnpm's
+/// install scripts (npm 12 does by default).
+const PNPM_CLI_ENTRYPOINTS: [&str; 2] = ["pnpm.mjs", "pnpm.cjs"];
+
+fn find_sandboxed_pnpm_cli(tools_dir: &Path) -> Option<PathBuf> {
+    let bin_dir = tools_dir.join("node_modules").join("pnpm").join("bin");
+    PNPM_CLI_ENTRYPOINTS
+        .iter()
+        .map(|entry| bin_dir.join(entry))
+        .find(|path| path.is_file())
 }
 
 fn wait_for_pnpm_cli(tools_dir: &Path) -> Result<PathBuf> {
-    let pnpm_cli = sandboxed_pnpm_cli_path(tools_dir);
     let mut attempts = 0;
-    while !pnpm_cli.is_file() && attempts < 5 {
+    loop {
+        if let Some(pnpm_cli) = find_sandboxed_pnpm_cli(tools_dir) {
+            return Ok(pnpm_cli);
+        }
+        if attempts >= 5 {
+            bail!(
+                "sandboxed pnpm executable not found in {} (looked for {}); provisioning did not complete",
+                tools_dir.join("node_modules").join("pnpm").join("bin").display(),
+                PNPM_CLI_ENTRYPOINTS.join(", ")
+            );
+        }
         sleep(Duration::from_millis(400));
         attempts += 1;
     }
-    if !pnpm_cli.is_file() {
-        bail!(
-            "sandboxed pnpm executable not found at {}; provisioning did not complete",
-            pnpm_cli.display()
-        );
-    }
-    Ok(pnpm_cli)
 }
 
 /// Vencord pins its pnpm version via `packageManager` in package.json, and pnpm
@@ -1863,6 +1870,26 @@ mod tests {
         assert_eq!(required_pnpm_version(r#"{"packageManager":"yarn@4.0.0"}"#).unwrap(), None);
         assert_eq!(required_pnpm_version(r#"{"name":"vencord"}"#).unwrap(), None);
         assert!(required_pnpm_version(r#"{"packageManager":"pnpm@1.0; rm -rf"}"#).is_err());
+    }
+
+    #[test]
+    fn find_sandboxed_pnpm_cli_prefers_mjs_and_falls_back_to_cjs() {
+        let tools_dir = tempdir().unwrap();
+        let bin_dir = tools_dir.path().join("node_modules").join("pnpm").join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        assert!(find_sandboxed_pnpm_cli(tools_dir.path()).is_none());
+
+        std::fs::write(bin_dir.join("pnpm.cjs"), "").unwrap();
+        assert_eq!(
+            find_sandboxed_pnpm_cli(tools_dir.path()),
+            Some(bin_dir.join("pnpm.cjs"))
+        );
+
+        std::fs::write(bin_dir.join("pnpm.mjs"), "").unwrap();
+        assert_eq!(
+            find_sandboxed_pnpm_cli(tools_dir.path()),
+            Some(bin_dir.join("pnpm.mjs"))
+        );
     }
 
     #[test]
